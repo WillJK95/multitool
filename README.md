@@ -1,248 +1,169 @@
-# Data Investigation Multi-Tool - Modular Structure
+# Data Investigation Multi-Tool
 
-## Overview
+A desktop application for conducting corporate due diligence investigations using UK public data sources. Built for fraud analysts, financial investigators, and compliance professionals.
 
-This document explains the modular restructuring of the Data Investigation Multi-Tool from a single 10,000-line file into a maintainable package structure.
+## Features
 
-## Directory Structure
+### 🔍 Director Search
+Search for company directors by name and explore their network of appointments. Generate interactive network graphs showing connections between individuals and companies. Includes integration with 360Giving to find associated grant funding.
 
-```
-multitool/
-├── __init__.py              # Package initialization, version info
-├── main.py                  # Entry point: python -m multitool.main
-├── app.py                   # Main App class (window, menus, navigation)
-├── constants.py             # All shared constants (API URLs, field definitions)
-├── help_content.py          # Help text for all modules
-│
-├── api/                     # API client modules
-│   ├── __init__.py
-│   ├── companies_house.py   # Companies House API functions
-│   ├── charity_commission.py # Charity Commission API functions
-│   └── grantnav.py          # 360Giving GrantNav API functions
-│
-├── utils/                   # Utility functions and classes
-│   ├── __init__.py
-│   ├── helpers.py           # Shared helpers (clean_company_number, log_message, etc.)
-│   ├── token_bucket.py      # Rate limiting implementation
-│   └── enrichment.py        # Data enrichment functions
-│
-├── ui/                      # Reusable UI components
-│   ├── __init__.py
-│   ├── tooltip.py           # Tooltip widget
-│   ├── scrollable_frame.py  # Scrollable container
-│   ├── searchable_entry.py  # Autocomplete entry widget
-│   └── help_window.py       # Help dialog window
-│
-└── modules/                 # Investigation modules
-    ├── __init__.py
-    ├── base.py              # InvestigationModuleBase class
-    ├── director_search.py   # Director Search module (TODO)
-    ├── ubo_tracer.py        # UBO Tracer module (TODO)
-    ├── grants_search.py     # Grants Search module (TODO)
-    ├── data_match.py        # Data Match module (TODO)
-    ├── network_analytics.py # Network Analytics module (TODO)
-    ├── enhanced_dd.py       # Enhanced Due Diligence module (TODO)
-    └── unified_search.py    # Unified Search module (TODO)
-```
+### 🏢 Unified Company & Charity Search
+Batch lookup companies and charities from a CSV file. Automatically enriches records with registration details, status, addresses, and financial information from Companies House and the Charity Commission.
 
-## What's Been Completed
+### 👤 Ultimate Beneficial Ownership (UBO) Tracer
+Trace ownership chains through corporate structures to identify ultimate beneficial owners. Handles complex multi-level ownership with configurable depth limits and generates hierarchical visualisation graphs.
 
-### Core Infrastructure (100% Complete)
+### 🕸️ Network Analytics
+Build and analyse corporate networks starting from seed companies. Combine multiple network files, identify key nodes, remove supernodes (e.g., formation agents), and find paths between entities.
 
-1. **`constants.py`** - All constants extracted:
-   - API URLs
-   - Configuration paths
-   - Field definitions (COMPANY_DATA_FIELDS, GRANT_DATA_FIELDS, CHARITY_DATA_FIELDS)
-   - Taxonomy mappings for iXBRL parsing
+### 💰 Grants Search
+Search the 360Giving database for grants awarded to organisations. Supports lookup by company number, charity number, or organisation name with full pagination support.
 
-2. **`help_content.py`** - All help text extracted
+### 🔗 Data Match
+Match records between two datasets using exact or fuzzy matching. Configurable matching thresholds and multiple matching strategies for deduplication and record linkage.
 
-3. **`api/companies_house.py`** - Full API client:
-   - `ch_get_data()` - Core GET function with caching and retries
-   - `ch_search_officers()`, `ch_search_companies()`
-   - `ch_get_company()`, `ch_get_officers()`, `ch_get_pscs()`
-   - `ch_get_filing_history()`
-   - `check_api_status()`
+### 📊 Enhanced Due Diligence
+Comprehensive due diligence reports combining data from all sources. Automated risk detection including:
+- Insolvency indicators
+- Phoenix company patterns
+- Director churn analysis
+- Offshore PSC detection
+- Filing compliance issues
+- Financial health metrics
 
-4. **`api/charity_commission.py`** - Full API client:
-   - `cc_get_data()` - Core GET function
-   - `cc_get_charity_details()`, `cc_get_trustees()`
-   - `cc_get_financial_history()`, `cc_search_charities()`
+## Installation
 
-5. **`api/grantnav.py`** - Full API client:
-   - `grantnav_get_data()` - Core GET function
-   - `search_grants_by_org_id()`, `search_grants_by_org_name()`
-   - `get_all_grants_for_org()` - Paginated fetch
+### Prerequisites
+- Python 3.9 or higher
+- Windows 10/11 (primary platform)
 
-6. **`utils/helpers.py`** - Shared utilities:
-   - `log_message()` - Logging
-   - `clean_company_number()` - Company number formatting
-   - `clean_address_string()` - Address normalization
-   - `get_canonical_name_key()` - Person matching key generation
-   - `format_address_label()` - Graph label formatting
-   - `get_nested_value()` - Nested dict access
+### Setup
 
-7. **`utils/token_bucket.py`** - Rate limiter (complete rewrite with better API)
-
-8. **`utils/enrichment.py`** - Data enrichment functions:
-   - `enrich_with_company_data()`
-   - `enrich_with_charity_data()`
-
-9. **`ui/`** - All UI components extracted:
-   - `Tooltip` - Hover help
-   - `ScrollableFrame` - Scrollable container
-   - `SearchableEntry` - Autocomplete widget
-   - `HelpWindow` - Help dialog
-
-10. **`modules/base.py`** - `InvestigationModuleBase` class (complete)
-
-11. **`app.py`** - Main application class (complete)
-
-## Modules Still To Extract
-
-The following modules need to be extracted from the original `tool55.py`. Each is a self-contained class that extends `InvestigationModuleBase`:
-
-### 1. DirectorSearch (Lines ~2175-3168)
-```python
-# modules/director_search.py
-from .base import InvestigationModuleBase
-
-class DirectorSearch(InvestigationModuleBase):
-    # Copy class from original file
-    # Update imports to use new module paths
-```
-
-### 2. CompanyCharitySearch (Lines ~3169-3975)
-```python
-# modules/unified_search.py
-from .base import InvestigationModuleBase
-
-class CompanyCharitySearch(InvestigationModuleBase):
-    # Copy class from original file
-```
-
-### 3. UltimateBeneficialOwnershipTracer (Lines ~3976-5015)
-```python
-# modules/ubo_tracer.py
-from .base import InvestigationModuleBase
-
-class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
-    # Copy class from original file
-```
-
-### 4. NetworkAnalytics (Lines ~5099-6494)
-```python
-# modules/network_analytics.py
-from .base import InvestigationModuleBase
-
-class NetworkAnalytics(InvestigationModuleBase):
-    # Copy class from original file
-```
-
-### 5. GrantsSearch (Lines ~6495-6895)
-```python
-# modules/grants_search.py
-from .base import InvestigationModuleBase
-
-class GrantsSearch(InvestigationModuleBase):
-    # Copy class from original file
-```
-
-### 6. DataMatch (Lines ~6896-7274)
-```python
-# modules/data_match.py
-from .base import InvestigationModuleBase
-
-class DataMatch(InvestigationModuleBase):
-    # Copy class from original file
-```
-
-### 7. iXBRLParser & FinancialAnalyzer (Lines ~7275-7735)
-```python
-# utils/financial_analyzer.py
-class iXBRLParser:
-    # Copy class from original file
-
-class FinancialAnalyzer:
-    # Copy class from original file
-```
-
-### 8. EnhancedDueDiligence (Lines ~7736-9697)
-```python
-# modules/enhanced_dd.py
-from .base import InvestigationModuleBase
-
-class EnhancedDueDiligence(InvestigationModuleBase):
-    # Copy class from original file
-```
-
-## Migration Checklist for Each Module
-
-When extracting each module:
-
-1. [ ] Create new file in `modules/` directory
-2. [ ] Copy class definition from original file
-3. [ ] Update imports at top of file:
-   ```python
-   from ..api.companies_house import ch_get_data
-   from ..api.charity_commission import cc_get_data
-   from ..utils.helpers import clean_company_number, log_message
-   from ..ui.tooltip import Tooltip
-   from ..constants import COMPANY_DATA_FIELDS
-   from .base import InvestigationModuleBase
-   ```
-4. [ ] Replace any inline utility functions with imports from `utils/`
-5. [ ] Remove duplicate method definitions (use shared utilities)
-6. [ ] Test the module independently
-
-## Import Pattern
-
-```python
-# Relative imports within the package
-from ..api.companies_house import ch_get_data
-from ..utils.helpers import clean_company_number
-from ..constants import API_BASE_URL
-from .base import InvestigationModuleBase
-
-# Standard library
-import threading
-import csv
-
-# Third-party
-import networkx as nx
-from pyvis.network import Network
-```
-
-## Running the Application
-
-Once all modules are extracted:
-
+1. Clone the repository:
 ```bash
-# From the parent directory of multitool/
+git clone https://github.com/WillJK95/multitool.git
+cd multitool
+```
+
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+3. Run the application:
+```bash
 python -m multitool.main
 ```
 
-Or create a simple runner script:
+### API Keys
 
-```python
-#!/usr/bin/env python3
-from multitool.main import main
-main()
+The tool requires API keys for full functionality:
+
+- **Companies House API**: Free registration at https://developer.company-information.service.gov.uk/
+- **Charity Commission API**: Free registration at https://api-portal.charitycommission.gov.uk/
+
+API keys can be configured in File → Manage API Keys within the application.
+
+The 360Giving GrantNav API does not require authentication.
+
+## Usage
+
+### Quick Start
+
+1. Launch the application
+2. Configure your API keys (File → Manage API Keys)
+3. Select an investigation module from the main menu
+4. Load your data (CSV file or manual entry)
+5. Run the investigation
+6. Export results to CSV or generate network graphs
+
+### Input File Format
+
+Most modules accept CSV files with identifier columns. The tool automatically detects columns containing:
+- Company numbers (8-digit format, with SC/NI/OC prefixes)
+- Charity numbers (6-7 digit format)
+- Organisation names
+
+### Output Formats
+
+- **CSV**: Enriched data with all retrieved fields
+- **HTML**: Interactive network graphs (using vis.js)
+- **Graph Data**: Edge lists for import into other network analysis tools
+
+## Data Sources
+
+This tool aggregates data from the following public sources:
+
+| Source | Data Provided | License |
+|--------|---------------|---------|
+| [Companies House](https://www.gov.uk/government/organisations/companies-house) | Company profiles, officers, PSCs, filing history | Open Government Licence |
+| [Charity Commission](https://www.gov.uk/government/organisations/charity-commission) | Charity details, trustees, financial history | Open Government Licence v3.0 |
+| [360Giving](https://www.threesixtygiving.org/) | Grant funding data | CC BY 4.0 |
+
+## Project Structure
+
+```
+multitool/
+├── main.py              # Application entry point
+├── app.py               # Main window and navigation
+├── constants.py         # Configuration and field definitions
+├── api/                 # API client modules
+│   ├── companies_house.py
+│   ├── charity_commission.py
+│   └── grantnav.py
+├── modules/             # Investigation modules
+│   ├── director_search.py
+│   ├── unified_search.py
+│   ├── ubo_tracer.py
+│   ├── network_analytics.py
+│   ├── grants_search.py
+│   ├── data_match.py
+│   └── enhanced_dd.py
+├── ui/                  # Reusable UI components
+└── utils/               # Shared utilities
 ```
 
-## Benefits of This Structure
+## Building an Executable
 
-1. **Maintainability**: Each module is self-contained and can be edited independently
-2. **Testability**: Modules can be unit tested in isolation
-3. **Readability**: Easier to understand the codebase structure
-4. **Reusability**: API clients and utilities can be imported by external tools
-5. **Collaboration**: Multiple developers can work on different modules simultaneously
-6. **Lazy Loading**: Modules are only imported when needed, speeding up startup
+To create a standalone Windows executable:
 
-## Next Steps
+```bash
+pip install pyinstaller
+pyinstaller --onefile --noconsole --name "DataInvestigationMultiTool" multitool/main.py
+```
 
-1. Extract remaining 7 investigation modules
-2. Add type hints throughout
-3. Write unit tests for API clients and utilities
-4. Add integration tests for each module
-5. Create setup.py/pyproject.toml for proper packaging
+The executable will be created in the `dist/` folder.
+
+## Contributing
+
+Contributions are welcome. Please open an issue to discuss proposed changes before submitting a pull request.
+
+## License
+
+Copyright 2015 William Kenny
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+## Acknowledgements
+
+Created by William Kenny (2025).
+
+Built with:
+- [ttkbootstrap](https://github.com/israel-dryer/ttkbootstrap) - Modern UI themes
+- [NetworkX](https://networkx.org/) - Network analysis
+- [pyvis](https://github.com/WestHealth/pyvis) - Interactive network visualisation
+- [RapidFuzz](https://github.com/rapidfuzz/RapidFuzz) - Fuzzy string matching
+
+## Disclaimer
+
+This tool is provided for legitimate investigative and compliance purposes. Users are responsible for ensuring their use complies with applicable data protection laws and the terms of service of the underlying APIs. The author accepts no liability for misuse of this software.
