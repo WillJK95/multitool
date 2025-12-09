@@ -13,6 +13,8 @@ from tkinter import ttk, messagebox
 import tkinter.font
 import ttkbootstrap as tb
 import keyring
+import requests
+from datetime import datetime
 
 from .constants import (
     CONFIG_DIR,
@@ -20,6 +22,9 @@ from .constants import (
     CH_ACCOUNT_NAME,
     CC_ACCOUNT_NAME,
     CH_API_RATE_LIMIT,
+    API_BASE_URL,
+    CHARITY_API_BASE_URL,
+    GRANTNAV_API_BASE_URL
 )
 from .help_content import HELP_CONTENT
 from .utils.helpers import log_message
@@ -83,9 +88,16 @@ class App(tk.Tk):
         
         # Create menu bar
         self._create_menu_bar()
+
+        # Create API status variables
+        self.api_statuses = {}
+        self.api_status_timestamp = None
+        self.status_panel = None
         
         # Load API keys and show appropriate screen
         self.load_api_keys()
+
+
     
     def _create_menu_bar(self) -> None:
         """Create the application menu bar."""
@@ -370,6 +382,34 @@ class App(tk.Tk):
         self.clear_container()
         self.title("Data Investigation Multi-Tool")
         self.geometry("700x600")
+
+        # API Status Panel in top-right corner
+        self.status_panel = ttk.LabelFrame(
+            self.container,
+            text="API Status",
+            padding=5
+        )
+        self.status_panel.place(relx=1.0, rely=0, anchor='ne', x=-10, y=5)
+        
+        # If we have cached status, show it immediately
+        if self.api_statuses:
+            self._display_api_status(self.status_panel)
+        else:
+            # First time - show "Checking..." and run check
+            checking_label = ttk.Label(
+                self.status_panel,
+                text="Checking APIs...",
+                font=('Segoe UI', 7, 'italic'),
+                foreground='gray'
+            )
+            checking_label.pack()
+            
+            def run_check():
+                self.check_api_status()
+                self.after(0, checking_label.destroy)
+                self.after(0, lambda: self._display_api_status(self.status_panel))
+            
+            threading.Thread(target=run_check, daemon=True).start()
         
         frame = ttk.Frame(self.container)
         frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
@@ -437,6 +477,186 @@ class App(tk.Tk):
         """Show third-party licenses window."""
         from .ui.licenses_window import LicensesWindow
         LicensesWindow(self)
+
+    def check_api_status(self):
+        """Lightweight check of API availability. Returns dict of statuses."""
+        statuses = {
+            'companies_house': 'unknown',
+            'charity_commission': 'unknown',
+            'grantnav': 'unknown'
+        }
+        
+        # Test Companies House (only if key exists)
+        if self.api_key:
+            try:
+                # Quick test: Search for a known company (Google UK)
+                response = requests.get(
+                    f"{API_BASE_URL}/company/00445790",
+                    auth=(self.api_key, ""),
+                    timeout=3
+                )
+                statuses['companies_house'] = 'ok' if response.status_code == 200 else 'error'
+            except:
+                statuses['companies_house'] = 'error'
+        else:
+            statuses['companies_house'] = 'no_key'
+        
+        # Test Charity Commission (only if key exists)
+        if self.charity_api_key:
+            try:
+                # Quick test: Known charity (British Red Cross)
+                response = requests.get(
+                    f"{CHARITY_API_BASE_URL}/charitydetails/220949/0",
+                    headers={'Ocp-Apim-Subscription-Key': self.charity_api_key},
+                    timeout=3
+                )
+                statuses['charity_commission'] = 'ok' if response.status_code == 200 else 'error'
+            except:
+                statuses['charity_commission'] = 'error'
+        else:
+            statuses['charity_commission'] = 'no_key'
+        
+        # Test GrantNav (no key required)
+        try:
+            # Quick test: Simple search
+            response = requests.get(
+                f"{GRANTNAV_API_BASE_URL}/org/GB-CHC-220949/grants_received?limit=1",
+                timeout=3
+            )
+            statuses['grantnav'] = 'ok' if response.status_code == 200 else 'error'
+        except:
+            statuses['grantnav'] = 'error'
+        
+        # Cache results
+        self.api_statuses = statuses
+        self.api_status_timestamp = datetime.now()
+        
+        return statuses
+
+
+    def _create_status_indicator(self, parent, label, status):
+        """Create a single status indicator with colored circle."""
+        frame = ttk.Frame(parent)
+        frame.pack(anchor='w', pady=2)
+        
+        # Status circle (using Unicode circle characters)
+        color_map = {
+            'ok': ('●', '#28a745'),
+            'error': ('●', '#dc3545'),
+            'no_key': ('●', '#fd7e14'),
+            'unknown': ('●', '#6c757d')
+        }
+        
+        symbol, color = color_map.get(status, ('●', 'gray'))
+        
+        style = ttk.Style()
+        bg_color = style.lookup('TFrame', 'background')
+
+        # Create a small canvas to draw a colored circle
+        canvas = tk.Canvas(frame, width=12, height=12, highlightthickness=0)
+
+        canvas.configure(background=bg_color)
+        canvas.pack(side=tk.LEFT, padx=(0, 3))
+
+        # Draw a filled circle
+        canvas.create_oval(2, 2, 10, 10, fill=color, outline=color)
+        
+        text_label = ttk.Label(frame, text=label, font=('Segoe UI', 7))
+        text_label.pack(side=tk.LEFT)
+        
+        # Tooltip explaining status
+        tooltip_text = {
+            'ok': f'{label}: Connected ✓',
+            'error': f'{label}: Connection failed',
+            'no_key': f'{label}: No API key configured',
+            'unknown': f'{label}: Status unknown'
+        }
+        Tooltip(frame, tooltip_text.get(status, label))
+        
+        return frame
+
+    def _get_time_since_check(self):
+        """Return human-readable time since last API check."""
+        if not self.api_status_timestamp:
+            return "never"
+        
+        delta = datetime.now() - self.api_status_timestamp
+        seconds = int(delta.total_seconds())
+        
+        if seconds < 60:
+            return "just now"
+        elif seconds < 3600:
+            mins = seconds // 60
+            return f"{mins} min{'s' if mins != 1 else ''} ago"
+        else:
+            hours = seconds // 3600
+            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+
+    def refresh_api_status(self):
+        """Force refresh of API status."""
+        # Clear the status panel and show checking message
+        for widget in self.status_panel.winfo_children():
+            widget.destroy()
+        
+        checking_label = ttk.Label(
+            self.status_panel,
+            text="Checking APIs...",
+            font=('Segoe UI', 7, 'italic'),
+            foreground='gray'
+        )
+        checking_label.pack()
+        
+        # Run check in background
+        def run_check():
+            statuses = self.check_api_status()
+            
+            # Update UI on main thread
+            self.after(0, checking_label.destroy)
+            self.after(0, lambda: self._display_api_status(self.status_panel))
+        
+        threading.Thread(target=run_check, daemon=True).start()
+
+    def _display_api_status(self, status_panel):
+        """Display API status indicators (used by both initial load and refresh)."""
+        if not self.api_statuses:
+            return
+        
+        self._create_status_indicator(
+            status_panel, 
+            "Companies House", 
+            self.api_statuses['companies_house']
+        )
+        self._create_status_indicator(
+            status_panel, 
+            "Charity Commission", 
+            self.api_statuses['charity_commission']
+        )
+        self._create_status_indicator(
+            status_panel, 
+            "GrantNav (360Giving)", 
+            self.api_statuses['grantnav']
+        )
+        
+        # Add timestamp and refresh button
+        footer_frame = ttk.Frame(status_panel)
+        footer_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        timestamp_label = ttk.Label(
+            footer_frame,
+            text=f"Checked: {self._get_time_since_check()}",
+            font=('Segoe UI', 6),
+            foreground='gray'
+        )
+        timestamp_label.pack(side=tk.LEFT)
+        
+        refresh_btn = ttk.Button(
+            footer_frame,
+            text="↻",
+            width=2,
+            command=self.refresh_api_status
+        )
+        refresh_btn.pack(side=tk.RIGHT)
+        Tooltip(refresh_btn, "Refresh API status")
     
     # --- Module Navigation Methods ---
     # These methods load the respective investigation modules.
