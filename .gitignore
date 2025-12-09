@@ -1,0 +1,25 @@
+# Byte-compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.exe
+
+# IDE settings
+.vscode/
+.idea/
+
+# Environment
+venv/
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# PyInstaller
+*.spec
