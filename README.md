@@ -140,7 +140,7 @@ Contributions are welcome. Please open an issue to discuss proposed changes befo
 
 ## License
 
-Copyright 2015 William Kenny
+Copyright 2025 William Kenny
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
