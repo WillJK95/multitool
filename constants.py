@@ -1,0 +1,134 @@
+# multitool/constants.py
+"""Shared constants and configuration values."""
+
+import os
+
+# --- API Configuration ---
+API_BASE_URL = "https://api.company-information.service.gov.uk"
+GRANTNAV_API_BASE_URL = "https://api.threesixtygiving.org/api/v1"
+CHARITY_API_BASE_URL = "https://api.charitycommission.gov.uk/register/api"
+
+# --- File Paths ---
+CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".DataInvestigatorTool")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.ini")
+
+# --- Keyring Configuration ---
+SERVICE_NAME = "DataInvestigatorTool"
+CH_ACCOUNT_NAME = "CompaniesHouseAPI"
+CC_ACCOUNT_NAME = "CharityCommissionAPI"
+
+# --- API Rate Limiting ---
+CH_API_RATE_LIMIT = 590  # requests per 5 minutes
+CH_API_REFILL_RATE = CH_API_RATE_LIMIT / 300  # tokens per second
+
+# --- Default Values ---
+DEFAULT_ITEMS_PER_PAGE = 100
+DEFAULT_FUZZY_THRESHOLD = 85
+DEFAULT_MAX_WORKERS = 2
+DEFAULT_MAX_RETRIES = 4
+DEFAULT_BACKOFF_FACTOR = 0.5
+
+# --- Field Definitions ---
+COMPANY_DATA_FIELDS = {
+    "company_number": "Company Number",
+    "incorporation_date": "Incorporation Date",
+    "company_status": "Company Status",
+    "registered_address": "Registered Address",
+    "sic_codes": "SIC Codes",
+    "officers": "Officers",
+    "persons_with_significant_control": "Persons with Significant Control (PSCs)",
+    "company_type": "Company Type",
+    "jurisdiction": "Jurisdiction",
+    "date_of_cessation": "Date of Cessation",
+    "previous_company_names": "Previous Company Names",
+    "accounts_next_due": "Accounts - Next Due",
+    "accounts_last_made_up_to": "Accounts - Last Made Up To",
+    "confirmation_statement_next_due": "Confirmation Statement - Next Due",
+    "confirmation_statement_last_made_up_to": "Confirmation Statement - Last Made Up To",
+    "accounts_type": "Accounts Type",
+}
+
+GRANT_DATA_FIELDS = {
+    "title": "Title",
+    "description": "Description",
+    "amountAwarded": "Amount Awarded",
+    "currency": "Currency",
+    "awardDate": "Award Date",
+    "fundingOrganization_name": "Funder Name",
+    "fundingOrganization_website": "Funder Website",
+    "grantProgramme_title": "Grant Programme",
+    "plannedDates_startDate": "Grant Start Date",
+    "plannedDates_endDate": "Grant End Date",
+    "plannedDates_durationExpression": "Grant Duration (months)",
+    "beneficiaryLocation_name": "Beneficiary Location",
+}
+
+CHARITY_DATA_FIELDS = {
+    "reg_charity_number": "Charity Number",
+    "main_details": "Main Charity Details (Address, Phone etc.)",
+    "date_of_registration": "Date of Registration",
+    "other_names": "Other Names",
+    "trustee_names": "Trustee Names",
+    "financial_history": "Financial History (Last 5 Years)",
+    "assets_liabilities": "Most Recent Assets & Liabilities",
+    "annual_return_overview": "Annual Return Overview",
+    "other_regulators": "Other Regulators",
+    "regulatory_reports": "Regulatory Reports & Inquiries",
+    "area_of_operation": "Area of Operation",
+    "filing_information": "Financial Filing Information",
+    "removal_info": "Removal Status & History",
+    "governance_status": "Governance & Insolvency Status",
+}
+
+# --- Accounts Constants and Taxonomies ---
+TAXONOMY_MAP = {
+    'NetAssets': [
+        'NetAssetsLiabilities',
+        'TotalAssetsLessCurrentLiabilities',
+    ],
+    'CurrentAssets': [
+        'CurrentAssets'
+    ],
+    'CurrentLiabilities': [
+        'Creditors',
+        'CreditorsAmountsFallingDueWithinOneYear'
+    ],
+    'Revenue': [
+        'Revenue',
+        'Turnover'
+    ],
+    'ProfitLoss': [
+        'ProfitLoss'
+    ],
+    'FixedAssets': [
+        'FixedAssets',
+        'PropertyPlantEquipment'
+    ],
+    'Debtors': [
+        'Debtors'
+    ],
+    'CashBankInHand': [
+        'CashBankInHand'
+    ],
+    'Employees': [
+        'AverageNumberEmployeesDuringPeriod'
+    ],
+    'TotalAssets': [
+        'TotalAssets'
+    ],
+    'ShareCapital': [
+        'ShareCapital'
+    ],
+    'RetainedEarnings': [
+        'RetainedEarningsAccumulatedLosses'
+    ]
+}
+
+IXBRL_NAMESPACES = {
+    'ix': 'http://www.xbrl.org/2013/inlineXBRL',
+    'ixt': 'http://www.xbrl.org/inlineXBRL/transformation/2015-02-26',
+    'link': 'http://www.xbrl.org/2003/linkbase',
+    'xbrli': 'http://www.xbrl.org/2003/instance',
+    'core': 'http://xbrl.frc.org.uk/fr/2021-01-01/core',
+    'bus': 'http://xbrl.frc.org.uk/cd/2021-01-01/business',
+}
