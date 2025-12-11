@@ -406,8 +406,11 @@ class App(tk.Tk):
             
             def run_check():
                 self.check_api_status()
-                self.after(0, checking_label.destroy)
-                self.after(0, lambda: self._display_api_status(self.status_panel))
+                # Only update UI if widgets still exist (user may have navigated away)
+                if checking_label.winfo_exists():
+                    self.after(0, checking_label.destroy)
+                if self.status_panel.winfo_exists():
+                    self.after(0, lambda: self._display_api_status(self.status_panel))
             
             threading.Thread(target=run_check, daemon=True).start()
         
@@ -610,14 +613,20 @@ class App(tk.Tk):
         def run_check():
             statuses = self.check_api_status()
             
-            # Update UI on main thread
-            self.after(0, checking_label.destroy)
-            self.after(0, lambda: self._display_api_status(self.status_panel))
+            # Update UI on main thread (only if widgets still exist)
+            if checking_label.winfo_exists():
+                self.after(0, checking_label.destroy)
+            if self.status_panel.winfo_exists():
+                self.after(0, lambda: self._display_api_status(self.status_panel))
         
         threading.Thread(target=run_check, daemon=True).start()
 
     def _display_api_status(self, status_panel):
         """Display API status indicators (used by both initial load and refresh)."""
+        # Safety check - panel may have been destroyed if user navigated away
+        if not status_panel.winfo_exists():
+            return
+        
         if not self.api_statuses:
             return
         

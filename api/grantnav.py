@@ -2,19 +2,20 @@
 """360Giving GrantNav API client."""
 
 import time
+import threading
 import requests
-from functools import lru_cache
 from typing import Tuple, Optional, Any, Dict, List
 
 from ..constants import GRANTNAV_API_BASE_URL
 
+# Thread-safe rate limiting
+_rate_limit_lock = threading.Lock()
+_last_request_time = 0.0
 
-@lru_cache(maxsize=1024)
+
 def grantnav_get_data(url: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Make a GET request to the GrantNav API.
-    
-    Results are cached using lru_cache to avoid repeated API calls.
     
     Args:
         url: Full URL to request
@@ -22,7 +23,21 @@ def grantnav_get_data(url: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]
     Returns:
         Tuple of (data dict or None, error message or None)
     """
+    global _last_request_time
+    
     try:
+        # Thread-safe rate limiting (2 requests/second max)
+        # Calculate sleep time inside lock, but sleep outside it
+        sleep_time = 0
+        with _rate_limit_lock:
+            elapsed = time.time() - _last_request_time
+            if elapsed < 0.5:
+                sleep_time = 0.5 - elapsed
+            _last_request_time = time.time() + sleep_time  # Reserve our slot
+        
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+        
         resp = requests.get(
             url,
             headers={"Accept": "application/json"},
@@ -33,9 +48,6 @@ def grantnav_get_data(url: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]
             return None, "not_found"
         
         resp.raise_for_status()
-        
-        # Rate limiting delay
-        time.sleep(0.5)
         
         return resp.json(), None
         

@@ -258,22 +258,16 @@ class GrantsSearch(InvestigationModuleBase):
         # --- Step 2: Prioritize Company Number Search ---
         if company_number:
             search_status = f"No grants found for Company Number {company_number}"
-            # Same logic as before to handle 7 or 8-digit company numbers
-            numbers_to_check = []
-            cnum_upper = company_number.upper()
-            if len(cnum_upper) == 7 and cnum_upper.isdigit():
-                numbers_to_check.append(cnum_upper.zfill(8))
-                numbers_to_check.append(cnum_upper)
-            else:
-                numbers_to_check.append(cnum_upper.zfill(8))
-
-            for num_format in numbers_to_check:
-                org_id = f"GB-COH-{num_format}"
-                grants = self._fetch_all_grants(org_id)
-                if grants:
-                    all_found_grants.extend(grants)
-
-            if all_found_grants:
+            # Normalize to 8-digit format (GB-COH- always uses 8 digits)
+            cnum_upper = company_number.upper().strip()
+            # Handle numeric-only company numbers by padding to 8 digits
+            if cnum_upper.isdigit():
+                cnum_upper = cnum_upper.zfill(8)
+            
+            org_id = f"GB-COH-{cnum_upper}"
+            grants = self._fetch_all_grants(org_id)
+            if grants:
+                all_found_grants.extend(grants)
                 search_status = f"Grants found via Company Number ({company_number})"
 
         # --- Step 3: Fallback to Charity Number Search if no grants found yet ---
@@ -338,6 +332,7 @@ class GrantsSearch(InvestigationModuleBase):
                 for row in rows_to_process
             }
 
+            processed_count = 0
             try:
                 for future in as_completed(futures):
                     if self.cancel_flag.is_set():
@@ -353,6 +348,14 @@ class GrantsSearch(InvestigationModuleBase):
                     list_of_new_rows = future.result()
                     if list_of_new_rows:
                         self.results_data.extend(list_of_new_rows)
+                    
+                    # Update progress bar and force GUI refresh
+                    processed_count += 1
+                    def update_progress(p=processed_count, t=len(self.original_data)):
+                        self.progress_bar.configure(value=p)
+                        self.status_var.set(f"Processed {p}/{t} rows...")
+                        self.app.update_idletasks()
+                    self.app.after(0, update_progress)
 
             except Exception as e:
                 log_message(f"An error occurred during grant investigation: {e}")
