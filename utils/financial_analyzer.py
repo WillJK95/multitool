@@ -1,4 +1,4 @@
-# modules/financial analyzer.py
+# utils/financial_analyzer.py
 """Financial analysis and iXBRL Parser"""
 
 from lxml import etree
@@ -13,11 +13,31 @@ from ..constants import (
     TAXONOMY_MAP
 )
 
+
+def create_secure_xml_parser():
+    """
+    Create a secure XML parser that prevents XXE (XML External Entity) attacks.
+    
+    This disables:
+    - External entity resolution (prevents file disclosure)
+    - Network access (prevents SSRF attacks)
+    - DTD loading (prevents entity expansion attacks)
+    """
+    return etree.XMLParser(
+        recover=True,
+        huge_tree=True,
+        resolve_entities=False,  # SECURITY: Prevent XXE file disclosure
+        no_network=True,         # SECURITY: Prevent SSRF via external DTDs
+        dtd_validation=False,    # Don't validate against DTD
+        load_dtd=False,          # Don't load external DTD
+    )
+
+
 class iXBRLParser:
     def __init__(self, file_path):
         self.file_path = file_path
-        # KEY FIX: Use XMLParser instead of HTMLParser
-        self.tree = etree.parse(file_path, etree.XMLParser(recover=True, huge_tree=True))
+        # KEY FIX: Use secure XMLParser to prevent XXE attacks
+        self.tree = etree.parse(file_path, create_secure_xml_parser())
         self.namespaces = IXBRL_NAMESPACES.copy()
         # Auto-detect actual namespaces from the file
         self._update_namespaces_from_file()
@@ -274,25 +294,50 @@ class FinancialAnalyzer:
         
         df = self.data.copy()
         
-        # Current Ratio
+        # Current Ratio - with division by zero protection
         if 'CurrentAssets' in df.columns and 'CurrentLiabilities' in df.columns:
-            df['CurrentRatio'] = df['CurrentAssets'] / df['CurrentLiabilities']
+            df['CurrentRatio'] = df.apply(
+                lambda row: row['CurrentAssets'] / row['CurrentLiabilities'] 
+                if pd.notna(row['CurrentLiabilities']) and row['CurrentLiabilities'] != 0 
+                else None, 
+                axis=1
+            )
         
-        # Quick Ratio (assuming cash and debtors are liquid)
+        # Quick Ratio (assuming cash and debtors are liquid) - with division by zero protection
         if all(col in df.columns for col in ['CashBankInHand', 'Debtors', 'CurrentLiabilities']):
-            df['QuickRatio'] = (df['CashBankInHand'] + df['Debtors']) / df['CurrentLiabilities']
+            df['QuickRatio'] = df.apply(
+                lambda row: (row['CashBankInHand'] + row['Debtors']) / row['CurrentLiabilities']
+                if pd.notna(row['CurrentLiabilities']) and row['CurrentLiabilities'] != 0
+                else None,
+                axis=1
+            )
         
-        # Return on Assets
+        # Return on Assets - with division by zero protection
         if 'ProfitLoss' in df.columns and 'TotalAssets' in df.columns:
-            df['ROA'] = (df['ProfitLoss'] / df['TotalAssets']) * 100
+            df['ROA'] = df.apply(
+                lambda row: (row['ProfitLoss'] / row['TotalAssets']) * 100
+                if pd.notna(row['TotalAssets']) and row['TotalAssets'] != 0
+                else None,
+                axis=1
+            )
         
-        # Profit Margin
+        # Profit Margin - with division by zero protection
         if 'ProfitLoss' in df.columns and 'Revenue' in df.columns:
-            df['ProfitMargin'] = (df['ProfitLoss'] / df['Revenue']) * 100
+            df['ProfitMargin'] = df.apply(
+                lambda row: (row['ProfitLoss'] / row['Revenue']) * 100
+                if pd.notna(row['Revenue']) and row['Revenue'] != 0
+                else None,
+                axis=1
+            )
         
-        # Debt to Equity (using retained earnings as proxy for equity)
+        # Debt to Equity (using retained earnings as proxy for equity) - with division by zero protection
         if 'CurrentLiabilities' in df.columns and 'NetAssets' in df.columns:
-            df['DebtToEquity'] = df['CurrentLiabilities'] / df['NetAssets']
+            df['DebtToEquity'] = df.apply(
+                lambda row: row['CurrentLiabilities'] / row['NetAssets']
+                if pd.notna(row['NetAssets']) and row['NetAssets'] != 0
+                else None,
+                axis=1
+            )
         
         return df
     

@@ -692,7 +692,8 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                         ],
                     )
                 )
-                address_str = _clean_address_string(raw_address_str)
+                # FIX: Changed from _clean_address_string to clean_address_string
+                address_str = clean_address_string(raw_address_str)
                 if address_str:
                     G.add_node(address_str, label=raw_address_str, type="address")
                     G.add_edge(cnum, address_str, label="registered_at")

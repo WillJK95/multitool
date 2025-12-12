@@ -631,7 +631,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
                     )
                     if profile:
                         enrich_with_company_data(
-                            enriched_row, self.api_key, self.ch_token_bucket, profile, self.company_data_fields_vars
+                            enriched_row, self.api_key, self.ch_token_bucket, profile, self.company_data_fields_vars, ch_get_data_func=ch_get_data,
                         )
                 
                 elif best_match['type'] == 'cc':
@@ -640,7 +640,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
                     reg_num = best_match['data'].get("reg_charity_number")
                     if reg_num:
                         enrich_with_charity_data(
-                            enriched_row, self.charity_api_key, str(reg_num), self.charity_data_fields_vars
+                            enriched_row, self.charity_api_key, str(reg_num), self.charity_data_fields_vars, cc_get_data_func=cc_get_data,
                         )
 
         # --- Part 3: Final Status (Unchanged) ---
@@ -677,6 +677,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
                 self.ch_token_bucket,
                 profile,
                 self.company_data_fields_vars,
+                ch_get_data_func=ch_get_data,
             )
             return True
         return False
@@ -690,7 +691,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
             row["match_source"] += "Charity Commission (Exact); "
             row["match_status"] = "Match Found"
             enrich_with_charity_data(
-                row, self.charity_api_key, ccnum, self.charity_data_fields_vars
+                row, self.charity_api_key, ccnum, self.charity_data_fields_vars, cc_get_data_func=cc_get_data,
             )
             return True
         return False
@@ -716,6 +717,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
                     self.ch_token_bucket,
                     profile,
                     self.company_data_fields_vars,
+                    ch_get_data_func=ch_get_data,
                 )
             return True
         return False
@@ -736,6 +738,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
                     self.charity_api_key,
                     str(reg_num),
                     self.charity_data_fields_vars,
+                    cc_get_data_func=cc_get_data,
                 )
             return True
         return False
@@ -763,7 +766,6 @@ class CompanyCharitySearch(InvestigationModuleBase):
             path = f"/search/companies?q={name}&items_per_page=100&start_index={start_index}"
             data, error = ch_get_data(self.api_key, self.ch_token_bucket, path)
             if error:
-                return None, 0, error
                 if "Error 50" in error:
                     log_message(
                         f"Server-side API error during paged company search: {error}. Continuing with {len(all_results)} results found so far."

@@ -1309,7 +1309,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         )
 
         # --- APPLY THE CLEANING FUNCTION ---
-        address_str = _clean_address_string(raw_address_str)
+        address_str = clean_address_string(raw_address_str)
 
         if address_str:
             # Use the raw string for the visual label, but the clean string for the node ID
