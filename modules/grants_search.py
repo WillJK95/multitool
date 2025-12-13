@@ -140,68 +140,59 @@ class GrantsSearch(InvestigationModuleBase):
             self.file_status_label.config(text="Error loading file.", foreground="red")
 
     def _display_column_selection_ui(self):
+        """Display dropdown menus for column selection."""
         for widget in self.column_selection_frame.winfo_children():
             widget.destroy()
 
         self.company_num_col_var = tk.StringVar()
         self.charity_num_col_var = tk.StringVar()
 
+        # Options include "None"
+        options = ["___NONE___"] + self.original_headers
+
         # --- UI Setup for two columns ---
+        # Container
+        container = ttk.Frame(self.column_selection_frame)
+        container.pack(fill="x", expand=True, pady=5)
+
+        # Company Number Dropdown
         company_frame = ttk.LabelFrame(
-            self.column_selection_frame, text="Select Company Number Column", padding=5
+            container, text="Select Company Number Column", padding=5
         )
-        # CHANGED: Use fill='both' and expand=True for a stable column layout
-        company_frame.pack(side=tk.LEFT, fill="both", expand=True, padx=5, pady=5)
-
-        charity_frame = ttk.LabelFrame(
-            self.column_selection_frame, text="Select Charity Number Column", padding=5
-        )
-        # CHANGED: Use fill='both' and expand=True for a stable column layout
-        charity_frame.pack(side=tk.LEFT, fill="both", expand=True, padx=5, pady=5)
-
-        none_option_value = "___NONE___"
-        self.company_num_col_var.set(none_option_value)
-        self.charity_num_col_var.set(none_option_value)
-
-        ttk.Radiobutton(
+        company_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
+        
+        c_combo = ttk.Combobox(
             company_frame,
-            text="None",
-            variable=self.company_num_col_var,
-            value=none_option_value,
-        ).pack(anchor="w")
-        ttk.Radiobutton(
+            textvariable=self.company_num_col_var,
+            values=options,
+            state="readonly"
+        )
+        c_combo.pack(fill="x", pady=5)
+        c_combo.set("___NONE___")
+
+        # Charity Number Dropdown
+        charity_frame = ttk.LabelFrame(
+            container, text="Select Charity Number Column", padding=5
+        )
+        charity_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
+        
+        ch_combo = ttk.Combobox(
             charity_frame,
-            text="None",
-            variable=self.charity_num_col_var,
-            value=none_option_value,
-        ).pack(anchor="w")
+            textvariable=self.charity_num_col_var,
+            values=options,
+            state="readonly"
+        )
+        ch_combo.pack(fill="x", pady=5)
+        ch_combo.set("___NONE___")
 
-        for header in self.original_headers:
-            ttk.Radiobutton(
-                company_frame,
-                text=header,
-                variable=self.company_num_col_var,
-                value=header,
-            ).pack(anchor="w")
-            ttk.Radiobutton(
-                charity_frame,
-                text=header,
-                variable=self.charity_num_col_var,
-                value=header,
-            ).pack(anchor="w")
-
+        # Confirm Button
         ttk.Button(
             self.column_selection_frame,
             text="Confirm Columns",
             command=self._confirm_column,
         ).pack(side=tk.BOTTOM, pady=10)
 
-        # FINAL FIX: Schedule the scroll region update to run after the UI has settled.
         self.app.after(1, self._update_scrollregion)
-
-        # These lines force the scrollable area to update its size
-        self.app.update_idletasks()
-        self.scroller.canvas.configure(scrollregion=self.scroller.canvas.bbox("all"))
 
     def _confirm_column(self):
         self.company_num_col = self.company_num_col_var.get()

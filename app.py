@@ -51,7 +51,7 @@ class App(tk.Tk):
         """Initialize the application."""
         super().__init__()
         
-        self.title("Data Investigation Multi-Tool")
+        self.title("Multi-Tool")
         self.geometry("750x875")
         
         # Initialize ttkbootstrap style
@@ -97,7 +97,46 @@ class App(tk.Tk):
         # Load API keys and show appropriate screen
         self.load_api_keys()
 
-
+    def _create_menu_group(self, parent, title, modules):
+        """
+        Helper to create a visually distinct group of menu buttons.
+        
+        Args:
+            parent: The parent widget (Frame).
+            title: The title of the group (e.g., "Discovery").
+            modules: List of tuples (Button Text, Command, State, Description, Bootstyle).
+        """
+        # Create a labeled frame for the category
+        frame = ttk.LabelFrame(parent, text=f" {title} ", padding=15, bootstyle="default")
+        frame.pack(fill=tk.X, pady=10, anchor="n")
+        
+        for name, command, state, desc, style in modules:
+            # Create a container for each row (Button + Description)
+            row = ttk.Frame(frame)
+            row.pack(fill=tk.X, pady=6)
+            
+            # Action Button
+            btn = ttk.Button(
+                row, 
+                text=name, 
+                command=command, 
+                state=state, 
+                bootstyle=style, 
+                width=22  # Fixed width for alignment
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 12))
+            
+            # Description Label (Next to the button)
+            desc_lbl = ttk.Label(
+                row, 
+                text=desc, 
+                font=("Segoe UI", 9), 
+                foreground="gray"
+            )
+            desc_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            
+            # Add tooltip for good measure
+            Tooltip(btn, desc)
     
     def _create_menu_bar(self) -> None:
         """Create the application menu bar."""
@@ -320,7 +359,7 @@ class App(tk.Tk):
         
         ttk.Label(
             frame,
-            text="Welcome to the Data Investigation Multi-Tool",
+            text="Welcome to Multi-Tool",
             font=("Helvetica", 16, "bold")
         ).pack(pady=(0, 20))
         
@@ -377,25 +416,110 @@ class App(tk.Tk):
         ).pack()
     
     def show_main_menu(self) -> None:
-        """Display the main menu."""
+        """Display the main menu with a categorized dashboard layout (Collision Fixed)."""
         self.unbind("<Return>")
         self.clear_container()
-        self.title("Data Investigation Multi-Tool")
-        self.geometry("700x600")
+        self.title("Multi-Tool - Dashboard")
+        self.geometry("1100x600")  # Height reduced slightly as requested
 
-        # API Status Panel in top-right corner
-        self.status_panel = ttk.LabelFrame(
-            self.container,
-            text="API Status",
-            padding=5
-        )
-        self.status_panel.place(relx=1.0, rely=0, anchor='ne', x=-10, y=5)
+        # --- 1. Top Bar Container (Header Only) ---
+        top_bar = ttk.Frame(self.container)
+        top_bar.pack(fill=tk.X, padx=20, pady=(15, 10), side=tk.TOP)
+
+        # Header Section
+        header_frame = ttk.Frame(top_bar)
+        header_frame.pack(side=tk.LEFT, fill=tk.Y)
         
-        # If we have cached status, show it immediately
+        ttk.Label(
+            header_frame, 
+            text="Module Suite", 
+            font=("Helvetica", 20, "bold"),
+            bootstyle="primary"
+        ).pack(anchor="w")
+        
+        ttk.Label(
+            header_frame, 
+            text="Select a module below to begin your analysis.", 
+            font=("Helvetica", 11),
+            foreground="gray"
+        ).pack(anchor="w")
+
+        # --- 2. Main Dashboard Area ---
+        dashboard_frame = ttk.Frame(self.container)
+        dashboard_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
+
+        # Define Button States
+        ch_enabled = tk.NORMAL if self.api_key else tk.DISABLED
+        unified_enabled = tk.NORMAL if self.api_key or self.charity_api_key else tk.DISABLED
+        
+        # Create Columns
+        left_col = ttk.Frame(dashboard_frame)
+        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        right_col = ttk.Frame(dashboard_frame)
+        right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
+
+        # --- GROUP 1: Search & Discovery (Left Column) ---
+        self._create_menu_group(
+            parent=left_col, 
+            title="Search & Discovery", 
+            modules=[
+                ("Bulk Entity Search", self.show_unified_search, unified_enabled, 
+                 "Search companies & charities via mixed ID file", "primary"),
+                ("Contracts Finder", self.show_contracts_finder, ch_enabled, 
+                 "Find government contracts & enrich with Companies House data", "primary"),
+                ("Grants Search", self.show_grants_investigation, tk.NORMAL, 
+                 "Analyse funding data from 360Giving", "primary"),
+            ]
+        )
+
+        # --- GROUP 2: Data Utilities (Left Column - Bottom) ---
+        self._create_menu_group(
+            parent=left_col,
+            title="Data Utilities",
+            modules=[
+                ("Data Match", self.show_data_match_investigation, tk.NORMAL, 
+                 "Fuzzy match two independent datasets", "secondary"),
+                ("Network Analytics", self.show_network_graph_creator, tk.NORMAL, 
+                 "Build and visualise relationship graphs", "secondary"),
+            ]
+        )
+
+        # --- GROUP 3: Deep Dive & Investigation (Right Column) ---
+        self._create_menu_group(
+            parent=right_col, 
+            title="Deep Dive Investigation", 
+            modules=[
+                ("Enhanced Due Diligence", self.show_enhanced_dd, ch_enabled, 
+                 "Generate full financial & risk reports", "success"),
+                ("UBO Tracer", self.show_ubo_investigation, ch_enabled, 
+                 "Trace parent companies and ownership structures", "success"),
+                ("Director Search", self.show_director_investigation, ch_enabled, 
+                 "Locate all appointments for a specific director", "success"),
+            ]
+        )
+        
+        # --- 3. Footer Area (User Guide Left, Status Right) ---
+        footer_frame = ttk.Frame(self.container)
+        footer_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(0, 15))
+
+        # User Guide (Left)
+        footer_btn = ttk.Button(
+            footer_frame,
+            text="📖 Open User Guide",
+            command=self.show_main_guide,
+            bootstyle="link",
+        )
+        footer_btn.pack(side=tk.LEFT, anchor="sw", pady=(5, 0))
+
+        # API Status Panel (Right) - Now packed into the footer frame
+        self.status_panel = ttk.LabelFrame(footer_frame, text="API Status", padding=5)
+        self.status_panel.pack(side=tk.RIGHT, anchor="se")
+        
+        # Load Status Logic (Same as before)
         if self.api_statuses:
             self._display_api_status(self.status_panel)
         else:
-            # First time - show "Checking..." and run check
             checking_label = ttk.Label(
                 self.status_panel,
                 text="Checking APIs...",
@@ -406,56 +530,12 @@ class App(tk.Tk):
             
             def run_check():
                 self.check_api_status()
-                # Only update UI if widgets still exist (user may have navigated away)
                 if checking_label.winfo_exists():
                     self.after(0, checking_label.destroy)
                 if self.status_panel.winfo_exists():
                     self.after(0, lambda: self._display_api_status(self.status_panel))
             
             threading.Thread(target=run_check, daemon=True).start()
-        
-        frame = ttk.Frame(self.container)
-        frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
-        
-        ttk.Label(
-            frame,
-            text="Select a Function",
-            font=("Helvetica", 16, "bold")
-        ).pack(pady=(0, 20))
-        
-        # Determine button states based on available API keys
-        ch_enabled = tk.NORMAL if self.api_key else tk.DISABLED
-        unified_enabled = tk.NORMAL if self.api_key or self.charity_api_key else tk.DISABLED
-        
-        # Create menu buttons
-        buttons = [
-            ("Bulk Company / Charity Search", self.show_unified_search, unified_enabled,
-             "Search for companies and/or charities from a single file with mixed identifiers."),
-            ("Grants Search", self.show_grants_investigation, tk.NORMAL,
-             "Return data on grants for a list of companies and/or charities from GrantNav 360Giving."),
-            ("Director Search", self.show_director_investigation, ch_enabled,
-             "Obtain all company details for a single director."),
-            ("Ultimate Beneficial Ownership Tracer", self.show_ubo_investigation, ch_enabled,
-             "Trace all parent companies and PSCs."),
-            ("Network Analytics", self.show_network_graph_creator, tk.NORMAL,
-             "Upload exported graph data files to build a combined network graph for analysis."),
-            ("Data Match", self.show_data_match_investigation, tk.NORMAL,
-             "Match two datasets using exact or fuzzy matching."),
-            ("Enhanced Due Diligence", self.show_enhanced_dd, ch_enabled,
-             "Comprehensive due diligence report combining Companies House data with financial analysis."),
-        ]
-        
-        for text, command, state, tooltip_text in buttons:
-            btn = ttk.Button(frame, text=text, command=command, state=state)
-            btn.pack(fill=tk.X, pady=5, ipady=10)
-            Tooltip(btn, tooltip_text)
-        
-        ttk.Button(
-            frame,
-            text="User Guide",
-            command=self.show_main_guide,
-            bootstyle="info-outline",
-        ).pack(fill=tk.X, pady=5, ipady=10)
     
     def show_main_guide(self) -> None:
         """Show the main help window."""
@@ -486,7 +566,8 @@ class App(tk.Tk):
         statuses = {
             'companies_house': 'unknown',
             'charity_commission': 'unknown',
-            'grantnav': 'unknown'
+            'grantnav': 'unknown',
+            'contracts_finder': 'unknown'  # <--- Added new key
         }
         
         # Test Companies House (only if key exists)
@@ -529,6 +610,16 @@ class App(tk.Tk):
             statuses['grantnav'] = 'ok' if response.status_code == 200 else 'error'
         except:
             statuses['grantnav'] = 'error'
+
+        # --- NEW: Test Contracts Finder (no key required) ---
+        try:
+            # Import here to avoid top-level dependency
+            from .api.contracts_finder import check_api_status as check_cf
+            is_online = check_cf()
+            statuses['contracts_finder'] = 'ok' if is_online else 'error'
+        except Exception as e:
+            # log_message(f"Contracts Finder check failed: {e}") 
+            statuses['contracts_finder'] = 'error'
         
         # Cache results
         self.api_statuses = statuses
@@ -646,6 +737,13 @@ class App(tk.Tk):
             self.api_statuses['grantnav']
         )
         
+        # --- NEW: Add Contracts Finder Indicator ---
+        self._create_status_indicator(
+            status_panel, 
+            "Contracts Finder", 
+            self.api_statuses.get('contracts_finder', 'unknown')
+        )
+        
         # Add timestamp and refresh button
         footer_frame = ttk.Frame(status_panel)
         footer_frame.pack(fill=tk.X, pady=(5, 0))
@@ -731,4 +829,16 @@ class App(tk.Tk):
             self.api_key,
             self.charity_api_key,
             self.ch_token_bucket
+        )
+
+    def show_contracts_finder(self):
+        """Show the Contracts Finder module."""
+        from .modules.contracts_finder import ContractsFinderInvestigation
+        self.geometry("800x600")
+        self.clear_container()
+        ContractsFinderInvestigation(
+            self,
+            self.show_main_menu,
+            self.ch_token_bucket,
+            self.api_key
         )

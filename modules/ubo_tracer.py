@@ -153,38 +153,75 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             self.file_status_label.config(text="Error loading file.", foreground="red")
 
     def _display_column_selection_ui(self):
+        """Display dropdown menus for column selection."""
         for widget in self.column_selection_frame.winfo_children():
             widget.destroy()
+
+        self.number_col_var = tk.StringVar()
+        self.name_col_var = tk.StringVar()
+
+        # Container
+        container = ttk.Frame(self.column_selection_frame)
+        container.pack(fill="x", expand=True, pady=5, anchor="n")
+
+        # Company Number (Required)
         number_frame = ttk.LabelFrame(
-            self.column_selection_frame,
-            text="Select Company Number Column (Required)",
-            padding=5,
+            container, text="Select Company Number Column (Required)", padding=5
         )
-        number_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
+        number_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
+        
+        headers = getattr(self, "original_headers", [])
+        
+        num_combo = ttk.Combobox(
+            number_frame,
+            textvariable=self.number_col_var,
+            values=headers,
+            state="readonly"
+        )
+        num_combo.pack(fill="x", pady=5)
+        if headers:
+            num_combo.current(0)
+
+        # Company Name (Optional)
         name_frame = ttk.LabelFrame(
-            self.column_selection_frame,
-            text="Select Company Name Column (Optional)",
-            padding=5,
+            container, text="Select Company Name Column (Optional)", padding=5
         )
-        name_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
-        self.number_col_var, self.name_col_var = tk.StringVar(value=""), tk.StringVar(
-            value="___NONE___"
+        name_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
+        
+        name_options = ["___NONE___"] + headers
+        name_combo = ttk.Combobox(
+            name_frame,
+            textvariable=self.name_col_var,
+            values=name_options,
+            state="readonly"
         )
-        ttk.Radiobutton(
-            name_frame, text="None", variable=self.name_col_var, value="___NONE___"
-        ).pack(anchor="w")
-        for header in self.original_headers:
-            ttk.Radiobutton(
-                number_frame, text=header, variable=self.number_col_var, value=header
-            ).pack(anchor="w")
-            ttk.Radiobutton(
-                name_frame, text=header, variable=self.name_col_var, value=header
-            ).pack(anchor="w")
+        name_combo.pack(fill="x", pady=5)
+        name_combo.set("___NONE___")
+
+        # Confirm Button
         ttk.Button(
             self.column_selection_frame,
             text="Confirm Columns",
             command=self._confirm_columns,
-        ).pack(side=tk.LEFT, padx=12, expand=True)
+        ).pack(side=tk.BOTTOM, pady=10)
+        
+        # Force geometry calculation then update scroll region
+        self.app.after(50, self._force_scroll_update)
+    
+    def _force_scroll_update(self):
+        """Force the scrollable frame to recalculate its geometry."""
+        # Force full geometry calculation
+        self.scroller.update_idletasks()
+        # Update scroll region
+        self.scroller.canvas.configure(scrollregion=self.scroller.canvas.bbox("all"))
+        # Get actual canvas width and set frame to match
+        canvas_width = self.scroller.canvas.winfo_width()
+        if canvas_width > 1:
+            self.scroller.canvas.itemconfig(self.scroller.frame_id, width=canvas_width)
+        # Recalculate required height and update
+        required_height = self.scroller.scrollable_frame.winfo_reqheight()
+        visible_height = self.scroller.canvas.winfo_height()
+        self.scroller.canvas.itemconfig(self.scroller.frame_id, height=max(required_height, visible_height))
 
     def _confirm_columns(self):
         self.number_col = self.number_col_var.get()

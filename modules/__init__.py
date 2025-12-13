@@ -10,6 +10,8 @@ from .grants_search import GrantsSearch
 from .data_match import DataMatch
 from ..utils.financial_analyzer import iXBRLParser, FinancialAnalyzer
 from .enhanced_dd import EnhancedDueDiligence
+from .contracts_finder import ContractsFinderInvestigation
+
 __all__ = [
     'InvestigationModuleBase',
     'DirectorSearch',
@@ -20,6 +22,7 @@ __all__ = [
     'DataMatch',
     'iXBRLParser',
     'FinancialAnalyzer',
-    'EnhancedDueDiligence'
+    'EnhancedDueDiligence',
+    'ContractsFinderInvestigations'
     
 ]

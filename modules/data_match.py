@@ -182,37 +182,74 @@ class DataMatch(InvestigationModuleBase):
             self._display_column_selection_ui()
 
     def _display_column_selection_ui(self):
+        """Display dropdown menus for matching columns."""
         for widget in self.column_selection_frame.winfo_children():
             widget.destroy()
 
-        self.primary_key_var = tk.StringVar(value="___NONE___")
-        self.match_key_var = tk.StringVar(value="___NONE___")
+        self.primary_key_var = tk.StringVar()
+        self.match_key_var = tk.StringVar()
 
-        # Primary File Columns
+        # Container
+        container = ttk.Frame(self.column_selection_frame)
+        container.pack(fill="x", expand=True, pady=5, anchor="n")
+
+        # Primary File Column
         p_frame = ttk.LabelFrame(
-            self.column_selection_frame, text="Primary File Column", padding=5
+            container, text="Primary File Column", padding=5
         )
-        p_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
-        for h in self.primary_headers:
-            ttk.Radiobutton(
-                p_frame, text=h, variable=self.primary_key_var, value=h
-            ).pack(anchor="w")
+        p_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
+        
+        p_headers = getattr(self, "primary_headers", [])
+        p_combo = ttk.Combobox(
+            p_frame,
+            textvariable=self.primary_key_var,
+            values=p_headers,
+            state="readonly"
+        )
+        p_combo.pack(fill="x", pady=5)
+        if p_headers:
+            p_combo.current(0)
 
-        # Matching File Columns
+        # Matching File Column
         m_frame = ttk.LabelFrame(
-            self.column_selection_frame, text="Matching File Column", padding=5
+            container, text="Matching File Column", padding=5
         )
-        m_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
-        for h in self.matching_headers:
-            ttk.Radiobutton(m_frame, text=h, variable=self.match_key_var, value=h).pack(
-                anchor="w"
-            )
+        m_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
+        
+        m_headers = getattr(self, "matching_headers", [])
+        m_combo = ttk.Combobox(
+            m_frame,
+            textvariable=self.match_key_var,
+            values=m_headers,
+            state="readonly"
+        )
+        m_combo.pack(fill="x", pady=5)
+        if m_headers:
+            m_combo.current(0)
 
+        # Confirm Button
         ttk.Button(
             self.column_selection_frame,
             text="Confirm Columns",
             command=self._confirm_columns,
-        ).pack(side=tk.LEFT, padx=20, expand=True)
+        ).pack(side=tk.BOTTOM, pady=10)
+
+        self.app.after(50, self._force_scroll_update)
+
+    def _force_scroll_update(self):
+        """Force the scrollable frame to recalculate its geometry."""
+        # Force full geometry calculation
+        self.scroller.update_idletasks()
+        # Update scroll region
+        self.scroller.canvas.configure(scrollregion=self.scroller.canvas.bbox("all"))
+        # Get actual canvas width and set frame to match
+        canvas_width = self.scroller.canvas.winfo_width()
+        if canvas_width > 1:
+            self.scroller.canvas.itemconfig(self.scroller.frame_id, width=canvas_width)
+        # Recalculate required height and update
+        required_height = self.scroller.scrollable_frame.winfo_reqheight()
+        visible_height = self.scroller.canvas.winfo_height()
+        self.scroller.canvas.itemconfig(self.scroller.frame_id, height=max(required_height, visible_height))
 
     def _confirm_columns(self):
         p_key_col = self.primary_key_var.get()

@@ -15,6 +15,7 @@ dist/
 
 # Environment
 venv/
+test_env/
 .env
 
 # OS files
@@ -23,3 +24,8 @@ Thumbs.db
 
 # PyInstaller
 *.spec
+
+# te
+
+# Git
+.git/

@@ -140,4 +140,30 @@ This is a combined company and charity search tool. It allows you to check a lis
 -   **match_status:** Confirms if a match was found or not.
 -   The file will contain columns for both company and charity data. For any given row, the columns for the database that was not matched will be blank.
 """,
+    "contracts_finder": """
+<h2>Contracts Finder - Conflict of Interest Screening</h2>
+
+<p>This module helps identify potential conflicts of interest in public procurement 
+by matching contract supplier personnel against your organisation's staff directory.</p>
+
+<h3>Workflow:</h3>
+<ol>
+    <li><b>Search Contracts</b> - Enter your organisation name and date range to find awarded contracts</li>
+    <li><b>Enrich Suppliers</b> - Fetch director and PSC information from Companies House</li>
+    <li><b>Load Staff Directory</b> - Upload your staff CSV with name and optionally address columns</li>
+    <li><b>Run Conflict Detection</b> - Match supplier personnel against staff using fuzzy matching</li>
+    <li><b>Export Results</b> - Generate reports for further investigation</li>
+</ol>
+
+<h3>Standalone Use:</h3>
+<p>You can also use this module just to extract contract and supplier data without 
+running conflict detection - simply search and export after Step 1 or 2.</p>
+
+<h3>Tips:</h3>
+<ul>
+    <li>Use the exact buyer name as it appears on Contracts Finder</li>
+    <li>Lower the name match threshold (e.g., 75) to catch more name variations</li>
+    <li>Address matching uses postcodes only - ensure your staff data includes postcodes</li>
+</ul>
+"""
 }

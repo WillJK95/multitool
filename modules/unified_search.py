@@ -369,75 +369,75 @@ class CompanyCharitySearch(InvestigationModuleBase):
             self.file_status_label.config(text="Error loading file.", foreground="red")
 
     def _display_column_selection_ui(self):
+        """Display dropdown menus for column selection."""
+        # Clear existing widgets
         for widget in self.column_selection_frame.winfo_children():
             widget.destroy()
 
-        self.company_num_col_var = tk.StringVar(value="___NONE___")
-        self.charity_num_col_var = tk.StringVar(value="___NONE___")
-        self.name_col_var = tk.StringVar(value="___NONE___")
+        self.company_num_col_var = tk.StringVar()
+        self.charity_num_col_var = tk.StringVar()
+        self.name_col_var = tk.StringVar()
+
+        # Create options list with a "None" option at the start
+        options = ["___NONE___"] + self.original_headers
 
         # Container to hold the three columns side-by-side
         columns_container = ttk.Frame(self.column_selection_frame)
         columns_container.pack(fill="x", expand=True, pady=5, anchor="n")
 
         # --- Column 1: Company Number ---
-        self.cnum_frame = ttk.LabelFrame(
-            columns_container, text="Company Number Column", padding=5
+        cnum_frame = ttk.LabelFrame(
+            columns_container, text="Company Number", padding=5
         )
-        self.cnum_frame.pack(side=tk.LEFT, fill="y", padx=5, pady=5)
-        ttk.Radiobutton(
-            self.cnum_frame,
-            text="None",
-            variable=self.company_num_col_var,
-            value="___NONE___",
-        ).pack(anchor="w")
-        for header in self.original_headers:
-            ttk.Radiobutton(
-                self.cnum_frame,
-                text=header,
-                variable=self.company_num_col_var,
-                value=header,
-            ).pack(anchor="w")
+        cnum_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
+        
+        cnum_combo = ttk.Combobox(
+            cnum_frame, 
+            textvariable=self.company_num_col_var, 
+            values=options,
+            state="readonly"
+        )
+        cnum_combo.pack(fill="x", pady=5)
+        cnum_combo.set("___NONE___")  # Default value
 
         # --- Column 2: Charity Number ---
-        self.ccnum_frame = ttk.LabelFrame(
-            columns_container, text="Charity Number Column", padding=5
+        ccnum_frame = ttk.LabelFrame(
+            columns_container, text="Charity Number", padding=5
         )
-        self.ccnum_frame.pack(side=tk.LEFT, fill="y", padx=5, pady=5)
-        ttk.Radiobutton(
-            self.ccnum_frame,
-            text="None",
-            variable=self.charity_num_col_var,
-            value="___NONE___",
-        ).pack(anchor="w")
-        for header in self.original_headers:
-            ttk.Radiobutton(
-                self.ccnum_frame,
-                text=header,
-                variable=self.charity_num_col_var,
-                value=header,
-            ).pack(anchor="w")
+        ccnum_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
+
+        ccnum_combo = ttk.Combobox(
+            ccnum_frame, 
+            textvariable=self.charity_num_col_var, 
+            values=options,
+            state="readonly"
+        )
+        ccnum_combo.pack(fill="x", pady=5)
+        ccnum_combo.set("___NONE___")
 
         # --- Column 3: Name (Fuzzy) ---
-        self.name_frame = ttk.LabelFrame(
-            columns_container, text="Name Column (for Fuzzy)", padding=5
+        name_frame = ttk.LabelFrame(
+            columns_container, text="Name (for Fuzzy)", padding=5
         )
-        self.name_frame.pack(side=tk.LEFT, fill="y", padx=5, pady=5)
-        ttk.Radiobutton(
-            self.name_frame, text="None", variable=self.name_col_var, value="___NONE___"
-        ).pack(anchor="w")
-        for header in self.original_headers:
-            ttk.Radiobutton(
-                self.name_frame, text=header, variable=self.name_col_var, value=header
-            ).pack(anchor="w")
+        name_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
 
-        # --- Confirm Button, packed to the BOTTOM of the main frame ---
+        name_combo = ttk.Combobox(
+            name_frame, 
+            textvariable=self.name_col_var, 
+            values=options,
+            state="readonly"
+        )
+        name_combo.pack(fill="x", pady=5)
+        name_combo.set("___NONE___")
+
+        # --- Confirm Button ---
         ttk.Button(
             self.column_selection_frame,
             text="Confirm Columns",
             command=self._confirm_columns,
         ).pack(side=tk.BOTTOM, pady=10)
 
+        # Force UI update
         self.app.after(1, self._update_scrollregion)
 
     def _confirm_columns(self):
