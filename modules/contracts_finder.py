@@ -268,6 +268,36 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
             args=(buyer_name, from_date, to_date),
             daemon=True
         ).start()
+
+    def _get_canonical_name_key(self, name: str, dob_obj: dict = None) -> str:
+        """
+        Generate a canonical key for a person based on name and DOB.
+        Ported from UBO module to ensure graph compatibility.
+        """
+        if not name:
+            return ""
+        cleaned_name = name.lower()
+        titles = ["mr", "mrs", "ms", "miss", "dr", "prof", "sir", "dame", "rev"]
+        for title in titles:
+            cleaned_name = re.sub(
+                r"\b" + re.escape(title) + r"\b\.?", "", cleaned_name
+            ).strip()
+
+        if "," in cleaned_name:
+            parts = cleaned_name.split(",", 1)
+            cleaned_name = f"{parts[1].strip()} {parts[0].strip()}"
+
+        cleaned_name = re.sub(r"[^a-z0-9\s]", "", cleaned_name)
+        tokens = cleaned_name.split()
+        if not tokens:
+            return ""
+
+        name_key = tokens[0] + tokens[-1] if len(tokens) > 1 else tokens[0]
+
+        if dob_obj and "year" in dob_obj and "month" in dob_obj:
+            return f"{name_key}-{dob_obj['year']}-{dob_obj['month']:02d}"
+        else:
+            return name_key
     
     def _contract_search_thread(self, buyer_name: str, from_date: str, to_date: str):
         """Background thread for contract searching."""
@@ -427,6 +457,7 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
                 
                 # Clean company number
                 company_number = clean_company_number(company_number)
+                supplier["company_number"] = company_number # Update stored number to be clean
                 
                 # Fetch company profile
                 profile, error = ch_get_data(
@@ -455,7 +486,8 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
                         addr.get("postal_code"),
                     ]))
                     
-                    # Apply the cleaning function (matches UBO module)
+                    # Store RAW for display labels and CLEAN for IDs/matching
+                    supplier["ch_registered_address_raw"] = raw_address
                     supplier["ch_registered_address"] = clean_address_string(raw_address)
                 
                 # Fetch officers
@@ -778,7 +810,10 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
                         continue
                     
                     # --- Source Node (The Company) ---
-                    company_number = supplier.get("company_number", "UNKNOWN")
+                    # Ensure company number is strictly cleaned (UBO style)
+                    raw_cnum = supplier.get("company_number", "UNKNOWN")
+                    company_number = clean_company_number(raw_cnum)
+                    
                     company_name = supplier.get("ch_company_name") or supplier.get("name")
                     
                     source_id = company_number
@@ -786,24 +821,34 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
                     source_type = "company"
 
                     # --- 1. Address Edge ---
-                    # Create a node for the address and link the company to it
-                    address = supplier.get("ch_registered_address")
-                    if address:
+                    # Use stored cleaned address for ID, and raw for Label (if available)
+                    address_clean = supplier.get("ch_registered_address")
+                    address_raw = supplier.get("ch_registered_address_raw", address_clean)
+
+                    if address_clean:
+                        # Re-clean just to be absolutely safe/idempotent
+                        final_address_id = clean_address_string(address_clean)
+                        
                         writer.writerow([
-                            source_id,      # Source: Company Number
-                            source_label,   # Source: Company Name
-                            source_type,    # Source Type: company
-                            address,        # Target ID: The address string itself
-                            address,        # Target Label: The address string
-                            "address",      # Target Type: address
-                            "registered_at" # Relationship
+                            source_id,          # Source: Company Number (Clean)
+                            source_label,       # Source: Company Name
+                            source_type,        # Source Type: company
+                            final_address_id,   # Target ID: Cleaned/Lowercase Address
+                            address_raw,        # Target Label: Pretty Address
+                            "address",          # Target Type: address
+                            "registered_at"     # Relationship
                         ])
                         count += 1
 
                     # --- 2. Officer Edges ---
                     for officer in supplier.get("ch_officers", []):
                         officer_name = officer.get("name", "Unknown")
-                        target_id = f"person_{officer_name.replace(' ', '').lower()}"
+                        dob = officer.get("date_of_birth")
+
+                        # Use canonical key (Name + DOB) for ID to match UBO
+                        target_id = self._get_canonical_name_key(officer_name, dob)
+                        
+                        # Use Original Name for Label (UBO Style)
                         target_label = officer_name
                         target_type = "person"
                         relationship = officer.get("officer_role", "officer")
@@ -822,7 +867,10 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
                     # --- 3. PSC Edges ---
                     for psc in supplier.get("ch_pscs", []):
                         psc_name = psc.get("name", "Unknown")
-                        target_id = f"person_{psc_name.replace(' ', '').lower()}"
+                        dob = psc.get("date_of_birth")
+
+                        # Use canonical key
+                        target_id = self._get_canonical_name_key(psc_name, dob)
                         target_label = psc_name
                         target_type = "person"
                         relationship = "psc"
