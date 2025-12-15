@@ -11,6 +11,7 @@ import datetime
 import webbrowser
 import difflib 
 import tkinter as tk
+from tkinter import font as tkfont
 from typing import List, Dict, Optional, Tuple, Set
 from tkinter import ttk, filedialog, messagebox
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -36,6 +37,161 @@ from ..ui.tooltip import Tooltip
 
 from .base import InvestigationModuleBase
 
+class CollapsibleSection(ttk.Frame):
+    """A collapsible frame with a clickable header."""
+    
+    def __init__(self, parent, title, expanded=False, enabled=True):
+        super().__init__(parent)
+        
+        self.title = title
+        self._expanded = tk.BooleanVar(value=expanded)
+        self._enabled = enabled
+        self._status_text = ""
+        self._warning_text = ""
+        self._on_toggle_callback = None
+        
+        # Header frame
+        self.header_frame = ttk.Frame(self)
+        self.header_frame.pack(fill=tk.X)
+        
+        # Toggle button
+        self.toggle_btn = ttk.Label(
+            self.header_frame,
+            text="▶" if not expanded else "▼",
+            width=2,
+            cursor="hand2"
+        )
+        self.toggle_btn.pack(side=tk.LEFT, padx=(5, 5))
+        
+        # Title label
+        self.title_label = ttk.Label(
+            self.header_frame,
+            text=title,
+            font=("", 10, "bold"),
+            cursor="hand2"
+        )
+        self.title_label.pack(side=tk.LEFT)
+        
+        # Status label (shows node/edge counts, etc.)
+        self.status_label = ttk.Label(
+            self.header_frame,
+            text="",
+            foreground="gray"
+        )
+        self.status_label.pack(side=tk.LEFT, padx=(10, 0))
+        
+        # Warning label (shows "Files changed" etc.)
+        self.warning_label = ttk.Label(
+            self.header_frame,
+            text="",
+            foreground="orange"
+        )
+        self.warning_label.pack(side=tk.LEFT, padx=(10, 0))
+        
+        # Rebuild button (hidden by default)
+        self.rebuild_btn = ttk.Button(
+            self.header_frame,
+            text="Rebuild",
+            command=self._on_rebuild_click,
+            width=8
+        )
+        self._rebuild_callback = None
+        
+        # Content frame
+        self.content_frame = ttk.Frame(self)
+        if expanded:
+            self.content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(5, 10))
+        
+        # Separator
+        self.separator = ttk.Separator(self, orient="horizontal")
+        self.separator.pack(fill=tk.X, pady=(5, 0))
+        
+        # Bind click events
+        self.toggle_btn.bind("<Button-1>", self._toggle)
+        self.title_label.bind("<Button-1>", self._toggle)
+        
+        # Set initial enabled state
+        self.set_enabled(enabled)
+    
+    def _toggle(self, event=None):
+        if not self._enabled:
+            return
+        
+        if self._expanded.get():
+            self.collapse()
+        else:
+            self.expand()
+        if self._on_toggle_callback:
+            self._on_toggle_callback()
+    
+    def expand(self):
+        if not self._enabled:
+            return
+        self._expanded.set(True)
+        self.toggle_btn.config(text="▼")
+        self.content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(5, 10))
+        
+        # Fire callback if set
+        if self._on_expand_callback:
+            self._on_expand_callback()
+    
+    def collapse(self):
+        self._expanded.set(False)
+        self.toggle_btn.config(text="▶")
+        self.content_frame.pack_forget()
+    
+    def is_expanded(self):
+        return self._expanded.get()
+    
+    def set_enabled(self, enabled):
+        self._enabled = enabled
+        if enabled:
+            self.title_label.config(foreground="")
+            self.toggle_btn.config(foreground="")
+            self.toggle_btn.config(cursor="hand2")
+            self.title_label.config(cursor="hand2")
+        else:
+            self.title_label.config(foreground="gray")
+            self.toggle_btn.config(foreground="gray")
+            self.toggle_btn.config(cursor="")
+            self.title_label.config(cursor="")
+            if self._expanded.get():
+                self.collapse()
+    
+    def set_status(self, text):
+        """Set the status text shown after the title."""
+        self._status_text = text
+        self.status_label.config(text=f"— {text}" if text else "")
+    
+    def set_warning(self, text, show_rebuild=False, rebuild_callback=None):
+        """Set warning text and optionally show rebuild button."""
+        self._warning_text = text
+        self.warning_label.config(text=f"⚠️ {text}" if text else "")
+        
+        if show_rebuild and rebuild_callback:
+            self._rebuild_callback = rebuild_callback
+            self.rebuild_btn.pack(side=tk.LEFT, padx=(10, 0))
+        else:
+            self.rebuild_btn.pack_forget()
+    
+    def clear_warning(self):
+        self._warning_text = ""
+        self.warning_label.config(text="")
+        self.rebuild_btn.pack_forget()
+    
+    def _on_rebuild_click(self):
+        if self._rebuild_callback:
+            self._rebuild_callback()
+    
+    def set_on_expand(self, callback):
+        """Set a callback to fire when the section is expanded."""
+        self._on_expand_callback = callback
+
+    def set_on_toggle(self, callback):
+        """Set a callback to fire when the section is toggled (expanded OR collapsed)."""
+        self._on_toggle_callback = callback
+
+
 class NetworkAnalytics(InvestigationModuleBase):
     def __init__(
         self, parent_app, back_callback, ch_token_bucket, api_key=None, help_key=None
@@ -45,305 +201,90 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.source_files = []
         self.full_graph = nx.DiGraph()
         self.all_node_labels = []
-        self.cohort_ids = set()
-        self.nodes_to_remove = set()
+        
+        # --- Exclusion tracking (soft exclusions) ---
+        self.highly_connected_exclusions = set()  # Node IDs excluded as highly connected
+        self.peripheral_exclusions = set()        # Node IDs excluded as peripheral
+        self.manual_exclusions = set()            # Node IDs manually excluded
+        
+        # --- State tracking ---
+        self.graph_built = False
+        self.files_changed_since_build = False
+        self.analyse_entity_list = None           # Entity list loaded in Analyse section
+        self.analyse_entity_list_path = None      # Path for display
+        self.highlight_entity_list = None         # Entity list for visualisation
+        
+        # --- Legacy cohort support (for cohort A/B comparison) ---
         self.cohort_a_ids = set()
         self.cohort_b_ids = set()
         
-        # Converter state variables
-        self.converter_source_data = []  
+        # --- Converter state variables ---
+        self.converter_source_data = []
         self.converter_headers = []
-
+        
         # --- Tabbed Interface Setup ---
         self.notebook = ttk.Notebook(self.content_frame)
         self.notebook.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        # Tab 1: Network Analytics (Original Functionality)
+        # Tab 1: Network Analytics
         self.analytics_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.analytics_tab, text="Network Analytics")
         self._setup_analytics_tab()
 
-        # Tab 2: Data Converter (New Functionality)
+        # Tab 2: Data Converter
         self.converter_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.converter_tab, text="Data Converter")
         self._setup_converter_tab()
-
+        
     def _setup_analytics_tab(self):
-        """Builds the network analytics UI."""
+        """Builds the network analytics UI with collapsible sections."""
         container = self.analytics_tab
-
-        # --- Step 1: Seed Network ---
-        seed_frame = ttk.LabelFrame(
-            container,
-            text="Step 1: Seed Network with a Company (Optional)",
-            padding=10,
-        )
-        seed_frame.pack(fill=tk.X, pady=5, padx=10)
         
-        seed_top_row = ttk.Frame(seed_frame)
-        seed_top_row.pack(fill=tk.X, pady=(0, 5))
-        self.seed_cnum_var = tk.StringVar()
-        ttk.Label(seed_top_row, text="Company Number:").pack(side=tk.LEFT, padx=(0, 5))
-        seed_entry = ttk.Entry(seed_top_row, textvariable=self.seed_cnum_var, width=20)
-        seed_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        seed_btn_state = "normal" if self.api_key else "disabled"
-        self.seed_btn = ttk.Button(
-            seed_top_row,
-            text="Fetch & Add Network Data",
-            state=seed_btn_state,
-            command=self.start_seed_fetch,
-        )
-        self.seed_btn.pack(side=tk.LEFT, padx=5)
+        # Simple frame for sections (no canvas/scrollbar)
+        self.sections_frame = ttk.Frame(container)
+        self.sections_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        seed_options_row = ttk.Frame(seed_frame)
-        seed_options_row.pack(fill=tk.X)
-        ttk.Label(seed_options_row, text="Include:").pack(side=tk.LEFT, padx=(0, 10))
+        # --- Section 1: Data Sources ---
+        self.data_sources_section = CollapsibleSection(
+            self.sections_frame,
+            "DATA SOURCES",
+            expanded=True,
+            enabled=True
+        )
+        self.data_sources_section.pack(fill=tk.X, pady=(5, 0))
+        self._build_data_sources_content(self.data_sources_section.content_frame)
         
-        self.seed_fetch_pscs_var = tk.BooleanVar(value=False)
-        seed_pscs_cb = ttk.Checkbutton(
-            seed_options_row,
-            text="Fetch PSCs",
-            variable=self.seed_fetch_pscs_var,
+        # --- Section 2: Build & Refine ---
+        self.refine_section = CollapsibleSection(
+            self.sections_frame,
+            "BUILD & REFINE",
+            expanded=False,
+            enabled=False  # Disabled until files loaded
         )
-        seed_pscs_cb.pack(side=tk.LEFT, padx=(0, 15))
+        self.refine_section.pack(fill=tk.X, pady=(5, 0))
+        self.refine_section.set_on_expand(self._on_refine_section_expanded)
+        self._build_refine_content(self.refine_section.content_frame)
         
-        self.seed_fetch_associated_var = tk.BooleanVar(value=False)
-        seed_associated_cb = ttk.Checkbutton(
-            seed_options_row,
-            text="Fetch all associated companies",
-            variable=self.seed_fetch_associated_var,
+        # --- Section 3: Analyse ---
+        self.analyse_section = CollapsibleSection(
+            self.sections_frame,
+            "ANALYSE",
+            expanded=False,
+            enabled=False  # Disabled until graph built
         )
-        seed_associated_cb.pack(side=tk.LEFT, padx=(0, 5))
+        self.analyse_section.pack(fill=tk.X, pady=(5, 0))
+        self._build_analyse_content(self.analyse_section.content_frame)
         
-        self.seed_warning_label = ttk.Label(
-            seed_options_row, 
-            text="⚠️ May result in many API calls",
-            foreground="orange",
+        # --- Section 4: Visualise ---
+        self.visualise_section = CollapsibleSection(
+            self.sections_frame,
+            "VISUALISE",
+            expanded=False,
+            enabled=False  # Disabled until graph built
         )
-        
-        def toggle_warning(*args):
-            if self.seed_fetch_associated_var.get():
-                self.seed_warning_label.pack(side=tk.LEFT, padx=5)
-            else:
-                self.seed_warning_label.pack_forget()
-        self.seed_fetch_associated_var.trace_add("write", toggle_warning)
+        self.visualise_section.pack(fill=tk.X, pady=(5, 0))
+        self._build_visualise_content(self.visualise_section.content_frame)
 
-        # --- Step 2: Add Graph & Cohort Data ---
-        upload_frame = ttk.LabelFrame(
-            container, text="Step 2: Add Exported Graph Files", padding=10
-        )
-        upload_frame.pack(fill=tk.X, pady=5, padx=10)
-        buttons_frame = ttk.Frame(upload_frame)
-        buttons_frame.pack(fill=tk.X, pady=5)
-        ttk.Button(buttons_frame, text="Add File(s)...", command=self.add_files).pack(
-            side=tk.LEFT, padx=(0, 10)
-        )
-        ttk.Button(
-            buttons_frame, text="Clear File List", command=self.clear_files
-        ).pack(side=tk.LEFT)
-        
-        file_list_frame = ttk.Frame(upload_frame)
-        file_list_frame.pack(fill=tk.X, expand=True, pady=5)
-        file_scrollbar = ttk.Scrollbar(file_list_frame, orient=tk.VERTICAL)
-        file_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.file_listbox = tk.Listbox(
-            file_list_frame, height=4, yscrollcommand=file_scrollbar.set
-        )
-        self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        file_scrollbar.config(command=self.file_listbox.yview)
-
-        cohort_frame = ttk.LabelFrame(
-            container,
-            text="Step 2b: Add Cohort File to Highlight (Optional)",
-            padding=10,
-        )
-        cohort_frame.pack(fill=tk.X, pady=5, padx=10)
-        cohort_buttons_frame = ttk.Frame(cohort_frame)
-        cohort_buttons_frame.pack(fill=tk.X, pady=5)
-        ttk.Button(
-            cohort_buttons_frame,
-            text="Add Cohort File...",
-            command=self.load_cohort_file,
-        ).pack(side=tk.LEFT)
-        self.cohort_status_label = ttk.Label(
-            cohort_buttons_frame, text="No cohort file loaded."
-        )
-        self.cohort_status_label.pack(side=tk.LEFT, padx=10)
-
-        # --- Step 3: Build Combined Network ---
-        build_frame = ttk.LabelFrame(
-            container, text="Step 3: Build Combined Network", padding=10
-        )
-        build_frame.pack(fill=tk.X, pady=5, padx=10)
-        self.build_btn = ttk.Button(
-            build_frame,
-            text="Build Combined Network",
-            state="disabled",
-            command=self.build_combined_graph,
-            bootstyle="success",
-        )
-        self.build_btn.pack(pady=5, ipady=5)
-        
-        # --- Step 4: Refine & Deduplicate ---
-        refine_frame = ttk.LabelFrame(
-            container, text="Step 4: Refine & Deduplicate", padding=10
-        )
-        refine_frame.pack(fill=tk.X, pady=5, padx=10)
-        
-        # Sub-frame for Pruning
-        prune_frame = ttk.Frame(refine_frame)
-        prune_frame.pack(fill=tk.X, pady=5)
-        
-        ttk.Label(prune_frame, text="Remove specific node:").pack(side=tk.LEFT, padx=(0,5))
-        self.prune_entry = SearchableEntry(prune_frame)
-        self.prune_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        self.prune_entry.config(state="disabled")
-        add_prune_btn = ttk.Button(
-            prune_frame,
-            text="Add to Removal List",
-            command=self._add_node_to_removal_list,
-        )
-        add_prune_btn.pack(side=tk.LEFT)
-        
-        self.prune_listbox = tk.Listbox(refine_frame, height=3)
-        self.prune_listbox.pack(fill=tk.X, expand=True, pady=(0,5))
-        
-        prune_actions = ttk.Frame(refine_frame)
-        prune_actions.pack(fill=tk.X, pady=5)
-        ttk.Button(prune_actions, text="Remove Selected", command=self._remove_node_from_removal_list).pack(side=tk.LEFT)
-        ttk.Button(prune_actions, text="Clear List", command=self._clear_removal_list).pack(side=tk.LEFT, padx=5)
-
-        # Deduplication Controls
-        dedup_frame = ttk.Frame(refine_frame)
-        dedup_frame.pack(fill=tk.X, pady=(10, 0))
-        ttk.Separator(dedup_frame, orient="horizontal").pack(fill=tk.X, pady=5)
-        
-        ttk.Label(dedup_frame, text="Entity Resolution:").pack(side=tk.LEFT, padx=(0, 10))
-        
-        self.scan_dupes_btn = ttk.Button(
-            dedup_frame,
-            text="Scan for Duplicates...",
-            state="disabled",
-            command=self._open_deduplication_dialog,
-            bootstyle="warning"
-        )
-        self.scan_dupes_btn.pack(side=tk.LEFT)
-        Tooltip(self.scan_dupes_btn, "Analyzes addresses and names to find likely duplicates and offers a merge tool.")
-
-        # --- Step 5: Visualise ---
-        visualize_frame = ttk.LabelFrame(
-            container, text="Step 5: Generate Full Visual Graph", padding=10
-        )
-        visualize_frame.pack(fill=tk.X, pady=5, padx=10)
-        self.distinguish_var = tk.BooleanVar(value=True)
-        distinguish_check = ttk.Checkbutton(
-            visualize_frame,
-            text="Visually distinguish nodes by source file",
-            variable=self.distinguish_var,
-        )
-        distinguish_check.pack(pady=5, anchor="w")
-        self.eliminate_unconnected_var = tk.BooleanVar(value=False)
-        eliminate_check = ttk.Checkbutton(
-            visualize_frame,
-            text="Eliminate unconnected companies from visualisation",
-            variable=self.eliminate_unconnected_var,
-        )
-        eliminate_check.pack(pady=5, anchor="w")
-        self.show_cohort_networks_only_var = tk.BooleanVar(value=False)
-        self.cohort_only_check = ttk.Checkbutton(
-            visualize_frame,
-            text="Show only networks connecting cohort members",
-            variable=self.show_cohort_networks_only_var,
-            state="disabled",
-        )
-        self.cohort_only_check.pack(pady=5, anchor="w")
-        self.generate_full_graph_btn = ttk.Button(
-            visualize_frame,
-            text="Generate Full Visual Graph",
-            state="disabled",
-            command=self.generate_full_graph,
-        )
-        self.generate_full_graph_btn.pack(pady=5)
-
-        # --- Step 6: Find Connection ---
-        path_frame = ttk.LabelFrame(container, text="Step 6: Find Connection Between Two Entities", padding=10)
-        path_frame.pack(fill=tk.X, pady=5, padx=10)
-        ttk.Label(path_frame, text="Start Entity:").grid(row=0, column=0, sticky="w", padx=5)
-        self.start_node_entry = SearchableEntry(path_frame)
-        self.start_node_entry.grid(row=1, column=0, sticky="ew", padx=5)
-        self.start_node_entry.config(state="disabled")
-        ttk.Label(path_frame, text="End Entity:").grid(row=0, column=1, sticky="w", padx=5)
-        self.end_node_entry = SearchableEntry(path_frame)
-        self.end_node_entry.grid(row=1, column=1, sticky="ew", padx=5)
-        self.end_node_entry.config(state="disabled")
-        path_frame.columnconfigure(0, weight=1)
-        path_frame.columnconfigure(1, weight=1)
-        self.enforce_direction_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(path_frame, text="Enforce direction", variable=self.enforce_direction_var).grid(row=2, column=0, sticky="w", padx=5)
-        self.find_path_btn = ttk.Button(path_frame, text="Find Path & Generate Graph", state="disabled", command=self.find_and_highlight_path)
-        self.find_path_btn.grid(row=3, column=0, columnspan=2, pady=5)
-
-        # --- Step 7: Cohort Connections (Restored) ---
-        cohort_connect_frame = ttk.LabelFrame(
-            container,
-            text="Step 7: Find Connections Between Cohorts",
-            padding=10,
-        )
-        cohort_connect_frame.pack(fill=tk.X, pady=5, padx=10)
-
-        cohort_a_frame = ttk.Frame(cohort_connect_frame)
-        cohort_a_frame.pack(fill=tk.X, pady=2)
-        ttk.Button(
-            cohort_a_frame, text="Upload Cohort A File...", command=self._load_cohort_a
-        ).pack(side=tk.LEFT, padx=5)
-        self.cohort_a_status_label = ttk.Label(cohort_a_frame, text="No file loaded.")
-        self.cohort_a_status_label.pack(side=tk.LEFT)
-
-        cohort_b_frame = ttk.Frame(cohort_connect_frame)
-        cohort_b_frame.pack(fill=tk.X, pady=2)
-        ttk.Button(
-            cohort_b_frame, text="Upload Cohort B File...", command=self._load_cohort_b
-        ).pack(side=tk.LEFT, padx=5)
-        self.cohort_b_status_label = ttk.Label(cohort_b_frame, text="No file loaded.")
-        self.cohort_b_status_label.pack(side=tk.LEFT)
-
-        options_frame = ttk.Frame(cohort_connect_frame)
-        options_frame.pack(fill=tk.X, pady=10)
-
-        ttk.Label(options_frame, text="Max Hops:").pack(side=tk.LEFT, padx=(0, 5))
-        self.max_hops_var = tk.IntVar(value=5)
-        self.max_hops_combo = ttk.Combobox(
-            options_frame,
-            textvariable=self.max_hops_var,
-            values=list(range(1, 11)),
-            state="readonly",
-            width=5,
-        )
-        self.max_hops_combo.pack(side=tk.LEFT)
-
-        self.shortest_only_var = tk.BooleanVar(value=True)
-        self.shortest_only_check = ttk.Checkbutton(
-            options_frame,
-            text="Shortest Connection Only",
-            variable=self.shortest_only_var,
-        )
-        self.shortest_only_check.pack(side=tk.LEFT, padx=20)
-
-        self.find_cohort_paths_btn = ttk.Button(
-            cohort_connect_frame,
-            text="Find Connections & Export...",
-            state="disabled",
-            command=self._start_cohort_connection_search,
-        )
-        self.find_cohort_paths_btn.pack(pady=5, ipady=5)
-
-        # --- Status Bar ---
-        status_frame = ttk.Frame(container)
-        status_frame.pack(fill=tk.X, pady=10, padx=10, side=tk.BOTTOM)
-        self.progress_bar = ttk.Progressbar(status_frame, orient="horizontal", length=300, mode="determinate")
-        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        self.status_var = tk.StringVar(value="Ready.")
-        ttk.Label(status_frame, textvariable=self.status_var).pack(side=tk.LEFT)
 
     def _setup_converter_tab(self):
         """Builds the Data Converter wizard UI."""
@@ -432,7 +373,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         step3_frame.pack(fill=tk.X, pady=10, padx=10)
 
         self.convert_mode = tk.StringVar(value="cohort")
-        ttk.Radiobutton(step3_frame, text="Create Cohort File (IDs Only)", variable=self.convert_mode, value="cohort").pack(anchor="w", padx=5)
+        ttk.Radiobutton(step3_frame, text="Create Entity List (IDs Only)", variable=self.convert_mode, value="cohort").pack(anchor="w", padx=5)
         ttk.Radiobutton(step3_frame, text="Create Graph File (Nodes & Links)", variable=self.convert_mode, value="graph").pack(anchor="w", padx=5)
         
         btn_frame = ttk.Frame(step3_frame)
@@ -442,6 +383,632 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.convert_btn.pack(side=tk.LEFT)
         self.converter_status = ttk.Label(btn_frame, text="", foreground="green")
         self.converter_status.pack(side=tk.LEFT, padx=10)
+
+    def _build_data_sources_content(self, container):
+        """Builds the Data Sources section content."""
+        
+        # --- Seed from Company ---
+        seed_frame = ttk.LabelFrame(
+            container,
+            text="Seed from Company (Optional)",
+            padding=10,
+        )
+        seed_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        seed_top_row = ttk.Frame(seed_frame)
+        seed_top_row.pack(fill=tk.X, pady=(0, 5))
+        self.seed_cnum_var = tk.StringVar()
+        ttk.Label(seed_top_row, text="Company Number:").pack(side=tk.LEFT, padx=(0, 5))
+        seed_entry = ttk.Entry(seed_top_row, textvariable=self.seed_cnum_var, width=20)
+        seed_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        seed_btn_state = "normal" if self.api_key else "disabled"
+        self.seed_btn = ttk.Button(
+            seed_top_row,
+            text="Fetch & Add Network Data",
+            state=seed_btn_state,
+            command=self.start_seed_fetch,
+        )
+        self.seed_btn.pack(side=tk.LEFT, padx=5)
+        
+        seed_options_row = ttk.Frame(seed_frame)
+        seed_options_row.pack(fill=tk.X)
+        ttk.Label(seed_options_row, text="Include:").pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.seed_fetch_pscs_var = tk.BooleanVar(value=False)
+        seed_pscs_cb = ttk.Checkbutton(
+            seed_options_row,
+            text="Fetch PSCs",
+            variable=self.seed_fetch_pscs_var,
+        )
+        seed_pscs_cb.pack(side=tk.LEFT, padx=(0, 15))
+        
+        self.seed_fetch_associated_var = tk.BooleanVar(value=False)
+        seed_associated_cb = ttk.Checkbutton(
+            seed_options_row,
+            text="Fetch all associated companies",
+            variable=self.seed_fetch_associated_var,
+        )
+        seed_associated_cb.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.seed_warning_label = ttk.Label(
+            seed_options_row,
+            text="⚠️ May result in many API calls",
+            foreground="orange",
+        )
+        
+        def toggle_warning(*args):
+            if self.seed_fetch_associated_var.get():
+                self.seed_warning_label.pack(side=tk.LEFT, padx=5)
+            else:
+                self.seed_warning_label.pack_forget()
+        self.seed_fetch_associated_var.trace_add("write", toggle_warning)
+        
+        # Status bar for seeding (moved here from bottom)
+        status_frame = ttk.Frame(seed_frame)
+        status_frame.pack(fill=tk.X, pady=(10, 0))
+        self.seed_progress_bar = ttk.Progressbar(
+            status_frame, orient="horizontal", length=200, mode="indeterminate"
+        )
+        self.seed_progress_bar.pack(side=tk.LEFT, padx=(0, 10))
+        self.seed_status_var = tk.StringVar(value="")
+        ttk.Label(status_frame, textvariable=self.seed_status_var).pack(side=tk.LEFT)
+        
+        # --- Import Network Files ---
+        import_frame = ttk.LabelFrame(
+            container,
+            text="Import Graph Data Files",
+            padding=10,
+        )
+        import_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        buttons_frame = ttk.Frame(import_frame)
+        buttons_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Button(buttons_frame, text="Add File(s)...", command=self.add_files).pack(
+            side=tk.LEFT, padx=(0, 10)
+        )
+        ttk.Button(buttons_frame, text="Clear All", command=self.clear_files).pack(
+            side=tk.LEFT
+        )
+        
+        file_list_frame = ttk.Frame(import_frame)
+        file_list_frame.pack(fill=tk.X, expand=True, pady=5)
+        file_scrollbar = ttk.Scrollbar(file_list_frame, orient=tk.VERTICAL)
+        file_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.file_listbox = tk.Listbox(
+            file_list_frame, height=4, yscrollcommand=file_scrollbar.set
+        )
+        self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        file_scrollbar.config(command=self.file_listbox.yview)
+        
+        # Info tooltip about Data Converter
+        info_frame = ttk.Frame(import_frame)
+        info_frame.pack(fill=tk.X, pady=(5, 0))
+        info_label = ttk.Label(
+            info_frame,
+            text="ℹ️",
+            foreground="blue",
+            cursor="hand2",
+            font=("", 11)
+        )
+        info_label.pack(side=tk.LEFT)
+        Tooltip(
+            info_label,
+            "Have a list of names, companies, or addresses from another system?\n"
+            "Use the Data Converter tab to prepare it for network analysis."
+        )
+        ttk.Label(
+            info_frame,
+            text="Working with external data?",
+            foreground="gray"
+        ).pack(side=tk.LEFT, padx=(5, 0))
+
+
+    def _build_refine_content(self, container):
+        """Builds the Build & Refine section content."""
+        
+        # --- Node Exclusions ---
+        exclusions_frame = ttk.LabelFrame(
+            container,
+            text="Node Exclusions",
+            padding=10,
+        )
+        exclusions_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(
+            exclusions_frame,
+            text="Excluded nodes are hidden from analysis and visualisation but remain in the underlying data.",
+            foreground="gray",
+            wraplength=500
+        ).pack(anchor="w", pady=(0, 10))
+        
+        # Highly connected nodes
+        hc_frame = ttk.Frame(exclusions_frame)
+        hc_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(hc_frame, text="Highly connected nodes (more than").pack(side=tk.LEFT)
+        self.highly_connected_threshold_var = tk.StringVar(value="50")
+        hc_entry = ttk.Entry(hc_frame, textvariable=self.highly_connected_threshold_var, width=5)
+        hc_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Label(hc_frame, text="connections):").pack(side=tk.LEFT)
+        self.scan_hc_btn = ttk.Button(
+            hc_frame,
+            text="Scan...",
+            command=self._open_highly_connected_dialog
+        )
+        self.scan_hc_btn.pack(side=tk.LEFT, padx=(15, 5))
+        self.hc_status_label = ttk.Label(hc_frame, text="No exclusions", foreground="gray")
+        self.hc_status_label.pack(side=tk.LEFT, padx=(5, 0))
+        
+        # Peripheral nodes
+        pn_frame = ttk.Frame(exclusions_frame)
+        pn_frame.pack(fill=tk.X, pady=(5, 5))
+        ttk.Label(pn_frame, text="Peripheral nodes (fewer than").pack(side=tk.LEFT)
+        self.peripheral_threshold_var = tk.StringVar(value="2")
+        pn_entry = ttk.Entry(pn_frame, textvariable=self.peripheral_threshold_var, width=5)
+        pn_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Label(pn_frame, text="connections):").pack(side=tk.LEFT)
+        self.scan_pn_btn = ttk.Button(
+            pn_frame,
+            text="Scan...",
+            command=self._open_peripheral_dialog
+        )
+        self.scan_pn_btn.pack(side=tk.LEFT, padx=(15, 5))
+        self.pn_status_label = ttk.Label(pn_frame, text="No exclusions", foreground="gray")
+        self.pn_status_label.pack(side=tk.LEFT, padx=(5, 0))
+        
+        # Manage exclusions button
+        manage_frame = ttk.Frame(exclusions_frame)
+        manage_frame.pack(fill=tk.X, pady=(10, 0))
+        self.manage_exclusions_btn = ttk.Button(
+            manage_frame,
+            text="Manage All Exclusions...",
+            command=self._open_exclusion_manager
+        )
+        self.manage_exclusions_btn.pack(side=tk.LEFT)
+        
+        # --- Entity Resolution ---
+        resolution_frame = ttk.LabelFrame(
+            container,
+            text="Entity Resolution",
+            padding=10,
+        )
+        resolution_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(
+            resolution_frame,
+            text="Find and merge duplicate entities (e.g. name variants, address formatting differences).",
+            foreground="gray",
+            wraplength=500
+        ).pack(anchor="w", pady=(0, 10))
+        
+        self.scan_dupes_btn = ttk.Button(
+            resolution_frame,
+            text="Scan for Duplicates...",
+            command=self._open_deduplication_dialog
+        )
+        self.scan_dupes_btn.pack(side=tk.LEFT)
+        
+        # --- Advanced (collapsed) ---
+        self.advanced_section = CollapsibleSection(
+            container,
+            "Advanced",
+            expanded=False,
+            enabled=True
+        )
+        self.advanced_section.pack(fill=tk.X, pady=(0, 5))
+        
+        advanced_content = self.advanced_section.content_frame
+        ttk.Label(
+            advanced_content,
+            text="Manually exclude a specific node:",
+            foreground="gray"
+        ).pack(anchor="w", pady=(0, 5))
+        
+        manual_frame = ttk.Frame(advanced_content)
+        manual_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        self.manual_exclude_entry = SearchableEntry(manual_frame)
+        self.manual_exclude_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        ttk.Button(
+            manual_frame,
+            text="Exclude",
+            command=self._add_manual_exclusion
+        ).pack(side=tk.LEFT)
+
+
+    def _build_analyse_content(self, container):
+        """Builds the Analyse section content."""
+        
+        # --- Find Connections ---
+        connections_frame = ttk.LabelFrame(
+            container,
+            text="Find Connections",
+            padding=10,
+        )
+        connections_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Search mode selection
+        mode_frame = ttk.Frame(connections_frame)
+        mode_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(mode_frame, text="Search for connections:").pack(anchor="w")
+        
+        self.analyse_mode_var = tk.StringVar(value="two_entities")
+        
+        ttk.Radiobutton(
+            mode_frame,
+            text="Between two specific entities",
+            variable=self.analyse_mode_var,
+            value="two_entities",
+            command=self._update_analyse_mode_ui
+        ).pack(anchor="w", padx=(20, 0))
+        
+        ttk.Radiobutton(
+            mode_frame,
+            text="Within a single entity list",
+            variable=self.analyse_mode_var,
+            value="single_list",
+            command=self._update_analyse_mode_ui
+        ).pack(anchor="w", padx=(20, 0))
+        
+        ttk.Radiobutton(
+            mode_frame,
+            text="Between two entity lists",
+            variable=self.analyse_mode_var,
+            value="two_lists",
+            command=self._update_analyse_mode_ui
+        ).pack(anchor="w", padx=(20, 0))
+        
+        ttk.Separator(connections_frame, orient="horizontal").pack(fill=tk.X, pady=10)
+        
+        # Dynamic content area (changes based on mode)
+        self.analyse_dynamic_frame = ttk.Frame(connections_frame)
+        self.analyse_dynamic_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Build all three mode UIs, show/hide as needed
+        self._build_two_entities_ui(self.analyse_dynamic_frame)
+        self._build_single_list_ui(self.analyse_dynamic_frame)
+        self._build_two_lists_ui(self.analyse_dynamic_frame)
+        
+        ttk.Separator(connections_frame, orient="horizontal").pack(fill=tk.X, pady=10)
+        
+        # Options
+        options_frame = ttk.Frame(connections_frame)
+        options_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(options_frame, text="Max hops:").pack(side=tk.LEFT)
+        self.max_hops_var = tk.IntVar(value=5)
+        self.max_hops_combo = ttk.Combobox(
+            options_frame,
+            textvariable=self.max_hops_var,
+            values=list(range(1, 11)),
+            state="readonly",
+            width=5,
+        )
+        self.max_hops_combo.pack(side=tk.LEFT, padx=(5, 20))
+        
+        self.shortest_only_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            options_frame,
+            text="Shortest path only",
+            variable=self.shortest_only_var
+        ).pack(side=tk.LEFT, padx=(0, 20))
+        
+        self.enforce_direction_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            options_frame,
+            text="Enforce edge direction",
+            variable=self.enforce_direction_var
+        ).pack(side=tk.LEFT)
+        
+        # Action button
+        self.find_connections_btn = ttk.Button(
+            connections_frame,
+            text="Find Connections",
+            command=self._execute_find_connections
+        )
+        self.find_connections_btn.pack(pady=(5, 0))
+        
+        # Progress/status area for connection searches
+        self.analyse_status_frame = ttk.Frame(connections_frame)
+        self.analyse_status_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        self.analyse_progress_bar = ttk.Progressbar(
+            self.analyse_status_frame,
+            orient="horizontal",
+            length=300,
+            mode="determinate"
+        )
+        self.analyse_progress_bar.pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.analyse_status_var = tk.StringVar(value="")
+        ttk.Label(
+            self.analyse_status_frame,
+            textvariable=self.analyse_status_var
+        ).pack(side=tk.LEFT)
+        
+        # Show initial mode
+        self._update_analyse_mode_ui()
+
+
+    def _build_two_entities_ui(self, parent):
+        """Builds UI for 'Between two specific entities' mode."""
+        self.two_entities_frame = ttk.Frame(parent)
+        
+        row1 = ttk.Frame(self.two_entities_frame)
+        row1.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(row1, text="Start entity:", width=12).pack(side=tk.LEFT)
+        self.start_node_entry = SearchableEntry(row1)
+        self.start_node_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        row2 = ttk.Frame(self.two_entities_frame)
+        row2.pack(fill=tk.X)
+        ttk.Label(row2, text="End entity:", width=12).pack(side=tk.LEFT)
+        self.end_node_entry = SearchableEntry(row2)
+        self.end_node_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+
+    def _build_single_list_ui(self, parent):
+        """Builds UI for 'Within a single entity list' mode."""
+        self.single_list_frame = ttk.Frame(parent)
+        
+        row1 = ttk.Frame(self.single_list_frame)
+        row1.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(row1, text="Entity list:").pack(side=tk.LEFT)
+        ttk.Button(
+            row1,
+            text="Upload List...",
+            command=self._upload_single_entity_list
+        ).pack(side=tk.LEFT, padx=(10, 5))
+        
+        # Info tooltip
+        info_label = ttk.Label(row1, text="ℹ️", foreground="blue", cursor="hand2", font=("", 11))
+        info_label.pack(side=tk.LEFT, padx=(0, 10))
+        Tooltip(info_label, self._get_entity_list_tooltip())
+        
+        self.single_list_status = ttk.Label(row1, text="No list loaded", foreground="gray")
+        self.single_list_status.pack(side=tk.LEFT)
+        
+        ttk.Label(
+            self.single_list_frame,
+            text="Finds connections between members of this list who appear in your network.",
+            foreground="gray",
+            wraplength=450
+        ).pack(anchor="w", pady=(5, 0))
+
+
+    def _build_two_lists_ui(self, parent):
+        """Builds UI for 'Between two entity lists' mode."""
+        self.two_lists_frame = ttk.Frame(parent)
+        
+        # List A
+        row_a = ttk.Frame(self.two_lists_frame)
+        row_a.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(row_a, text="List A:").pack(side=tk.LEFT)
+        ttk.Button(
+            row_a,
+            text="Upload List A...",
+            command=self._upload_list_a
+        ).pack(side=tk.LEFT, padx=(10, 5))
+        info_label_a = ttk.Label(row_a, text="ℹ️", foreground="blue", cursor="hand2", font=("", 11))
+        info_label_a.pack(side=tk.LEFT, padx=(0, 10))
+        Tooltip(info_label_a, self._get_entity_list_tooltip())
+        self.list_a_status = ttk.Label(row_a, text="No list loaded", foreground="gray")
+        self.list_a_status.pack(side=tk.LEFT)
+        
+        # List B
+        row_b = ttk.Frame(self.two_lists_frame)
+        row_b.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(row_b, text="List B:").pack(side=tk.LEFT)
+        ttk.Button(
+            row_b,
+            text="Upload List B...",
+            command=self._upload_list_b
+        ).pack(side=tk.LEFT, padx=(10, 5))
+        info_label_b = ttk.Label(row_b, text="ℹ️", foreground="blue", cursor="hand2", font=("", 11))
+        info_label_b.pack(side=tk.LEFT, padx=(0, 10))
+        Tooltip(info_label_b, self._get_entity_list_tooltip())
+        self.list_b_status = ttk.Label(row_b, text="No list loaded", foreground="gray")
+        self.list_b_status.pack(side=tk.LEFT)
+        
+        ttk.Label(
+            self.two_lists_frame,
+            text="Finds connections between any entity in List A and any entity in List B.",
+            foreground="gray",
+            wraplength=450
+        ).pack(anchor="w", pady=(5, 0))
+
+
+    def _get_entity_list_tooltip(self):
+        """Returns the standard entity list tooltip text."""
+        return (
+            "An entity list is a CSV file with one entity identifier per row.\n\n"
+            "Entity identifiers are internal IDs used by the tool:\n"
+            "• Companies: Company number (e.g. \"06836076\")\n"
+            "• Persons: Generated key (e.g. \"johnsmith-1980-06\")\n"
+            "• Addresses: Normalised address string\n\n"
+            "Unless you have a list of company numbers, you'll need to use the\n"
+            "Data Converter tab to transform your data into a compatible entity list."
+        )
+
+
+    def _update_analyse_mode_ui(self):
+        """Shows/hides the appropriate UI based on selected analysis mode."""
+        mode = self.analyse_mode_var.get()
+        
+        # Hide all frames first
+        self.two_entities_frame.pack_forget()
+        self.single_list_frame.pack_forget()
+        self.two_lists_frame.pack_forget()
+        
+        # Show the selected frame
+        if mode == "two_entities":
+            self.two_entities_frame.pack(fill=tk.X)
+            self.find_connections_btn.config(text="Find Connections")
+        elif mode == "single_list":
+            self.single_list_frame.pack(fill=tk.X)
+            self.find_connections_btn.config(text="Find Connections & Export...")
+        elif mode == "two_lists":
+            self.two_lists_frame.pack(fill=tk.X)
+            self.find_connections_btn.config(text="Find Connections & Export...")
+
+
+    def _build_visualise_content(self, container):
+        """Builds the Visualise section content."""
+        
+        # --- Highlight Entities ---
+        highlight_frame = ttk.LabelFrame(
+            container,
+            text="Highlight Entities",
+            padding=10,
+        )
+        highlight_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        desc_row = ttk.Frame(highlight_frame)
+        desc_row.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(
+            desc_row,
+            text="Upload an entity list to visually emphasise these entities in the generated graph.",
+            foreground="gray",
+            wraplength=450
+        ).pack(side=tk.LEFT)
+        info_label = ttk.Label(desc_row, text="ℹ️", foreground="blue", cursor="hand2", font=("", 11))
+        info_label.pack(side=tk.LEFT, padx=(10, 0))
+        Tooltip(info_label, self._get_entity_list_tooltip())
+        
+        upload_row = ttk.Frame(highlight_frame)
+        upload_row.pack(fill=tk.X, pady=(5, 0))
+        ttk.Button(
+            upload_row,
+            text="Upload Highlight List...",
+            command=self._upload_highlight_list
+        ).pack(side=tk.LEFT)
+        self.highlight_status_label = ttk.Label(upload_row, text="No list loaded", foreground="gray")
+        self.highlight_status_label.pack(side=tk.LEFT, padx=(10, 0))
+        self.clear_highlight_btn = ttk.Button(
+            upload_row,
+            text="Clear",
+            command=self._clear_highlight_list
+        )
+        # Clear button hidden until list loaded
+        
+        # "Use from Analyse" prompt (shown conditionally)
+        self.use_analyse_list_frame = ttk.Frame(highlight_frame)
+        # Initially hidden, shown when analyse has a list
+        
+        ttk.Label(
+            self.use_analyse_list_frame,
+            text="💡",
+            font=("", 11)
+        ).pack(side=tk.LEFT)
+        ttk.Label(
+            self.use_analyse_list_frame,
+            text="You have an entity list loaded in Analyse.",
+            foreground="gray"
+        ).pack(side=tk.LEFT, padx=(5, 10))
+        ttk.Button(
+            self.use_analyse_list_frame,
+            text="Use as Highlight List",
+            command=self._use_analyse_list_as_highlight
+        ).pack(side=tk.LEFT)
+        
+        # --- Display Options ---
+        options_frame = ttk.LabelFrame(
+            container,
+            text="Display Options",
+            padding=10,
+        )
+        options_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.distinguish_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            options_frame,
+            text="Colour-code nodes by source file",
+            variable=self.distinguish_var
+        ).pack(anchor="w", pady=(0, 5))
+        
+        # Isolated networks option with entity type selection
+        isolated_frame = ttk.Frame(options_frame)
+        isolated_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        self.hide_isolated_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            isolated_frame,
+            text="Hide isolated networks",
+            variable=self.hide_isolated_var,
+            command=self._toggle_isolated_options
+        ).pack(anchor="w")
+        
+        self.isolated_options_frame = ttk.Frame(options_frame)
+        self.isolated_options_frame.pack(fill=tk.X, padx=(25, 0), pady=(2, 0))
+        
+        ttk.Label(
+            self.isolated_options_frame,
+            text="Only show networks containing at least 2:",
+            foreground="gray"
+        ).pack(anchor="w")
+        
+        entity_types_frame = ttk.Frame(self.isolated_options_frame)
+        entity_types_frame.pack(anchor="w", pady=(2, 0))
+        
+        self.isolated_companies_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            entity_types_frame,
+            text="Companies",
+            variable=self.isolated_companies_var
+        ).pack(side=tk.LEFT, padx=(0, 15))
+        
+        self.isolated_persons_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            entity_types_frame,
+            text="Persons",
+            variable=self.isolated_persons_var
+        ).pack(side=tk.LEFT, padx=(0, 15))
+        
+        self.isolated_addresses_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            entity_types_frame,
+            text="Addresses",
+            variable=self.isolated_addresses_var
+        ).pack(side=tk.LEFT)
+        
+        # Initially hide isolated options until checkbox ticked
+        self.isolated_options_frame.pack_forget()
+        
+        # Show only highlighted networks option
+        self.show_highlighted_only_var = tk.BooleanVar(value=False)
+        self.show_highlighted_check = ttk.Checkbutton(
+            options_frame,
+            text="Show only networks containing highlighted entities",
+            variable=self.show_highlighted_only_var,
+            state="disabled"
+        )
+        self.show_highlighted_check.pack(anchor="w", pady=(10, 0))
+        
+        # Generate button
+        btn_frame = ttk.Frame(container)
+        btn_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        self.generate_graph_btn = ttk.Button(
+            btn_frame,
+            text="Generate Network Graph",
+            command=self.generate_full_graph
+        )
+        self.generate_graph_btn.pack(side=tk.LEFT)
+        
+        ttk.Label(
+            btn_frame,
+            text="ℹ️ The graph will open in your default web browser.",
+            foreground="gray"
+        ).pack(side=tk.LEFT, padx=(15, 0))
+
+
+    def _toggle_isolated_options(self):
+        """Shows/hides the entity type options for isolated network filtering."""
+        if self.hide_isolated_var.get():
+            self.isolated_options_frame.pack(fill=tk.X, padx=(25, 0), pady=(2, 0))
+        else:
+            self.isolated_options_frame.pack_forget()
+
+
 
     # --- Deduplication Logic ---
 
@@ -906,6 +1473,767 @@ class NetworkAnalytics(InvestigationModuleBase):
         except Exception as e:
             self.app.after(0, lambda: messagebox.showerror("Load Error", f"Could not load CSV: {e}"))
 
+    # --- Section State Management ---
+
+    def _on_refine_section_expanded(self):
+        """Called when Build & Refine section is expanded. Triggers auto-build if needed."""
+        if not self.graph_built or self.files_changed_since_build:
+            self._auto_build_graph()
+
+
+    def _auto_build_graph(self):
+        """Automatically builds the graph when entering Build & Refine."""
+        if not self.source_files:
+            return
+        
+        self.full_graph.clear()
+        self.highly_connected_exclusions.clear()
+        self.peripheral_exclusions.clear()
+        self.manual_exclusions.clear()
+        
+        # Define the absolute minimum headers required for the code to not crash
+        REQUIRED_HEADERS = {"source_id", "source_label", "source_type"}
+        
+        try:
+            for filepath in self.source_files:
+                filename = os.path.basename(filepath)
+                
+                # Pre-scan check for headers
+                with open(filepath, "r", encoding="utf-8-sig") as f:
+                    reader = csv.DictReader(f)
+                    
+                    # If file is empty or headers are missing
+                    if not reader.fieldnames:
+                         messagebox.showerror(
+                            "File Error", 
+                            f"The file '{filename}' appears to be empty or unreadable."
+                        )
+                         return
+
+                    # Check for missing columns
+                    file_headers = set(reader.fieldnames)
+                    missing = REQUIRED_HEADERS - file_headers
+                    
+                    if missing:
+                        missing_str = ", ".join(list(missing))
+                        messagebox.showerror(
+                            "Invalid File Format",
+                            f"The file '{filename}' cannot be loaded.\n\n"
+                            f"Missing required columns: {missing_str}\n\n"
+                            "Expected columns:\n"
+                            "source_id, source_label, source_type, target_id, target_label, target_type, relationship\n\n"
+                            "Please use the 'Data Converter' tab to format this file correctly."
+                        )
+                        return
+
+                    # If headers are good, process the rows
+                    for row in reader:
+                        self._add_edge_to_graph(row, filename)
+            
+            self.graph_built = True
+            self.files_changed_since_build = False
+            
+            # Update section header
+            node_count = self.full_graph.number_of_nodes()
+            edge_count = self.full_graph.number_of_edges()
+            self.refine_section.set_status(f"{node_count:,} nodes · {edge_count:,} edges")
+            self.refine_section.clear_warning()
+            
+            # Enable other sections
+            self.analyse_section.set_enabled(True)
+            self.visualise_section.set_enabled(True)
+            
+            # Populate dropdowns
+            self._populate_node_dropdowns()
+            
+            # Update exclusion status labels
+            self._update_exclusion_status_labels()
+            
+        except Exception as e:
+            log_message(f"Error auto-building graph: {e}")
+            messagebox.showerror("Build Error", f"Could not build graph: {e}")
+
+
+    def _update_section_header_status(self):
+        """Updates the Build & Refine section header with current stats."""
+        if not self.graph_built:
+            self.refine_section.set_status("")
+            return
+        
+        node_count = self.full_graph.number_of_nodes()
+        edge_count = self.full_graph.number_of_edges()
+        total_exclusions = len(self.highly_connected_exclusions) + len(self.peripheral_exclusions) + len(self.manual_exclusions)
+        
+        status = f"{node_count:,} nodes · {edge_count:,} edges"
+        if total_exclusions > 0:
+            status += f" ({total_exclusions} excluded)"
+        
+        self.refine_section.set_status(status)
+
+
+    def _mark_files_changed(self):
+        """Called when Data Sources change to trigger rebuild requirement."""
+        if self.graph_built:
+            self.files_changed_since_build = True
+            self.refine_section.set_warning("Files changed", show_rebuild=True, rebuild_callback=self._auto_build_graph)
+
+
+    def _update_exclusion_status_labels(self):
+        """Updates the exclusion count labels in Build & Refine."""
+        hc_count = len(self.highly_connected_exclusions)
+        pn_count = len(self.peripheral_exclusions)
+        
+        if hc_count > 0:
+            self.hc_status_label.config(text=f"Excluding {hc_count} node(s)", foreground="green")
+        else:
+            self.hc_status_label.config(text="No exclusions", foreground="gray")
+        
+        if pn_count > 0:
+            self.pn_status_label.config(text=f"Excluding {pn_count} node(s)", foreground="green")
+        else:
+            self.pn_status_label.config(text="No exclusions", foreground="gray")
+        
+        self._update_section_header_status()
+
+
+    # --- Highly Connected Nodes ---
+
+    def _open_highly_connected_dialog(self):
+        """Opens dialog to scan and exclude highly connected nodes."""
+        try:
+            threshold = int(self.highly_connected_threshold_var.get())
+        except ValueError:
+            messagebox.showerror("Invalid Threshold", "Please enter a valid number for the threshold.")
+            return
+        
+        if not self.graph_built:
+            messagebox.showwarning("No Graph", "Please load data first.")
+            return
+        
+        # Find nodes above threshold
+        candidates = []
+        for node_id, attrs in self.full_graph.nodes(data=True):
+            degree = self.full_graph.degree(node_id)
+            if degree > threshold and node_id not in self.highly_connected_exclusions:
+                candidates.append((
+                    node_id,
+                    attrs.get("label", node_id),
+                    attrs.get("type", "unknown"),
+                    degree
+                ))
+        
+        candidates.sort(key=lambda x: x[3], reverse=True)
+        
+        if not candidates:
+            messagebox.showinfo(
+                "No Results",
+                f"No nodes found with more than {threshold} connections\n"
+                f"(excluding already excluded nodes)."
+            )
+            return
+        
+        # Create dialog
+        dialog = tk.Toplevel(self.app)
+        dialog.title("Highly Connected Nodes")
+        dialog.geometry("700x500")
+        
+        ttk.Label(
+            dialog,
+            text=f"Found {len(candidates)} node(s) with more than {threshold} connections.",
+            padding=10
+        ).pack(anchor="w")
+        
+        # Treeview
+        tree_frame = ttk.Frame(dialog)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        
+        tree_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
+        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        cols = ("Type", "Node", "Connections")
+        tree = ttk.Treeview(tree_frame, columns=cols, show="headings", yscrollcommand=tree_scroll.set)
+        tree_scroll.config(command=tree.yview)
+        
+        tree.heading("Type", text="Type")
+        tree.heading("Node", text="Node")
+        tree.heading("Connections", text="Connections")
+        
+        tree.column("Type", width=80, anchor="center")
+        tree.column("Node", width=450)
+        tree.column("Connections", width=100, anchor="center")
+        
+        tree.pack(fill=tk.BOTH, expand=True)
+        
+        for node_id, label, ntype, degree in candidates:
+            display_label = label[:60] + "..." if len(label) > 60 else label
+            tree.insert("", "end", iid=node_id, values=(ntype.title(), display_label, degree))
+        
+        # Buttons
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        def exclude_selected():
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning("No Selection", "Please select nodes to exclude.")
+                return
+            
+            for node_id in selected:
+                self.highly_connected_exclusions.add(node_id)
+            
+            self._update_exclusion_status_labels()
+            messagebox.showinfo("Success", f"Excluded {len(selected)} node(s).")
+            dialog.destroy()
+        
+        ttk.Button(btn_frame, text="Exclude Selected", command=exclude_selected).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Close", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(
+            btn_frame,
+            text="Select All",
+            command=lambda: tree.selection_set(tree.get_children())
+        ).pack(side=tk.LEFT, padx=5)
+
+
+    def _open_peripheral_dialog(self):
+        """Opens dialog to scan and exclude peripheral nodes."""
+        try:
+            threshold = int(self.peripheral_threshold_var.get())
+        except ValueError:
+            messagebox.showerror("Invalid Threshold", "Please enter a valid number for the threshold.")
+            return
+        
+        if not self.graph_built:
+            messagebox.showwarning("No Graph", "Please load data first.")
+            return
+        
+        # Find nodes below threshold
+        candidates = []
+        for node_id, attrs in self.full_graph.nodes(data=True):
+            degree = self.full_graph.degree(node_id)
+            if degree < threshold and node_id not in self.peripheral_exclusions:
+                candidates.append((
+                    node_id,
+                    attrs.get("label", node_id),
+                    attrs.get("type", "unknown"),
+                    degree
+                ))
+        
+        candidates.sort(key=lambda x: x[3])
+        
+        if not candidates:
+            messagebox.showinfo(
+                "No Results",
+                f"No nodes found with fewer than {threshold} connections\n"
+                f"(excluding already excluded nodes)."
+            )
+            return
+        
+        # Create dialog
+        dialog = tk.Toplevel(self.app)
+        dialog.title("Peripheral Nodes")
+        dialog.geometry("700x500")
+        
+        ttk.Label(
+            dialog,
+            text=f"Found {len(candidates)} node(s) with fewer than {threshold} connections.",
+            padding=10
+        ).pack(anchor="w")
+        
+        # Treeview
+        tree_frame = ttk.Frame(dialog)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        
+        tree_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
+        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        cols = ("Type", "Node", "Connections")
+        tree = ttk.Treeview(tree_frame, columns=cols, show="headings", yscrollcommand=tree_scroll.set)
+        tree_scroll.config(command=tree.yview)
+        
+        tree.heading("Type", text="Type")
+        tree.heading("Node", text="Node")
+        tree.heading("Connections", text="Connections")
+        
+        tree.column("Type", width=80, anchor="center")
+        tree.column("Node", width=450)
+        tree.column("Connections", width=100, anchor="center")
+        
+        tree.pack(fill=tk.BOTH, expand=True)
+        
+        for node_id, label, ntype, degree in candidates:
+            display_label = label[:60] + "..." if len(label) > 60 else label
+            tree.insert("", "end", iid=node_id, values=(ntype.title(), display_label, degree))
+        
+        # Buttons
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        def exclude_selected():
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning("No Selection", "Please select nodes to exclude.")
+                return
+            
+            for node_id in selected:
+                self.peripheral_exclusions.add(node_id)
+            
+            self._update_exclusion_status_labels()
+            messagebox.showinfo("Success", f"Excluded {len(selected)} node(s).")
+            dialog.destroy()
+        
+        ttk.Button(btn_frame, text="Exclude Selected", command=exclude_selected).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Close", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(
+            btn_frame,
+            text="Select All",
+            command=lambda: tree.selection_set(tree.get_children())
+        ).pack(side=tk.LEFT, padx=5)
+
+
+    def _open_exclusion_manager(self):
+        """Opens dialog to manage all exclusions."""
+        if not self.graph_built:
+            messagebox.showwarning("No Graph", "Please load data first.")
+            return
+        
+        all_exclusions = []
+        
+        for node_id in self.highly_connected_exclusions:
+            if self.full_graph.has_node(node_id):
+                attrs = self.full_graph.nodes[node_id]
+                degree = self.full_graph.degree(node_id)
+                all_exclusions.append((
+                    node_id,
+                    attrs.get("label", node_id),
+                    attrs.get("type", "unknown"),
+                    f"{degree} connections",
+                    "Highly connected"
+                ))
+        
+        for node_id in self.peripheral_exclusions:
+            if self.full_graph.has_node(node_id):
+                attrs = self.full_graph.nodes[node_id]
+                degree = self.full_graph.degree(node_id)
+                all_exclusions.append((
+                    node_id,
+                    attrs.get("label", node_id),
+                    attrs.get("type", "unknown"),
+                    f"{degree} connections",
+                    "Peripheral"
+                ))
+        
+        for node_id in self.manual_exclusions:
+            if self.full_graph.has_node(node_id):
+                attrs = self.full_graph.nodes[node_id]
+                degree = self.full_graph.degree(node_id)
+                all_exclusions.append((
+                    node_id,
+                    attrs.get("label", node_id),
+                    attrs.get("type", "unknown"),
+                    f"{degree} connections",
+                    "Manual"
+                ))
+        
+        if not all_exclusions:
+            messagebox.showinfo("No Exclusions", "No nodes are currently excluded.")
+            return
+        
+        # Create dialog
+        dialog = tk.Toplevel(self.app)
+        dialog.title("Manage Exclusions")
+        dialog.geometry("800x500")
+        
+        # Filter dropdown
+        filter_frame = ttk.Frame(dialog)
+        filter_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Label(filter_frame, text="Filter:").pack(side=tk.LEFT)
+        filter_var = tk.StringVar(value="All")
+        filter_combo = ttk.Combobox(
+            filter_frame,
+            textvariable=filter_var,
+            values=["All", "Highly connected", "Peripheral", "Manual"],
+            state="readonly",
+            width=20
+        )
+        filter_combo.pack(side=tk.LEFT, padx=(5, 0))
+        
+        # Treeview
+        tree_frame = ttk.Frame(dialog)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        
+        tree_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
+        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        cols = ("Type", "Node", "Details", "Reason")
+        tree = ttk.Treeview(tree_frame, columns=cols, show="headings", yscrollcommand=tree_scroll.set)
+        tree_scroll.config(command=tree.yview)
+        
+        tree.heading("Type", text="Type")
+        tree.heading("Node", text="Node")
+        tree.heading("Details", text="Details")
+        tree.heading("Reason", text="Reason")
+        
+        tree.column("Type", width=80, anchor="center")
+        tree.column("Node", width=350)
+        tree.column("Details", width=120, anchor="center")
+        tree.column("Reason", width=120, anchor="center")
+        
+        tree.pack(fill=tk.BOTH, expand=True)
+        
+        # Store node_id -> reason mapping for restoration
+        exclusion_map = {}
+        
+        def populate_tree(filter_value="All"):
+            tree.delete(*tree.get_children())
+            exclusion_map.clear()
+            
+            for node_id, label, ntype, details, reason in all_exclusions:
+                if filter_value != "All" and reason != filter_value:
+                    continue
+                display_label = label[:50] + "..." if len(label) > 50 else label
+                tree.insert("", "end", iid=node_id, values=(ntype.title(), display_label, details, reason))
+                exclusion_map[node_id] = reason
+        
+        populate_tree()
+        
+        def on_filter_change(event=None):
+            populate_tree(filter_var.get())
+        
+        filter_combo.bind("<<ComboboxSelected>>", on_filter_change)
+        
+        # Buttons
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        def restore_selected():
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning("No Selection", "Please select nodes to restore.")
+                return
+            
+            for node_id in selected:
+                reason = exclusion_map.get(node_id)
+                if reason == "Highly connected":
+                    self.highly_connected_exclusions.discard(node_id)
+                elif reason == "Peripheral":
+                    self.peripheral_exclusions.discard(node_id)
+                elif reason == "Manual":
+                    self.manual_exclusions.discard(node_id)
+            
+            self._update_exclusion_status_labels()
+            messagebox.showinfo("Success", f"Restored {len(selected)} node(s).")
+            dialog.destroy()
+        
+        def clear_all():
+            if not messagebox.askyesno("Confirm", "Clear all exclusions?"):
+                return
+            
+            self.highly_connected_exclusions.clear()
+            self.peripheral_exclusions.clear()
+            self.manual_exclusions.clear()
+            
+            self._update_exclusion_status_labels()
+            messagebox.showinfo("Success", "All exclusions cleared.")
+            dialog.destroy()
+        
+        ttk.Button(btn_frame, text="Close", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Restore Selected", command=restore_selected).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Clear All Exclusions", command=clear_all).pack(side=tk.LEFT, padx=5)
+
+
+    def _add_manual_exclusion(self):
+        """Adds a manually selected node to exclusions."""
+        selection = self.manual_exclude_entry.get()
+        if not selection:
+            return
+        
+        try:
+            node_id = selection.split("(")[-1].strip(")")
+            if node_id in self.full_graph:
+                self.manual_exclusions.add(node_id)
+                self.manual_exclude_entry.var.set("")
+                self._update_exclusion_status_labels()
+                messagebox.showinfo("Success", f"Node excluded.")
+            else:
+                messagebox.showwarning("Not Found", "Node not found in graph.")
+        except (IndexError, ValueError):
+            messagebox.showwarning("Invalid Selection", "Please select a valid node.")
+
+
+    # --- Entity List Upload Handlers ---
+
+    def _upload_single_entity_list(self):
+        """Uploads entity list for single-list analysis mode."""
+        path = filedialog.askopenfilename(
+            title="Select Entity List CSV",
+            filetypes=[("CSV Files", "*.csv")]
+        )
+        if not path:
+            return
+        
+        try:
+            entity_ids = self._load_entity_list_file(path)
+            self.analyse_entity_list = entity_ids
+            self.analyse_entity_list_path = path
+            self.single_list_status.config(
+                text=f"{len(entity_ids)} entities loaded",
+                foreground="green"
+            )
+            
+            # Show the "use as highlight" option in Visualise
+            self._update_highlight_from_analyse_prompt()
+            
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Could not load entity list: {e}")
+
+
+    def _upload_list_a(self):
+        """Uploads List A for two-list analysis mode."""
+        path = filedialog.askopenfilename(
+            title="Select List A CSV",
+            filetypes=[("CSV Files", "*.csv")]
+        )
+        if not path:
+            return
+        
+        try:
+            entity_ids = self._load_entity_list_file(path)
+            self.cohort_a_ids = entity_ids
+            self.list_a_status.config(
+                text=f"{len(entity_ids)} entities loaded",
+                foreground="green"
+            )
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Could not load entity list: {e}")
+
+
+    def _upload_list_b(self):
+        """Uploads List B for two-list analysis mode."""
+        path = filedialog.askopenfilename(
+            title="Select List B CSV",
+            filetypes=[("CSV Files", "*.csv")]
+        )
+        if not path:
+            return
+        
+        try:
+            entity_ids = self._load_entity_list_file(path)
+            self.cohort_b_ids = entity_ids
+            self.list_b_status.config(
+                text=f"{len(entity_ids)} entities loaded",
+                foreground="green"
+            )
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Could not load entity list: {e}")
+
+
+    def _load_entity_list_file(self, path):
+        """Loads entity IDs from a CSV file. Returns a set of IDs."""
+        entity_ids = set()
+        
+        with open(path, "r", encoding="utf-8-sig") as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+        
+        if not rows:
+            raise ValueError("File is empty.")
+        
+        # Heuristic: skip header if it looks like one
+        first_val = rows[0][0].strip() if rows[0] else ""
+        is_likely_header = (
+            first_val.lower() in ("id", "entity_id", "company_number", "name", "cohort_id", "identifier", "source_id")
+            or not first_val
+        )
+        
+        start_idx = 1 if is_likely_header else 0
+        
+        for row in rows[start_idx:]:
+            if row:
+                entity_id = row[0].strip()
+                if entity_id:
+                    entity_ids.add(entity_id)
+        
+        return entity_ids
+
+
+    def _upload_highlight_list(self):
+        """Uploads entity list for highlighting in visualisation."""
+        path = filedialog.askopenfilename(
+            title="Select Highlight List CSV",
+            filetypes=[("CSV Files", "*.csv")]
+        )
+        if not path:
+            return
+        
+        try:
+            entity_ids = self._load_entity_list_file(path)
+            self.highlight_entity_list = entity_ids
+            self.highlight_status_label.config(
+                text=f"{len(entity_ids)} entities loaded",
+                foreground="green"
+            )
+            self.clear_highlight_btn.pack(side=tk.LEFT, padx=(10, 0))
+            self.show_highlighted_check.config(state="normal")
+            
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Could not load entity list: {e}")
+
+
+    def _clear_highlight_list(self):
+        """Clears the highlight entity list."""
+        self.highlight_entity_list = None
+        self.highlight_status_label.config(text="No list loaded", foreground="gray")
+        self.clear_highlight_btn.pack_forget()
+        self.show_highlighted_only_var.set(False)
+        self.show_highlighted_check.config(state="disabled")
+
+
+    def _update_highlight_from_analyse_prompt(self):
+        """Shows/hides the 'use from Analyse' prompt in Visualise section."""
+        if self.analyse_entity_list:
+            self.use_analyse_list_frame.pack(fill=tk.X, pady=(10, 0))
+        else:
+            self.use_analyse_list_frame.pack_forget()
+
+
+    def _use_analyse_list_as_highlight(self):
+        """Copies the entity list from Analyse to use as highlight list."""
+        if not self.analyse_entity_list:
+            return
+        
+        self.highlight_entity_list = self.analyse_entity_list.copy()
+        self.highlight_status_label.config(
+            text=f"{len(self.highlight_entity_list)} entities loaded (from Analyse)",
+            foreground="green"
+        )
+        self.clear_highlight_btn.pack(side=tk.LEFT, padx=(10, 0))
+        self.show_highlighted_check.config(state="normal")
+
+
+    # --- Connection Finding ---
+
+    def _execute_find_connections(self):
+        """Executes the connection search based on selected mode."""
+        mode = self.analyse_mode_var.get()
+        
+        if mode == "two_entities":
+            self._find_connection_two_entities()
+        elif mode == "single_list":
+            self._find_connections_single_list()
+        elif mode == "two_lists":
+            self._find_connections_two_lists()
+
+
+    def _find_connection_two_entities(self):
+        """Finds path between two specific entities."""
+        pruned_graph = self._get_pruned_graph()
+        
+        start_selection = self.start_node_entry.get()
+        end_selection = self.end_node_entry.get()
+        
+        if not start_selection or not end_selection:
+            messagebox.showerror("Input Error", "Please select both entities.")
+            return
+        
+        try:
+            start_id = start_selection.split("(")[-1].strip(")")
+            end_id = end_selection.split("(")[-1].strip(")")
+        except IndexError:
+            messagebox.showerror("Input Error", "Invalid node selection.")
+            return
+        
+        if start_id not in pruned_graph or end_id not in pruned_graph:
+            messagebox.showwarning("Node Not Found", "Selected nodes do not exist in graph.")
+            return
+        
+        try:
+            graph_to_search = (
+                pruned_graph.to_undirected()
+                if not self.enforce_direction_var.get()
+                else pruned_graph
+            )
+            path = nx.shortest_path(graph_to_search, source=start_id, target=end_id)
+            
+            path_details = "Connection Path Found:\n\n"
+            for i, node_id in enumerate(path):
+                node_label = pruned_graph.nodes[node_id].get("label", node_id)
+                path_details += f"{i+1}. {node_label}\n"
+            
+            result = messagebox.askyesno(
+                "Path Found",
+                f"{path_details}\n\nGenerate visual graph with path highlighted?"
+            )
+            
+            if result:
+                self._generate_highlighted_graph(pruned_graph, path)
+            
+        except nx.NetworkXNoPath:
+            messagebox.showinfo("No Path", "No connection could be found between these entities.")
+        except Exception as e:
+            log_message(f"Pathfinding error: {e}")
+            messagebox.showerror("Error", f"An error occurred: {e}")
+
+
+    def _find_connections_single_list(self):
+        """Finds connections within a single entity list."""
+        if not self.analyse_entity_list:
+            messagebox.showwarning("No List", "Please upload an entity list first.")
+            return
+        
+        if not self.graph_built:
+            messagebox.showwarning("No Graph", "Please build the graph first.")
+            return
+        
+        # Use cohort A/B infrastructure but with same list
+        self.cohort_a_ids = self.analyse_entity_list.copy()
+        self.cohort_b_ids = self.analyse_entity_list.copy()
+        
+        output_filepath = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+            title="Save Connection Paths As",
+        )
+        if not output_filepath:
+            return
+        
+        # Use existing cohort connection thread
+        self.find_connections_btn.config(state="disabled")
+        self.analyse_status_var.set("Starting search...")
+        threading.Thread(
+            target=self._run_cohort_connection_thread,
+            args=(output_filepath,),
+            daemon=True,
+        ).start()
+
+
+    def _find_connections_two_lists(self):
+        """Finds connections between two entity lists."""
+        if not self.cohort_a_ids or not self.cohort_b_ids:
+            messagebox.showwarning("Missing Lists", "Please upload both List A and List B.")
+            return
+        
+        if not self.graph_built:
+            messagebox.showwarning("No Graph", "Please build the graph first.")
+            return
+        
+        output_filepath = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+            title="Save Connection Paths As",
+        )
+        if not output_filepath:
+            return
+        
+        self.find_connections_btn.config(state="disabled")
+        self.analyse_status_var.set("Starting search...")
+        threading.Thread(
+            target=self._run_cohort_connection_thread,
+            args=(output_filepath,),
+            daemon=True,
+        ).start()
+
+
     def _converter_run(self):
         """Main execution logic for the Data Converter."""
         entity_type = self.converter_entity_type.get() # "person" or "company"
@@ -1037,6 +2365,7 @@ class NetworkAnalytics(InvestigationModuleBase):
 
 
     def add_files(self):
+        """Modified: Tracks file changes for rebuild prompt."""
         filepaths = filedialog.askopenfilenames(
             title="Select exported graph CSV files", filetypes=[("CSV files", "*.csv")]
         )
@@ -1049,15 +2378,12 @@ class NetworkAnalytics(InvestigationModuleBase):
                 self.file_listbox.insert(tk.END, f"FILE: {os.path.basename(path)}")
 
         if self.source_files:
-            self.build_btn.config(state="normal")
-            self.app.after(
-                0,
-                lambda: self.status_var.set(
-                    f"{len(self.source_files)} data source(s) loaded. Ready to build graph."
-                ),
-            )
+            # Enable Build & Refine section
+            self.refine_section.set_enabled(True)
+            self._mark_files_changed()
 
     def clear_files(self):
+        """Modified: Resets all state and disables sections."""
         for f in self.source_files:
             if "Seed-" in f and os.path.exists(f):
                 try:
@@ -1068,229 +2394,56 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.source_files = []
         self.file_listbox.delete(0, tk.END)
         self.full_graph.clear()
-        self.cohort_ids = set()
-        self.cohort_status_label.config(text="No cohort file loaded.")
-        self.cohort_only_check.config(state="disabled")
-        self.build_btn.config(state="disabled")
-        self.generate_full_graph_btn.config(state="disabled")
-        self.start_node_entry.config(state="disabled")
-        self.end_node_entry.config(state="disabled")
-        self.find_path_btn.config(state="disabled")
-        self.scan_dupes_btn.config(state="disabled") # Disable dedup scan
-        self.app.after(
-            0,
-            lambda: self.status_var.set(
-                "File list cleared. Please add or seed data to begin."
-            ),
-        )
+        
+        # Reset state
+        self.graph_built = False
+        self.files_changed_since_build = False
+        self.highly_connected_exclusions.clear()
+        self.peripheral_exclusions.clear()
+        self.manual_exclusions.clear()
+        
+        # Reset section states
+        self.refine_section.set_enabled(False)
+        self.refine_section.set_status("")
+        self.refine_section.clear_warning()
+        self.analyse_section.set_enabled(False)
+        self.visualise_section.set_enabled(False)
+        
+        # Reset exclusion labels
+        self.hc_status_label.config(text="No exclusions", foreground="gray")
+        self.pn_status_label.config(text="No exclusions", foreground="gray")
 
-    def load_cohort_file(self):
-        path = filedialog.askopenfilename(
-            title="Select Cohort CSV File", filetypes=[("CSV Files", "*.csv")]
-        )
-        if not path:
-            return
-
-        try:
-            temp_ids = set()
-            with open(path, "r", encoding="utf-8-sig") as f:
-                reader = csv.reader(f)
-                rows = list(reader)
-            
-            if not rows:
-                raise ValueError("File is empty.")
-            
-            # Heuristic: skip first row if it looks like a header
-            # (headers typically won't match ID patterns like company numbers or canonical name keys)
-            first_val = rows[0][0].strip() if rows[0] else ""
-            is_likely_header = (
-                first_val.lower() in ("id", "entity_id", "company_number", "name", "cohort_id", "identifier")
-                or not first_val  # Empty first cell suggests header row
-            )
-            
-            start_idx = 1 if is_likely_header else 0
-            
-            for row in rows[start_idx:]:
-                if row:
-                    entity_id = row[0].strip()
-                    if entity_id:
-                        temp_ids.add(entity_id)
-
-            self.cohort_ids = temp_ids
-            self.cohort_status_label.config(
-                text=f"Loaded {len(self.cohort_ids)} cohort IDs.", foreground="green"
-            )
-            self.cohort_only_check.config(state="normal")
-
-        except Exception as e:
-            self.cohort_status_label.config(
-                text="Error loading file.", foreground="red"
-            )
-            self.app.after(0, lambda: messagebox.showerror("File Error", f"Could not read cohort file: {e}"))
-
-    def _add_node_to_removal_list(self):
-        selection = self.prune_entry.get()
-        if not selection:
-            return
-        try:
-            node_id = selection.split("(")[-1].strip(")")
-            self.nodes_to_remove.add(node_id)
-            self.prune_listbox.delete(0, tk.END)
-            for node in sorted(list(self.nodes_to_remove)):
-                label = self.full_graph.nodes.get(node, {}).get("label", node)
-                self.prune_listbox.insert(tk.END, f"{label} ({node})")
-            self.prune_entry.var.set("") 
-        except IndexError:
-            pass
-
-    def _remove_node_from_removal_list(self):
-        selection = self.prune_listbox.curselection()
-        if not selection:
-            return
-        selected_text = self.prune_listbox.get(selection[0])
-        try:
-            node_id = selected_text.split("(")[-1].strip(")")
-            self.nodes_to_remove.discard(node_id)
-            self.prune_listbox.delete(selection[0])
-        except IndexError:
-            pass 
-
-    def _clear_removal_list(self):
-        self.nodes_to_remove.clear()
-        self.prune_listbox.delete(0, tk.END)
 
     def _get_pruned_graph(self):
+        """Modified: Uses all three exclusion sets."""
         if not self.full_graph:
-            return nx.DiGraph() 
+            return nx.DiGraph()
 
+        # Combine all exclusions
+        all_exclusions = (
+            self.highly_connected_exclusions |
+            self.peripheral_exclusions |
+            self.manual_exclusions
+        )
+        
+        if not all_exclusions:
+            return self.full_graph.copy()
+        
         pruned_graph = self.full_graph.copy()
-        if self.nodes_to_remove:
-            nodes_in_graph_to_remove = [
-                n for n in self.nodes_to_remove if n in pruned_graph
-            ]
-            if nodes_in_graph_to_remove:
-                pruned_graph.remove_nodes_from(nodes_in_graph_to_remove)
-                self.app.after(
-                    0,
-                    lambda: self.status_var.set(
-                        f"Temporarily removed {len(nodes_in_graph_to_remove)} node(s) for this action."
-                    ),
-                )
+        nodes_to_remove = [n for n in all_exclusions if n in pruned_graph]
+        if nodes_to_remove:
+            pruned_graph.remove_nodes_from(nodes_to_remove)
+        
         return pruned_graph
 
-    def build_combined_graph(self):
-        self.full_graph.clear()
-        self.app.after(
-            0,
-            lambda: self.status_var.set("Building combined graph from all sources..."),
-        )
-        self.app.update_idletasks()
-
-        try:
-            for filepath in self.source_files:
-                filename = os.path.basename(filepath)
-                with open(filepath, "r", encoding="utf-8-sig") as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        self._add_edge_to_graph(row, filename)
-
-            if self.full_graph.number_of_nodes() > 0:
-                self.app.after(
-                    0,
-                    lambda: self.status_var.set(
-                        f"Graph built successfully with {self.full_graph.number_of_nodes()} nodes and {self.full_graph.number_of_edges()} edges."
-                    ),
-                )
-                messagebox.showinfo(
-                    "Success",
-                    f"Combined graph built successfully.\n\nNodes: {self.full_graph.number_of_nodes()}\nEdges: {self.full_graph.number_of_edges()}",
-                )
-
-                self._populate_node_dropdowns()
-                self.generate_full_graph_btn.config(state="normal")
-                self.find_path_btn.config(state="normal")
-                self.scan_dupes_btn.config(state="normal") # Enable scan
-            else:
-                self.app.after(
-                    0,
-                    lambda: self.status_var.set(
-                        "No data loaded. Please add files or seed a company."
-                    ),
-                )
-
-        except Exception as e:
-            log_message(f"Error building combined graph: {e}")
-            self.app.after(0, lambda: messagebox.showerror("File Read Error", f"Could not build graph: {e}"))
-            self.app.after(0, lambda: self.status_var.set("Error building graph."))
-
-    def _load_cohort_a(self):
-        path = filedialog.askopenfilename(
-            title="Select Cohort A CSV File", filetypes=[("CSV Files", "*.csv")]
-        )
-        if not path:
-            return
-        try:
-            with open(path, "r", encoding="utf-8-sig") as f:
-                reader = csv.reader(f)
-                next(reader, None)
-                self.cohort_a_ids = {row[0].strip() for row in reader if row}
-            self.cohort_a_status_label.config(
-                text=f"Loaded {len(self.cohort_a_ids)} entities.", foreground="green"
-            )
-            if self.cohort_b_ids:
-                self.find_cohort_paths_btn.config(state="normal")
-        except Exception as e:
-            self.cohort_a_status_label.config(
-                text="Error loading file.", foreground="red"
-            )
-
-    def _load_cohort_b(self):
-        path = filedialog.askopenfilename(
-            title="Select Cohort B CSV File", filetypes=[("CSV Files", "*.csv")]
-        )
-        if not path:
-            return
-        try:
-            with open(path, "r", encoding="utf-8-sig") as f:
-                reader = csv.reader(f)
-                next(reader, None)
-                self.cohort_b_ids = {row[0].strip() for row in reader if row}
-            self.cohort_b_status_label.config(
-                text=f"Loaded {len(self.cohort_b_ids)} entities.", foreground="green"
-            )
-            if self.cohort_a_ids:
-                self.find_cohort_paths_btn.config(state="normal")
-        except Exception as e:
-            self.cohort_b_status_label.config(
-                text="Error loading file.", foreground="red"
-            )
-
-    def _start_cohort_connection_search(self):
-        if not self.full_graph.number_of_nodes() > 0:
-            self.app.after(0, lambda: messagebox.showerror("Error", "Please build the combined network graph first."))
-            return
-
-        output_filepath = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv")],
-            title="Save Connection Paths As",
-        )
-        if not output_filepath:
-            return
-
-        self.find_cohort_paths_btn.config(state="disabled")
-        threading.Thread(
-            target=self._run_cohort_connection_thread,
-            args=(output_filepath,),
-            daemon=True,
-        ).start()
 
     def _run_cohort_connection_thread(self, output_filepath):
+        """Runs the cohort connection search in a background thread."""
         try:
-            self.app.after(0, lambda: self.status_var.set("Preparing graph for analysis..."))
+            self.app.after(0, lambda: self.analyse_status_var.set("Preparing graph for analysis..."))
 
             pruned_graph = self._get_pruned_graph()
-            undirected_graph = pruned_graph.to_undirected() 
+            undirected_graph = pruned_graph.to_undirected()
 
             max_hops = self.max_hops_var.get()
             shortest_only = self.shortest_only_var.get()
@@ -1299,7 +2452,7 @@ class NetworkAnalytics(InvestigationModuleBase):
             cohort_b = {node for node in self.cohort_b_ids if node in undirected_graph}
 
             total_pairs = len(cohort_a) * len(cohort_b)
-            self.app.after(0, self.progress_bar.config, {"maximum": total_pairs, "value": 0})
+            self.app.after(0, lambda: self.analyse_progress_bar.config(maximum=total_pairs, value=0))
 
             headers = [f"Hop {i+1}" for i in range(max_hops + 1)]
 
@@ -1314,14 +2467,14 @@ class NetworkAnalytics(InvestigationModuleBase):
                             continue
 
                         processed_pairs += 1
-                        if processed_pairs % 20 == 0: 
+                        if processed_pairs % 20 == 0:
                             self.app.after(
                                 0,
-                                lambda p=processed_pairs, t=total_pairs: self.status_var.set(
+                                lambda p=processed_pairs, t=total_pairs: self.analyse_status_var.set(
                                     f"Checking pair {p}/{t}..."
                                 ),
                             )
-                            self.app.after(0, lambda p=processed_pairs: self.progress_bar.config(value=p))
+                            self.app.after(0, lambda p=processed_pairs: self.analyse_progress_bar.config(value=p))
 
                         if shortest_only:
                             try:
@@ -1330,15 +2483,13 @@ class NetworkAnalytics(InvestigationModuleBase):
                                 )
                                 if len(path) - 1 <= max_hops:
                                     labeled_path = [
-                                        pruned_graph.nodes[node_id].get(
-                                            "label", node_id
-                                        )
+                                        pruned_graph.nodes[node_id].get("label", node_id)
                                         for node_id in path
                                     ]
                                     writer.writerow(labeled_path)
                             except nx.NetworkXNoPath:
                                 continue
-                        else: 
+                        else:
                             all_paths = nx.all_simple_paths(
                                 undirected_graph,
                                 source=start_node,
@@ -1352,24 +2503,27 @@ class NetworkAnalytics(InvestigationModuleBase):
                                 ]
                                 writer.writerow(labeled_path)
 
-            self.app.after(0, self.progress_bar.config, {"value": total_pairs})
+            self.app.after(0, lambda: self.analyse_progress_bar.config(value=total_pairs))
             self.app.after(
-                0, 
-                lambda: self.status_var.set(
-                    f"Search complete! Results saved to {os.path.basename(output_filepath)}"
+                0,
+                lambda: self.analyse_status_var.set(
+                    f"Complete! Results saved to {os.path.basename(output_filepath)}"
                 )
             )
-            self.safe_update(
-                messagebox.showinfo,
-                "Success",
-                f"Processing complete. The results have been saved to:\n{output_filepath}",
+            self.app.after(
+                0,
+                lambda: messagebox.showinfo(
+                    "Success",
+                    f"Processing complete. The results have been saved to:\n{output_filepath}",
+                )
             )
 
         except Exception as e:
             log_message(f"Fatal error during cohort connection search: {e}")
-            self.safe_update(messagebox.showerror, "Error", f"An unexpected error occurred: {e}")
+            self.app.after(0, lambda: messagebox.showerror("Error", f"An unexpected error occurred: {e}"))
+            self.app.after(0, lambda: self.analyse_status_var.set("Error during search."))
         finally:
-            self.safe_update(self.find_cohort_paths_btn.config, {"state": "normal"})
+            self.app.after(0, lambda: self.find_connections_btn.config(state="normal"))
 
     def _add_edge_to_graph(self, edge_data, source_name):
         target_id = edge_data.get("target_id")
@@ -1416,6 +2570,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         )
 
     def _populate_node_dropdowns(self):
+        """Modified: Updates new widget references."""
         if not self.full_graph:
             return
 
@@ -1426,68 +2581,20 @@ class NetworkAnalytics(InvestigationModuleBase):
             ]
         )
 
-        self.prune_entry.set_values(self.all_node_labels)
-        self.prune_entry.config(state="normal")
+        # Update searchable entries
         self.start_node_entry.set_values(self.all_node_labels)
         self.end_node_entry.set_values(self.all_node_labels)
-        self.start_node_entry.config(state="normal")
-        self.end_node_entry.config(state="normal")
+        self.manual_exclude_entry.set_values(self.all_node_labels)
 
     def generate_full_graph(self):
-        self.app.after(0, lambda: self.status_var.set("Generating full visual graph..."))
-        self.app.update_idletasks()
-        pruned_graph = self._get_pruned_graph() 
-        self._generate_highlighted_graph(pruned_graph, path=None) 
-        self.app.after(0, lambda: self.status_var.set("Full graph generation complete."))
-
-    def find_and_highlight_path(self):
+        """Modified: Uses new highlight list and isolated network options."""
+        if not self.graph_built:
+            messagebox.showwarning("No Graph", "Please build the graph in Build & Refine first.")
+            return
+        
         pruned_graph = self._get_pruned_graph()
-        start_selection = self.start_node_entry.get()
-        end_selection = self.end_node_entry.get()
-        if not start_selection or not end_selection:
-            self.app.after(0, lambda: messagebox.showerror("Input Error", "Please select both entities."))
-            return
+        self._generate_highlighted_graph(pruned_graph, path=None)
 
-        try:
-            start_id = start_selection.split("(")[-1].strip(")")
-            end_id = end_selection.split("(")[-1].strip(")")
-        except IndexError:
-            self.app.after(0, lambda: messagebox.showerror("Input Error", "Invalid node selection."))
-            return
-
-        if start_id not in pruned_graph or end_id not in pruned_graph:
-            messagebox.showwarning("Node Not Found", "Selected nodes do not exist in graph.")
-            return
-
-        self.app.after(0, lambda: self.status_var.set(f"Finding shortest path..."))
-        self.app.update_idletasks()
-
-        try:
-            graph_to_search = (
-                pruned_graph.to_undirected()
-                if not self.enforce_direction_var.get()
-                else pruned_graph
-            )
-            path = nx.shortest_path(graph_to_search, source=start_id, target=end_id)
-
-            path_details = "Connection Path Found:\n\n"
-            for i, node_id in enumerate(path):
-                node_label = pruned_graph.nodes[node_id].get("label", node_id)
-                path_details += f"{i+1}. {node_label}\n"
-
-            messagebox.showinfo("Path Found", path_details)
-            self.app.after(
-                0,
-                lambda: self.status_var.set(f"Path found! Generating visual graph..."),
-            )
-            self._generate_highlighted_graph(pruned_graph, path)
-
-        except nx.NetworkXNoPath:
-            messagebox.showinfo("No Path", "No connection could be found.")
-            self.app.after(0, lambda: self.status_var.set("No path found."))
-        except Exception as e:
-            log_message(f"Pathfinding error: {e}")
-            self.app.after(0, lambda: messagebox.showerror("Error", f"An error occurred: {e}"))
 
     def _fetch_company_network_data(self, company_number, fetch_pscs=True):
         profile, _ = ch_get_data(
@@ -1508,55 +2615,72 @@ class NetworkAnalytics(InvestigationModuleBase):
         return profile, officers, pscs
 
     def _generate_highlighted_graph(self, graph_to_render, path=None):
-        if self.show_cohort_networks_only_var.get():
-            if not self.cohort_ids:
-                messagebox.showwarning("Warning", "Please load a cohort file first.")
+        """Modified: Uses new highlight list and entity type filtering for isolated networks."""
+        
+        # Handle "show only highlighted" filter
+        if self.show_highlighted_only_var.get():
+            if not self.highlight_entity_list:
+                messagebox.showwarning("Warning", "Please load a highlight list first.")
                 return
-
-            self.app.after(0, lambda: self.status_var.set("Filtering for cohort networks..."))
-            self.app.update_idletasks()
 
             undirected_view = graph_to_render.to_undirected()
             connected_components = list(nx.connected_components(undirected_view))
 
             valid_nodes = set()
             for component in connected_components:
-                cohort_nodes_in_component = [
-                    node for node in component if node in self.cohort_ids
+                highlighted_in_component = [
+                    node for node in component if node in self.highlight_entity_list
                 ]
-                if len(cohort_nodes_in_component) >= 2:
+                if len(highlighted_in_component) >= 2:
                     valid_nodes.update(component)
 
             if not valid_nodes:
-                messagebox.showinfo("No Networks", "No networks connecting cohort members found.")
-                self.app.after(0, lambda: self.status_var.set("Filtering complete. None found."))
+                messagebox.showinfo("No Networks", "No networks connecting highlighted entities found.")
                 return
 
             graph_to_render = graph_to_render.subgraph(valid_nodes).copy()
 
-        elif self.eliminate_unconnected_var.get():
-            self.app.after(0, lambda: self.status_var.set("Filtering for connected company networks..."))
-            self.app.update_idletasks()
+        # Handle "hide isolated networks" filter with entity type selection
+        elif self.hide_isolated_var.get():
+            # Determine which entity types to check for
+            required_types = []
+            if self.isolated_companies_var.get():
+                required_types.append("company")
+            if self.isolated_persons_var.get():
+                required_types.append("person")
+            if self.isolated_addresses_var.get():
+                required_types.append("address")
+            
+            if not required_types:
+                messagebox.showwarning("Warning", "Please select at least one entity type.")
+                return
 
             undirected_view = graph_to_render.to_undirected()
             connected_components = list(nx.connected_components(undirected_view))
 
             valid_nodes = set()
             for component in connected_components:
-                company_nodes_in_component = [
-                    node
-                    for node in component
-                    if graph_to_render.nodes[node].get("type") == "company"
-                ]
-                if len(company_nodes_in_component) >= 2:
+                # Check if component has at least 2 of any required type
+                has_enough = False
+                for req_type in required_types:
+                    type_nodes = [
+                        node for node in component
+                        if graph_to_render.nodes[node].get("type") == req_type
+                    ]
+                    if len(type_nodes) >= 2:
+                        has_enough = True
+                        break
+                
+                if has_enough:
                     valid_nodes.update(component)
 
             if not valid_nodes:
-                messagebox.showinfo("No Networks", "No networks connecting companies found.")
+                messagebox.showinfo("No Networks", "No networks matching criteria found.")
                 return
 
             graph_to_render = graph_to_render.subgraph(valid_nodes).copy()
 
+        # Build the visual network
         net = Network(height="95vh", width="100%", directed=True, notebook=False, cdn_resources="local")
         net.set_options("""var options = {"configure": {"enabled": true }, "physics": {"solver": "forceAtlas2Based"}}""")
 
@@ -1577,6 +2701,9 @@ class NetworkAnalytics(InvestigationModuleBase):
             )
             file_color_map = {source: color for source, color in zip(unique_sources, border_colors)}
 
+        # Use highlight_entity_list instead of cohort_ids
+        highlight_ids = self.highlight_entity_list or set()
+
         for node_id, attrs in graph_to_render.nodes(data=True):
             node_type = attrs.get("type")
             base_color = "#B9D9EB" if node_type == "company" else ("#FFB347" if node_type == "address" else "#D9E8B9")
@@ -1586,7 +2713,7 @@ class NetworkAnalytics(InvestigationModuleBase):
             border_width = 1
             shape_properties = {}
 
-            if self.cohort_ids and node_id in self.cohort_ids:
+            if highlight_ids and node_id in highlight_ids:
                 shape_properties["borderDashes"] = [10, 10]
                 border_width = 5
                 size = 30
@@ -1613,11 +2740,11 @@ class NetworkAnalytics(InvestigationModuleBase):
             if node_type == "company":
                 wrapped = "\n".join(textwrap.wrap(raw_label, width=25))
                 label_lines.append(html.escape(wrapped))
-                label_lines.append(f"({html.escape(node_id)})") 
+                label_lines.append(f"({html.escape(node_id)})")
             elif node_type == "address":
                 wrapped = "\n".join(textwrap.wrap(raw_label, width=25))
                 label_lines.append(html.escape(wrapped))
-            else: 
+            else:
                 label_lines.append(html.escape(raw_label))
                 if "-" in str(node_id):
                     try:
@@ -1653,30 +2780,32 @@ class NetworkAnalytics(InvestigationModuleBase):
         try:
             filename = os.path.join(CONFIG_DIR, "combined_network_graph.html")
             net.write_html(filename, notebook=False)
-            self.app.after(0, lambda: self.status_var.set("Graph generated! Opening in browser..."))
             webbrowser.open(f"file://{os.path.realpath(filename)}")
         except Exception as e:
             log_message(f"Failed to save or open combined graph: {e}")
-            self.app.after(0, lambda: messagebox.showerror("Graph Error", f"Could not save graph: {e}"))
+            messagebox.showerror("Graph Error", f"Could not save graph: {e}")
 
     def start_seed_fetch(self):
+        """Modified: Uses new seed status variable and progress bar."""
         seed_cnum_raw = self.seed_cnum_var.get()
         seed_cnum = self._clean_company_number(seed_cnum_raw)
         if not seed_cnum:
-            self.app.after(0, lambda: messagebox.showerror("Input Error", "Please enter a valid company number."))
+            messagebox.showerror("Input Error", "Please enter a valid company number.")
             return
 
         self.seed_btn.config(state="disabled")
-        self.app.after(0, lambda: self.status_var.set(f"Seeding network with {seed_cnum}..."))
+        self.seed_status_var.set(f"Seeding network with {seed_cnum}...")
+        self.seed_progress_bar.start(10)
         self.cancel_flag.clear()
         threading.Thread(target=self._run_seed_fetch_thread, args=(seed_cnum,), daemon=True).start()
 
     def _run_seed_fetch_thread(self, seed_cnum):
+        """Modified: Uses new status variable."""
         fetch_pscs = self.seed_fetch_pscs_var.get()
         fetch_associated = self.seed_fetch_associated_var.get()
 
         try:
-            self.app.after(0, lambda: self.status_var.set(f"Fetching officers for {seed_cnum}..."))
+            self.app.after(0, lambda: self.seed_status_var.set(f"Fetching officers for {seed_cnum}..."))
             officers, error = ch_get_data(
                 self.api_key,
                 self.ch_token_bucket,
@@ -1686,7 +2815,7 @@ class NetworkAnalytics(InvestigationModuleBase):
                 raise ValueError(f"Could not fetch officers for {seed_cnum}.")
 
             if fetch_associated:
-                self.app.after(0, lambda: self.status_var.set(f"Found {len(officers['items'])} officers. Fetching appointments..."))
+                self.app.after(0, lambda: self.seed_status_var.set(f"Found {len(officers['items'])} officers. Fetching appointments..."))
                 all_appointments = []
                 with ThreadPoolExecutor(max_workers=2) as executor:
                     future_to_officer = {
@@ -1694,9 +2823,11 @@ class NetworkAnalytics(InvestigationModuleBase):
                         for o in officers["items"]
                     }
                     for future in as_completed(future_to_officer):
-                        if self.cancel_flag.is_set(): return
+                        if self.cancel_flag.is_set():
+                            return
                         appointments = future.result()
-                        if appointments: all_appointments.extend(appointments)
+                        if appointments:
+                            all_appointments.extend(appointments)
 
                 unique_company_numbers = {
                     app.get("appointed_to", {}).get("company_number")
@@ -1706,7 +2837,7 @@ class NetworkAnalytics(InvestigationModuleBase):
             else:
                 unique_company_numbers = {seed_cnum}
 
-            self.app.after(0, lambda: self.status_var.set(f"Found {len(unique_company_numbers)} companies. Building network..."))
+            self.app.after(0, lambda: self.seed_status_var.set(f"Found {len(unique_company_numbers)} companies. Building network..."))
             temp_graph = nx.DiGraph()
             with ThreadPoolExecutor(max_workers=2) as executor:
                 future_to_cnum = {
@@ -1714,8 +2845,9 @@ class NetworkAnalytics(InvestigationModuleBase):
                     for cnum in unique_company_numbers if cnum
                 }
                 for i, future in enumerate(as_completed(future_to_cnum)):
-                    if self.cancel_flag.is_set(): return
-                    self.app.after(0, lambda: self.status_var.set(f"Processing company {i+1}/{len(unique_company_numbers)}..."))
+                    if self.cancel_flag.is_set():
+                        return
+                    self.app.after(0, lambda i=i: self.seed_status_var.set(f"Processing company {i+1}/{len(unique_company_numbers)}..."))
                     profile, officers_data, pscs_data = future.result()
                     if profile:
                         self._add_company_to_graph(temp_graph, profile, officers_data, pscs_data)
@@ -1724,7 +2856,8 @@ class NetworkAnalytics(InvestigationModuleBase):
 
         except Exception as e:
             self.app.after(0, lambda: messagebox.showerror("Error", f"Failed to seed network: {e}"))
-            self.app.after(0, lambda: self.status_var.set("Error during seeding."))
+            self.app.after(0, lambda: self.seed_status_var.set("Error during seeding."))
+            self.app.after(0, lambda: self.seed_progress_bar.stop())
         finally:
             self.app.after(100, lambda: self.seed_btn.config(state="normal"))
 
@@ -1807,10 +2940,18 @@ class NetworkAnalytics(InvestigationModuleBase):
             log_message(f"Could not write temp seed file {filepath}: {e}")
 
     def _add_seed_file_to_list(self, filepath):
+        """Modified: Uses new status variable and triggers rebuild tracking."""
         self.source_files.append(filepath)
-        self.file_listbox.insert(tk.END, f"Seed: {os.path.basename(filepath)}")
-        self.build_btn.config(state="normal")
-        self.app.after(0, lambda: self.status_var.set(f"Successfully seeded network for {os.path.basename(filepath).split('-')[1]}. Ready to build."))
+        self.file_listbox.insert(tk.END, f"SEED: {os.path.basename(filepath)}")
+        
+        # Enable Build & Refine section
+        self.refine_section.set_enabled(True)
+        self._mark_files_changed()
+        
+        # Update seed status
+        seed_cnum = os.path.basename(filepath).split("-")[1] if "-" in filepath else ""
+        self.seed_status_var.set(f"Successfully seeded network for {seed_cnum}. Ready to build.")
+        self.seed_progress_bar.stop()
 
     def _clean_company_number(self, cnum_raw):
         if not cnum_raw or not isinstance(cnum_raw, str): return None
