@@ -70,10 +70,12 @@ class DataMatch(InvestigationModuleBase):
             command=self.toggle_slider,
         ).pack(anchor="w")
         self.accuracy_frame = ttk.Frame(logic_frame)
+        # --- Fuzzy Settings Frame ---
+
         self.accuracy_frame.pack(fill=tk.X, padx=20, pady=5)
-        self.accuracy_label = ttk.Label(
-            self.accuracy_frame, text="Fuzzy Match Accuracy:"
-        )
+
+        # 1. Slider (Existing)
+        self.accuracy_label = ttk.Label(self.accuracy_frame, text="Fuzzy Match Accuracy:")
         self.accuracy_label.pack(side=tk.LEFT)
         self.accuracy_var = tk.IntVar(value=85)
         self.accuracy_slider = ttk.Scale(
@@ -86,10 +88,32 @@ class DataMatch(InvestigationModuleBase):
             command=lambda val: self.accuracy_var.set(round(float(val))),
         )
         self.accuracy_slider.pack(side=tk.LEFT, padx=5)
-        self.accuracy_value_label = ttk.Label(
-            self.accuracy_frame, textvariable=self.accuracy_var
+        self.accuracy_value_label = ttk.Label(self.accuracy_frame, textvariable=self.accuracy_var)
+        self.accuracy_value_label.pack(side=tk.LEFT, padx=(0, 20))
+
+        # 2. Algorithm Dropdown (NEW)
+        ttk.Label(self.accuracy_frame, text="Algorithm:").pack(side=tk.LEFT)
+        
+        # We define this dictionary here so we can access it later in the thread
+        # The keys include the "Plain English" explanation you asked for.
+        self.ALGO_MAP = {
+            "Weighted Ratio (Default - Smart Mix)": fuzz.WRatio,
+            "Simple Ratio (Strict Spelling)": fuzz.ratio,
+            "Partial Ratio (Sub-string / Hidden Text)": fuzz.partial_ratio,
+            "Token Sort (Ignore Word Order)": fuzz.token_sort_ratio,
+            "Token Set (Ignore Duplicates)": fuzz.token_set_ratio,
+        }
+        
+        self.algo_var = tk.StringVar(value="Weighted Ratio (Default - Smart Mix)")
+        self.algo_combo = ttk.Combobox(
+            self.accuracy_frame,
+            textvariable=self.algo_var,
+            values=list(self.ALGO_MAP.keys()),
+            state="readonly",
+            width=35  # Wide enough to see the explanations
         )
-        self.accuracy_value_label.pack(side=tk.LEFT)
+        self.algo_combo.pack(side=tk.LEFT, padx=5)
+        
         self.toggle_slider()
 
         # Step 3: Column Selection
@@ -355,6 +379,12 @@ class DataMatch(InvestigationModuleBase):
             match_choices = [row.get(match_key, "") for row in self.matching_data]
             threshold = self.accuracy_var.get()
 
+            # --- NEW: Get the selected scorer from the map ---
+            selected_algo_name = self.algo_var.get()
+            # Default to WRatio if something goes wrong, though generic text keeps it safe
+            scorer_func = self.ALGO_MAP.get(selected_algo_name, fuzz.WRatio)
+            # -------------------------------------------------
+
             for i, p_row in enumerate(self.primary_data):
                 if self.cancel_flag.is_set():
                     break
@@ -372,7 +402,7 @@ class DataMatch(InvestigationModuleBase):
                 matches = process.extract(
                     p_name,
                     match_choices,
-                    scorer=fuzz.WRatio,
+                    scorer=scorer_func,  # <--- CHANGED: Use the variable here
                     limit=None,
                     score_cutoff=threshold,
                 )

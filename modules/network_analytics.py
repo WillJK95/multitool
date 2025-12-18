@@ -49,6 +49,7 @@ class CollapsibleSection(ttk.Frame):
         self._status_text = ""
         self._warning_text = ""
         self._on_toggle_callback = None
+        self._on_expand_callback = None
         
         # Header frame
         self.header_frame = ttk.Frame(self)
@@ -401,6 +402,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         ttk.Label(seed_top_row, text="Company Number:").pack(side=tk.LEFT, padx=(0, 5))
         seed_entry = ttk.Entry(seed_top_row, textvariable=self.seed_cnum_var, width=20)
         seed_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        seed_entry.bind("<Return>", lambda event: self.start_seed_fetch())
         seed_btn_state = "normal" if self.api_key else "disabled"
         self.seed_btn = ttk.Button(
             seed_top_row,

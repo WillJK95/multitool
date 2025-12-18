@@ -348,7 +348,18 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
                 return
             
             self.contracts_data = contracts
-            
+
+            # The API hard limit is 1000. If we are anywhere near that, 
+            # we likely lost data due to pagination limits.
+            if len(contracts) >= 900: 
+                self.safe_update(
+                    messagebox.showwarning,
+                    "Potential Data Truncation",
+                    f"Warning: This search returned {len(contracts)} records, which is close to the system limit (1000).\n\n"
+                    "Some older contracts may have been dropped.\n\n"
+                    "Recommended Action: Narrow your 'From' and 'To' dates to search in smaller chunks."
+                )
+                
             # --- Extract unique suppliers (Standard logic) ---
             unique_suppliers = {}
             for contract in contracts:
