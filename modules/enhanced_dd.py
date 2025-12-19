@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 from tkinter import ttk, filedialog, messagebox
 
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 from rapidfuzz.fuzz import WRatio
@@ -25,7 +27,7 @@ from ..constants import (
     CONFIG_DIR,
 )
 from .base import InvestigationModuleBase
-from ..utils.helpers import log_message
+from ..utils.helpers import log_message, clean_company_number
 
 class EnhancedDueDiligence(InvestigationModuleBase):
     def __init__(self, parent_app, api_key, back_callback, ch_token_bucket):
@@ -335,7 +337,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             messagebox.showerror("Input Error", "Please enter a company number.")
             return
         
-        cnum = self._clean_company_number(cnum_raw)
+        cnum = clean_company_number(cnum_raw)
         
         self.fetch_btn.config(state='disabled')
         self.status_var.set(f"Fetching data for {cnum}...")
@@ -2030,16 +2032,6 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         
         return html_output
     
-    def _clean_company_number(self, cnum_raw):
-        """Clean and format company number."""
-        if not cnum_raw or not isinstance(cnum_raw, str):
-            return None
-        cleaned_num = cnum_raw.strip().upper()
-        if cleaned_num.startswith(("SC", "NI", "OC", "LP", "SL", "SO", "NC", "NL")):
-            return cleaned_num
-        elif cleaned_num.isdigit():
-            return cleaned_num.zfill(8)
-        return cleaned_num
 
     def _finish_report_generation(self):
         """Re-enable UI after report generation completes or fails."""

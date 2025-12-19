@@ -26,7 +26,7 @@ from ..constants import (
 )
 
 # Utility functions (were global functions or duplicated in classes)
-from ..utils.helpers import log_message, clean_address_string
+from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key
 
 # UI components (were classes in original file)
 from ..ui.tooltip import Tooltip
@@ -236,32 +236,6 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         messagebox.showinfo("Columns Confirmed", "Column selection confirmed.")
         self.run_btn.config(state="normal")
 
-    def _get_canonical_name_key(self, name: str, dob_obj: dict = None) -> str:
-        if not name:
-            return ""
-        cleaned_name = name.lower()
-        titles = ["mr", "mrs", "ms", "miss", "dr", "prof", "sir", "dame", "rev"]
-        for title in titles:
-            cleaned_name = re.sub(
-                r"\b" + re.escape(title) + r"\b\.?", "", cleaned_name
-            ).strip()
-
-        if "," in cleaned_name:
-            parts = cleaned_name.split(",", 1)
-            cleaned_name = f"{parts[1].strip()} {parts[0].strip()}"
-
-        cleaned_name = re.sub(r"[^a-z0-9\s]", "", cleaned_name)
-        tokens = cleaned_name.split()
-        if not tokens:
-            return ""
-
-        name_key = tokens[0] + tokens[-1] if len(tokens) > 1 else tokens[0]
-
-        if dob_obj and "year" in dob_obj and "month" in dob_obj:
-            return f"{name_key}-{dob_obj['year']}-{dob_obj['month']:02d}"
-        else:
-            return name_key
-
     def start_investigation(self):
         self.cancel_flag.clear()
         self.run_btn.pack_forget()
@@ -456,7 +430,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                 ).upper()
             else:
                 dob = p.get("date_of_birth")
-                unique_id = self._get_canonical_name_key(name, dob)
+                unique_id = get_canonical_name_key(name, dob)
 
             psc_cnum = unique_id if is_corporate else ""
             country = p.get("country_of_residence", "") or (
@@ -741,7 +715,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                         if not name:
                             continue
                         dob = officer.get("date_of_birth")
-                        person_key = self._get_canonical_name_key(name, dob)
+                        person_key = get_canonical_name_key(name, dob)
                         if not G.has_node(person_key):
                             G.add_node(person_key, label=name, type="person", dob=dob)
 
@@ -764,7 +738,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                         if not name:
                             continue
                         dob = psc.get("date_of_birth")
-                        person_key = self._get_canonical_name_key(name, dob)
+                        person_key = get_canonical_name_key(name, dob)
                         if not G.has_node(person_key):
                             G.add_node(person_key, label=name, type="person", dob=dob)
 

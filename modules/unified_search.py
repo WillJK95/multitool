@@ -24,6 +24,7 @@ from tkinter import ttk, messagebox, filedialog
 from ..api.companies_house import ch_get_data
 from ..api.charity_commission import cc_get_data
 from ..utils.enrichment import enrich_with_company_data, enrich_with_charity_data
+from ..utils.helpers import clean_company_number
 
 # Constants (were at top of original file)
 from ..constants import (
@@ -651,18 +652,8 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
         return enriched_row
 
-    def _clean_company_number(self, cnum_raw):
-        if not cnum_raw or not isinstance(cnum_raw, str):
-            return None
-        cleaned_num = cnum_raw.strip().upper()
-        if cleaned_num.startswith(("SC", "NI", "OC", "LP", "SL", "SO", "NC", "NL")):
-            return cleaned_num
-        elif cleaned_num.isdigit():
-            return cleaned_num.zfill(8)
-        return cleaned_num
-
     def _search_companies_house_by_number(self, row, identifier):
-        cnum = self._clean_company_number(identifier)
+        cnum = clean_company_number(identifier)
         if not cnum:
             return False
         profile, error = ch_get_data(

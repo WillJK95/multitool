@@ -30,7 +30,7 @@ from ..constants import (
 )
 
 # Utility functions
-from ..utils.helpers import log_message, clean_address_string
+from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, clean_company_number
 
 # UI components
 from ..ui.tooltip import Tooltip
@@ -2287,10 +2287,10 @@ class NetworkAnalytics(InvestigationModuleBase):
                     except ValueError:
                         pass 
                 
-                entity_id = self._get_canonical_name_key(raw_id_val, dob_obj)
+                entity_id = get_canonical_name_key(raw_id_val, dob_obj)
             
             else: # Company
-                cnum = self._clean_company_number(raw_id_val)
+                cnum = clean_company_number(raw_id_val)
                 if not cnum: 
                     count_skipped += 1
                     continue
@@ -2790,7 +2790,7 @@ class NetworkAnalytics(InvestigationModuleBase):
     def start_seed_fetch(self):
         """Modified: Uses new seed status variable and progress bar."""
         seed_cnum_raw = self.seed_cnum_var.get()
-        seed_cnum = self._clean_company_number(seed_cnum_raw)
+        seed_cnum = clean_company_number(seed_cnum_raw)
         if not seed_cnum:
             messagebox.showerror("Input Error", "Please enter a valid company number.")
             return
@@ -2894,7 +2894,7 @@ class NetworkAnalytics(InvestigationModuleBase):
                 name = o.get("name")
                 if not name: continue
                 dob = o.get("date_of_birth")
-                key = self._get_canonical_name_key(name, dob)
+                key = get_canonical_name_key(name, dob)
                 G.add_node(key, label=name, type="person")
                 G.add_edge(cnum, key, label=o.get("officer_role", "officer"))
         if pscs:
@@ -2902,27 +2902,10 @@ class NetworkAnalytics(InvestigationModuleBase):
                 name = p.get("name")
                 if not name: continue
                 dob = p.get("date_of_birth")
-                key = self._get_canonical_name_key(name, dob)
+                key = get_canonical_name_key(name, dob)
                 G.add_node(key, label=name, type="person")
                 G.add_edge(cnum, key, label="psc")
 
-    def _get_canonical_name_key(self, name: str, dob_obj: dict) -> str:
-        if not name: return ""
-        cleaned_name = name.lower()
-        titles = ["mr", "mrs", "ms", "miss", "dr", "prof", "sir", "dame", "rev"]
-        for title in titles:
-            cleaned_name = re.sub(r"\b" + re.escape(title) + r"\b\.?", "", cleaned_name).strip()
-        if "," in cleaned_name:
-            parts = cleaned_name.split(",", 1)
-            cleaned_name = f"{parts[1].strip()} {parts[0].strip()}"
-        cleaned_name = re.sub(r"[^a-z0-9\s]", "", cleaned_name)
-        tokens = cleaned_name.split()
-        if not tokens: return ""
-        name_key = tokens[0] + tokens[-1] if len(tokens) > 1 else tokens[0]
-        if dob_obj and "year" in dob_obj and "month" in dob_obj:
-            return f"{name_key}-{dob_obj['year']}-{dob_obj['month']}"
-        else:
-            return name_key
 
     def _save_graph_to_temp_csv(self, G, seed_cnum):
         if G.number_of_edges() == 0:
@@ -2955,9 +2938,3 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.seed_status_var.set(f"Successfully seeded network for {seed_cnum}. Ready to build.")
         self.seed_progress_bar.stop()
 
-    def _clean_company_number(self, cnum_raw):
-        if not cnum_raw or not isinstance(cnum_raw, str): return None
-        cleaned_num = cnum_raw.strip().upper()
-        if cleaned_num.startswith(("SC", "NI", "OC", "LP", "SL", "SO", "NC", "NL")): return cleaned_num
-        elif cleaned_num.isdigit(): return cleaned_num.zfill(8)
-        return cleaned_num

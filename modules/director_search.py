@@ -31,7 +31,7 @@ from ..constants import (
 )
 
 # Utility functions (were global functions or duplicated in classes)
-from ..utils.helpers import log_message, clean_address_string
+from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key
 
 # UI components (were classes in original file)
 from ..ui.tooltip import Tooltip
@@ -498,33 +498,6 @@ class DirectorSearch(InvestigationModuleBase):
         for key, text in GRANT_DATA_FIELDS.items():
             row[text] = self.get_nested_value(grant_data, key)
 
-    def _get_canonical_name_key(self, name: str, dob_obj: dict) -> str:
-        """Creates a more robust key for a person's name."""
-        if not name:
-            return ""
-        cleaned_name = name.lower()
-        titles = ["mr", "mrs", "ms", "miss", "dr", "prof", "sir", "dame", "rev"]
-        for title in titles:
-            cleaned_name = re.sub(
-                r"\b" + re.escape(title) + r"\b\.?", "", cleaned_name
-            ).strip()
-
-        if "," in cleaned_name:
-            parts = cleaned_name.split(",", 1)
-            cleaned_name = f"{parts[1].strip()} {parts[0].strip()}"
-
-        cleaned_name = re.sub(r"[^a-z0-9\s]", "", cleaned_name)
-        tokens = cleaned_name.split()
-        if not tokens:
-            return ""
-
-        name_key = tokens[0] + tokens[-1] if len(tokens) > 1 else tokens[0]
-
-        if dob_obj and "year" in dob_obj and "month" in dob_obj:
-            return f"{name_key}-{dob_obj['year']}-{dob_obj['month']}"
-        else:
-            return name_key
-
     def _format_address_label(self, address_str: str, line_length: int = 25) -> str:
         """Wraps a long address string into multiple lines for graph readability."""
         import textwrap
@@ -670,7 +643,7 @@ class DirectorSearch(InvestigationModuleBase):
                         if not name:
                             continue
                         dob = officer.get("date_of_birth")
-                        person_key = self._get_canonical_name_key(name, dob)
+                        person_key = get_canonical_name_key(name, dob)
                         if not G.has_node(person_key):
                             G.add_node(person_key, label=name, type="person", dob=dob)
                         elif dob and not G.nodes[person_key].get("dob"):
@@ -687,7 +660,7 @@ class DirectorSearch(InvestigationModuleBase):
                         if not name:
                             continue
                         dob = psc.get("date_of_birth")
-                        person_key = self._get_canonical_name_key(name, dob)
+                        person_key = get_canonical_name_key(name, dob)
                         if not G.has_node(person_key):
                             G.add_node(person_key, label=name, type="person", dob=dob)
                         elif dob and not G.nodes[person_key].get("dob"):

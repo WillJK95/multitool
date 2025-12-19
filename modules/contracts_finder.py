@@ -25,7 +25,7 @@ from ..api.contracts_finder import (
     check_api_status,
 )
 from ..api.companies_house import ch_get_data
-from ..utils.helpers import log_message, clean_company_number, clean_address_string
+from ..utils.helpers import log_message, clean_company_number, clean_address_string, get_canonical_name_key
 from ..ui.tooltip import Tooltip
 
 from .base import InvestigationModuleBase
@@ -268,36 +268,6 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
             args=(buyer_name, from_date, to_date),
             daemon=True
         ).start()
-
-    def _get_canonical_name_key(self, name: str, dob_obj: dict = None) -> str:
-        """
-        Generate a canonical key for a person based on name and DOB.
-        Ported from UBO module to ensure graph compatibility.
-        """
-        if not name:
-            return ""
-        cleaned_name = name.lower()
-        titles = ["mr", "mrs", "ms", "miss", "dr", "prof", "sir", "dame", "rev"]
-        for title in titles:
-            cleaned_name = re.sub(
-                r"\b" + re.escape(title) + r"\b\.?", "", cleaned_name
-            ).strip()
-
-        if "," in cleaned_name:
-            parts = cleaned_name.split(",", 1)
-            cleaned_name = f"{parts[1].strip()} {parts[0].strip()}"
-
-        cleaned_name = re.sub(r"[^a-z0-9\s]", "", cleaned_name)
-        tokens = cleaned_name.split()
-        if not tokens:
-            return ""
-
-        name_key = tokens[0] + tokens[-1] if len(tokens) > 1 else tokens[0]
-
-        if dob_obj and "year" in dob_obj and "month" in dob_obj:
-            return f"{name_key}-{dob_obj['year']}-{dob_obj['month']:02d}"
-        else:
-            return name_key
     
     def _contract_search_thread(self, buyer_name: str, from_date: str, to_date: str):
         """Background thread for contract searching."""
@@ -857,7 +827,7 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
                         dob = officer.get("date_of_birth")
 
                         # Use canonical key (Name + DOB) for ID to match UBO
-                        target_id = self._get_canonical_name_key(officer_name, dob)
+                        target_id = get_canonical_name_key(officer_name, dob)
                         
                         # Use Original Name for Label (UBO Style)
                         target_label = officer_name
@@ -881,7 +851,7 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
                         dob = psc.get("date_of_birth")
 
                         # Use canonical key
-                        target_id = self._get_canonical_name_key(psc_name, dob)
+                        target_id = get_canonical_name_key(psc_name, dob)
                         target_label = psc_name
                         target_type = "person"
                         relationship = "psc"

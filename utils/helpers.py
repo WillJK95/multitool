@@ -41,7 +41,7 @@ def clean_company_number(cnum_raw: Optional[str]) -> Optional[str]:
     cleaned_num = cnum_raw.strip().upper()
     
     # Check for prefixed company numbers (Scotland, NI, etc.)
-    if cleaned_num.startswith(("SC", "NI", "OC", "LP", "SL", "SO", "NC", "NL")):
+    if cleaned_num.startswith(("SC", "NI", "OC", "LP", "SL", "SO", "NC", "NL", "R0", "ZC")):
         return cleaned_num
     elif cleaned_num.isdigit():
         # Zero-pad numeric company numbers to 8 digits
@@ -79,50 +79,34 @@ def clean_address_string(address: Optional[str]) -> Optional[str]:
     return cleaned if cleaned else None
 
 
-def get_canonical_name_key(name: str, dob_obj: Optional[Dict] = None) -> str:
-    """
-    Generate a canonical key for matching people across different records.
-    
-    Creates a simplified key from first and last name tokens, optionally
-    combined with date of birth for disambiguation.
-    
-    Args:
-        name: Full name string
-        dob_obj: Optional dict with 'year' and 'month' keys
-        
-    Returns:
-        Canonical key string for matching
-    """
+def get_canonical_name_key(name: str, dob_obj: dict = None) -> str:
     if not name:
         return ""
     
+    # 1. Standardize Case
     cleaned_name = name.lower()
-    
-    # Remove common titles
-    titles = ["mr", "mrs", "ms", "miss", "dr", "prof", "sir", "dame", "rev"]
-    for title in titles:
-        cleaned_name = re.sub(
-            r"\b" + re.escape(title) + r"\b\.?", "", cleaned_name
-        ).strip()
-    
-    # Handle "SURNAME, Forename" format
+
+    # 2. Handle "Surname, Firstname" format (Critical for Companies House data)
     if "," in cleaned_name:
         parts = cleaned_name.split(",", 1)
         cleaned_name = f"{parts[1].strip()} {parts[0].strip()}"
-    
-    # Remove non-alphanumeric characters
+
+    # 3. Remove non-alphanumeric (punctuations/brackets)
     cleaned_name = re.sub(r"[^a-z0-9\s]", "", cleaned_name)
-    
     tokens = cleaned_name.split()
+
     if not tokens:
         return ""
-    
-    # Create key from first and last name tokens
+
+    # 4. Generate Key
     name_key = tokens[0] + tokens[-1] if len(tokens) > 1 else tokens[0]
-    
-    # Add DOB if available for disambiguation
+
+    # 5. Append DOB
     if dob_obj and "year" in dob_obj and "month" in dob_obj:
-        return f"{name_key}-{dob_obj['year']}-{dob_obj['month']}"
+        try:
+            return f"{name_key}-{dob_obj['year']}-{int(dob_obj['month']):02d}"
+        except (ValueError, TypeError):
+            return name_key
     else:
         return name_key
 
