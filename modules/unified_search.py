@@ -303,18 +303,6 @@ class CompanyCharitySearch(InvestigationModuleBase):
                 except tk.TclError:
                     pass
 
-    def _update_accuracy_label(self, value):
-        """Update the accuracy description label when slider moves."""
-        # Round to nearest integer preset
-        preset_index = round(float(value))
-        self.accuracy_preset_var.set(preset_index)
-        
-        # Update the label
-        preset = self.accuracy_presets[preset_index]
-        self.accuracy_description_label.config(text=preset["label"])
-        
-        # Update the actual threshold value for compatibility
-        self.accuracy_var.set(preset["threshold"])
 
     def _set_frame_widget_state(self, frame, state):
         """Recursively sets the state of all widgets within a given frame."""
@@ -514,7 +502,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
             MAX_WORKERS = 2
         else:
             # If ONLY Companies House is searched, use the faster limit
-            MAX_WORKERS = 2
+            MAX_WORKERS = 4
 
         self.app.after(
             0,

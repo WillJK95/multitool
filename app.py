@@ -7,6 +7,8 @@ navigation, API keys, and module loading.
 """
 
 import os
+import subprocess
+import sys
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -150,6 +152,7 @@ class App(tk.Tk):
         file_menu.add_command(label="Settings...", command=self._open_settings_window)
         file_menu.add_separator()
         file_menu.add_command(label="Clear Cache & Logs", command=self.clear_cache_and_logs)
+        file_menu.add_command(label="Open Config Folder", command=self.open_config_folder)
         file_menu.add_command(label="Manage API Keys", command=self.manage_api_keys)
         file_menu.add_separator()
         file_menu.add_command(label="View Licenses", command=self.show_licenses)
@@ -555,6 +558,22 @@ class App(tk.Tk):
                 messagebox.showinfo("Success", "Cache and logs cleared.")
             except Exception as e:
                 messagebox.showerror("Error", f"Could not clear cache: {e}")
+
+    def open_config_folder(self) -> None:
+        """Open the config folder in the system file explorer."""
+        if not os.path.exists(CONFIG_DIR):
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+
+        try:
+            if sys.platform == "win32":
+                os.startfile(CONFIG_DIR)
+            elif sys.platform == "darwin":
+                subprocess.run(["open", CONFIG_DIR], check=True)
+            else:  # Linux and other Unix-like systems
+                subprocess.run(["xdg-open", CONFIG_DIR], check=True)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open config folder: {e}")
+
     
     def show_licenses(self) -> None:
         """Show third-party licenses window."""

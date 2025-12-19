@@ -483,8 +483,8 @@ class DirectorSearch(InvestigationModuleBase):
                 break
             data, error = grantnav_get_data(url)
             if error:
-                return {"error_reason": error}
                 log_message(f"GrantNav error for {org_id}: {error}")
+                return {"error_reason": error}
                 break
             if data and "results" in data:
                 all_results.extend(item.get("data", {}) for item in data["results"])
@@ -707,8 +707,6 @@ class DirectorSearch(InvestigationModuleBase):
             notebook=False,
             cdn_resources="local",
         )
-
-        # net.set_options("""var options = {"physics": { "solver": "forceAtlas2Based" }}""")
 
         net.set_options(
             """var options = {"configure": {"enabled": true }, "physics": {"solver": "forceAtlas2Based"}}"""
