@@ -26,7 +26,7 @@ from ..constants import (
 )
 
 # Utility functions (were global functions or duplicated in classes)
-from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key
+from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label
 
 # UI components (were classes in original file)
 from ..ui.tooltip import Tooltip
@@ -732,6 +732,19 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                                 label=officer.get("officer_role", "officer"),
                             )
 
+                        # Add officer correspondence address
+                        officer_addr_raw = extract_address_string(officer.get("address"))
+                        if officer_addr_raw:
+                            officer_addr_clean = clean_address_string(officer_addr_raw)
+                            if officer_addr_clean and not G.has_node(officer_addr_clean):
+                                G.add_node(
+                                    officer_addr_clean,
+                                    label=format_address_label(officer_addr_raw),
+                                    type="address",
+                                )
+                            if officer_addr_clean:
+                                G.add_edge(person_key, officer_addr_clean, label="correspondence_at")
+
                 if pscs:
                     for psc in pscs.get("items", []):
                         name = psc.get("name")
@@ -748,6 +761,19 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                             G[cnum][person_key]["label"] += ", psc"
                         else:
                             G.add_edge(cnum, person_key, label="psc")
+
+                        # Add PSC correspondence address
+                        psc_addr_raw = extract_address_string(psc.get("address"))
+                        if psc_addr_raw:
+                            psc_addr_clean = clean_address_string(psc_addr_raw)
+                            if psc_addr_clean and not G.has_node(psc_addr_clean):
+                                G.add_node(
+                                    psc_addr_clean,
+                                    label=format_address_label(psc_addr_raw),
+                                    type="address",
+                                )
+                            if psc_addr_clean:
+                                G.add_edge(person_key, psc_addr_clean, label="correspondence_at")
         return G
 
     def _fetch_full_company_details(self, company_number):

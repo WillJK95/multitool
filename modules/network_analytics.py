@@ -30,7 +30,7 @@ from ..constants import (
 )
 
 # Utility functions
-from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, clean_company_number
+from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, clean_company_number, extract_address_string, format_address_label
 
 # UI components
 from ..ui.tooltip import Tooltip
@@ -2897,6 +2897,15 @@ class NetworkAnalytics(InvestigationModuleBase):
                 key = get_canonical_name_key(name, dob)
                 G.add_node(key, label=name, type="person")
                 G.add_edge(cnum, key, label=o.get("officer_role", "officer"))
+
+                # Add officer correspondence address
+                officer_addr_raw = extract_address_string(o.get("address"))
+                if officer_addr_raw:
+                    officer_addr_clean = clean_address_string(officer_addr_raw)
+                    if officer_addr_clean and not G.has_node(officer_addr_clean):
+                        G.add_node(officer_addr_clean, label=format_address_label(officer_addr_raw), type="address")
+                    if officer_addr_clean:
+                        G.add_edge(key, officer_addr_clean, label="correspondence_at")
         if pscs:
             for p in pscs.get("items", []):
                 name = p.get("name")
@@ -2905,6 +2914,15 @@ class NetworkAnalytics(InvestigationModuleBase):
                 key = get_canonical_name_key(name, dob)
                 G.add_node(key, label=name, type="person")
                 G.add_edge(cnum, key, label="psc")
+
+                # Add PSC correspondence address
+                psc_addr_raw = extract_address_string(p.get("address"))
+                if psc_addr_raw:
+                    psc_addr_clean = clean_address_string(psc_addr_raw)
+                    if psc_addr_clean and not G.has_node(psc_addr_clean):
+                        G.add_node(psc_addr_clean, label=format_address_label(psc_addr_raw), type="address")
+                    if psc_addr_clean:
+                        G.add_edge(key, psc_addr_clean, label="correspondence_at")
 
 
     def _save_graph_to_temp_csv(self, G, seed_cnum):

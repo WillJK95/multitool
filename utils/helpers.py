@@ -129,6 +129,38 @@ def format_address_label(address_str: str, line_length: int = 25) -> str:
     return "\n".join(textwrap.wrap(address_str, width=line_length))
 
 
+def extract_address_string(addr_data: Optional[Dict]) -> Optional[str]:
+    """
+    Extract a formatted address string from an address dictionary.
+
+    Works with Companies House address format containing fields like
+    address_line_1, address_line_2, locality, region, postal_code, country.
+
+    Args:
+        addr_data: Address dictionary from API response
+
+    Returns:
+        Comma-separated address string or None if no valid data
+    """
+    if not addr_data or not isinstance(addr_data, dict):
+        return None
+
+    raw_address_str = ", ".join(
+        filter(
+            None,
+            [
+                addr_data.get("address_line_1"),
+                addr_data.get("address_line_2"),
+                addr_data.get("locality"),
+                addr_data.get("region"),
+                addr_data.get("postal_code"),
+            ],
+        )
+    )
+
+    return raw_address_str if raw_address_str else None
+
+
 def get_nested_value(data_dict: Dict, key_path: str, default: Any = "") -> Any:
     """
     Get a value from a nested dictionary using dot notation.
