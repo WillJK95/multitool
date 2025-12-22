@@ -3216,8 +3216,8 @@ class NetworkAnalytics(InvestigationModuleBase):
                                     id_b,
                                     label=f"Inferred: {link.get('Type', '')}",
                                     type="hidden",     # Used for finding the edge later
-                                    method=link.get("Method", ""), # ✅ CRITICAL: Pass the method for styling
-                                    detail=link.get("Detail", "")  # ✅ Good practice: Pass detail for tooltips
+                                    method=link.get("Method", ""), 
+                                    detail=link.get("Detail", "")
                                 )
 
         # Build the visual network
