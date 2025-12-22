@@ -12,6 +12,7 @@ import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- Third-Party ---
+import networkx as nx
 import requests
 from rapidfuzz.fuzz import WRatio
 
@@ -33,7 +34,7 @@ from ..constants import (
 )
 
 # Utility functions (were global functions or duplicated in classes)
-from ..utils.helpers import log_message, clean_address_string
+from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label
 
 # UI components (were classes in original file)
 from ..ui.tooltip import Tooltip
@@ -251,10 +252,25 @@ class CompanyCharitySearch(InvestigationModuleBase):
             run_buttons_frame, text="Cancel", command=self.cancel_investigation
         )
 
+        export_buttons_frame = ttk.Frame(run_frame)
+        export_buttons_frame.pack(pady=5)
+
         self.export_btn = ttk.Button(
-            run_frame, text="Export Results", state="disabled", command=self.export_csv
+            export_buttons_frame, text="Export Results", state="disabled", command=self.export_csv
         )
-        self.export_btn.pack(pady=5)
+        self.export_btn.pack(side=tk.LEFT, padx=5)
+
+        self.export_graph_data_btn = ttk.Button(
+            export_buttons_frame,
+            text="Export Graph Data (CSV)",
+            state="disabled",
+            command=self.start_graph_data_export,
+        )
+        self.export_graph_data_btn.pack(side=tk.LEFT, padx=5)
+        Tooltip(
+            self.export_graph_data_btn,
+            "Export the network connections (edge list) to a CSV file for combined analysis with other modules.",
+        )
 
         self.progress_bar = ttk.Progressbar(
             run_frame, orient="horizontal", length=300, mode="determinate"
@@ -485,6 +501,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
         self.run_btn.pack_forget()
         self.cancel_btn.pack(side=tk.LEFT, padx=5)
         self.export_btn.config(state="disabled")
+        self.export_graph_data_btn.config(state="disabled")
         self.progress_bar["value"] = 0
         self.results_data = []
         threading.Thread(target=self._run_investigation_thread, daemon=True).start()
@@ -548,6 +565,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
         self.run_btn.pack(side=tk.LEFT, padx=5)
         if self.results_data:
             self.export_btn.config(state="normal")
+            self.export_graph_data_btn.config(state="normal")
 
     def _process_single_row(self, row):
         if self.cancel_flag.is_set():
@@ -826,4 +844,365 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
         final_headers = ordered_headers + new_headers
         self.generic_export_csv(final_headers)
+
+    # --- Graph Data Export Methods ---
+
+    def start_graph_data_export(self):
+        """Initiates the graph data export process."""
+        if not self.results_data:
+            messagebox.showinfo(
+                "No Data", "Please run an investigation before exporting graph data."
+            )
+            return
+
+        # Disable buttons to prevent concurrent operations
+        self.run_btn.config(state="disabled")
+        self.export_btn.config(state="disabled")
+        self.export_graph_data_btn.config(state="disabled")
+        self.cancel_flag.clear()
+
+        self.app.after(0, lambda: self.status_var.set("Starting graph data collection..."))
+        threading.Thread(target=self._run_export_graph_thread, daemon=True).start()
+
+    def _run_export_graph_thread(self):
+        """Thread for building the graph object and then exporting it."""
+        try:
+            graph_object = self._build_unified_graph_object()
+            if graph_object is not None and not self.cancel_flag.is_set():
+                self.after(100, self._export_graph_to_csv, graph_object)
+        except Exception as e:
+            log_message(f"Unified graph data export failed: {e}")
+            messagebox.showerror(
+                "Error", f"An error occurred during graph data export: {e}"
+            )
+        finally:
+            self.after(200, self._finish_graph_process)
+
+    def _fetch_company_network_data(self, company_number):
+        """Worker function to fetch profile, officers, and PSCs for one company."""
+        profile, _ = ch_get_data(
+            self.api_key, self.ch_token_bucket, f"/company/{company_number}"
+        )
+        officers, _ = ch_get_data(
+            self.api_key,
+            self.ch_token_bucket,
+            f"/company/{company_number}/officers?items_per_page=100",
+        )
+        pscs, _ = ch_get_data(
+            self.api_key,
+            self.ch_token_bucket,
+            f"/company/{company_number}/persons-with-significant-control?items_per_page=100",
+        )
+        return profile, officers, pscs
+
+    def _fetch_charity_network_data(self, charity_number):
+        """Worker function to fetch charity details and trustees for one charity."""
+        details, _ = cc_get_data(self.charity_api_key, f"/charitydetails/{charity_number}/0")
+        trustees, _ = cc_get_data(self.charity_api_key, f"/charitytrustees/{charity_number}/0")
+        return details, trustees
+
+    def _build_unified_graph_object(self):
+        """
+        Builds a comprehensive network graph for unified search results.
+        Handles Companies, Charities, and Charitable Companies (Both).
+        """
+        G = nx.DiGraph()
+
+        # Collect unique company and charity numbers from results
+        company_numbers = set()
+        charity_numbers = set()
+        company_charity_links = []  # Track rows that have both company and charity
+
+        for row in self.results_data:
+            match_source = row.get("match_source", "")
+
+            # Check for company number (from Companies House match)
+            company_number = row.get("company_number")
+            if company_number and "Companies House" in match_source:
+                company_numbers.add(company_number)
+
+            # Check for charity number (from Charity Commission match)
+            charity_number = row.get("charity_number")
+            if charity_number and "Charity Commission" in match_source:
+                charity_numbers.add(str(charity_number))
+
+            # Track if both are present (Charitable Company)
+            if company_number and charity_number and "Companies House" in match_source and "Charity Commission" in match_source:
+                company_charity_links.append((company_number, str(charity_number)))
+
+        total_entities = len(company_numbers) + len(charity_numbers)
+        if total_entities == 0:
+            self.app.after(
+                0, lambda: self.status_var.set("No matched entities found to build graph.")
+            )
+            return None
+
+        self.app.after(
+            0,
+            lambda: self.status_var.set(
+                f"Fetching network data for {len(company_numbers)} companies and {len(charity_numbers)} charities..."
+            ),
+        )
+
+        processed_count = 0
+
+        # --- Process Companies ---
+        if company_numbers:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_to_cnum = {
+                    executor.submit(self._fetch_company_network_data, cnum): cnum
+                    for cnum in company_numbers
+                }
+
+                for future in as_completed(future_to_cnum):
+                    if self.cancel_flag.is_set():
+                        return None
+
+                    cnum = future_to_cnum[future]
+                    processed_count += 1
+                    self.app.after(
+                        0,
+                        lambda c=processed_count, t=total_entities: self.status_var.set(
+                            f"Processing entity {c}/{t}..."
+                        ),
+                    )
+
+                    profile, officers, pscs = future.result()
+                    if not profile:
+                        continue
+
+                    company_name = profile.get("company_name", cnum)
+                    G.add_node(cnum, label=company_name, type="company")
+
+                    # Add company registered address
+                    addr_data = profile.get("registered_office_address", {})
+                    raw_address_str = extract_address_string(addr_data)
+                    if raw_address_str:
+                        address_id = clean_address_string(raw_address_str)
+                        if address_id and not G.has_node(address_id):
+                            G.add_node(
+                                address_id,
+                                label=format_address_label(raw_address_str),
+                                type="address",
+                            )
+                        if address_id:
+                            G.add_edge(cnum, address_id, label="registered_at")
+
+                    # Add Officers
+                    if officers:
+                        for officer in officers.get("items", []):
+                            name = officer.get("name")
+                            if not name:
+                                continue
+                            dob = officer.get("date_of_birth")
+                            person_key = get_canonical_name_key(name, dob)
+                            if not G.has_node(person_key):
+                                G.add_node(person_key, label=name, type="person", dob=dob)
+
+                            # Check for existing edge before adding
+                            if G.has_edge(cnum, person_key):
+                                G[cnum][person_key]["label"] += f", {officer.get('officer_role', 'officer')}"
+                            else:
+                                G.add_edge(cnum, person_key, label=officer.get("officer_role", "officer"))
+
+                            # Add officer correspondence address
+                            officer_addr_raw = extract_address_string(officer.get("address"))
+                            if officer_addr_raw:
+                                officer_addr_clean = clean_address_string(officer_addr_raw)
+                                if officer_addr_clean and not G.has_node(officer_addr_clean):
+                                    G.add_node(
+                                        officer_addr_clean,
+                                        label=format_address_label(officer_addr_raw),
+                                        type="address",
+                                    )
+                                if officer_addr_clean:
+                                    G.add_edge(person_key, officer_addr_clean, label="correspondence_at")
+
+                    # Add PSCs
+                    if pscs:
+                        for psc in pscs.get("items", []):
+                            name = psc.get("name")
+                            if not name:
+                                continue
+                            dob = psc.get("date_of_birth")
+                            person_key = get_canonical_name_key(name, dob)
+                            if not G.has_node(person_key):
+                                G.add_node(person_key, label=name, type="person", dob=dob)
+
+                            # Check for existing edge before adding
+                            if G.has_edge(cnum, person_key):
+                                G[cnum][person_key]["label"] += ", psc"
+                            else:
+                                G.add_edge(cnum, person_key, label="psc")
+
+                            # Add PSC correspondence address
+                            psc_addr_raw = extract_address_string(psc.get("address"))
+                            if psc_addr_raw:
+                                psc_addr_clean = clean_address_string(psc_addr_raw)
+                                if psc_addr_clean and not G.has_node(psc_addr_clean):
+                                    G.add_node(
+                                        psc_addr_clean,
+                                        label=format_address_label(psc_addr_raw),
+                                        type="address",
+                                    )
+                                if psc_addr_clean:
+                                    G.add_edge(person_key, psc_addr_clean, label="correspondence_at")
+
+        # --- Process Charities ---
+        if charity_numbers:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_to_ccnum = {
+                    executor.submit(self._fetch_charity_network_data, ccnum): ccnum
+                    for ccnum in charity_numbers
+                }
+
+                for future in as_completed(future_to_ccnum):
+                    if self.cancel_flag.is_set():
+                        return None
+
+                    ccnum = future_to_ccnum[future]
+                    processed_count += 1
+                    self.app.after(
+                        0,
+                        lambda c=processed_count, t=total_entities: self.status_var.set(
+                            f"Processing entity {c}/{t}..."
+                        ),
+                    )
+
+                    details, trustees = future.result()
+                    if not details:
+                        continue
+
+                    charity_name = details.get("charity_name", f"Charity {ccnum}")
+                    charity_node_id = f"CC-{ccnum}"
+                    G.add_node(charity_node_id, label=charity_name, type="charity")
+
+                    # Add charity address
+                    charity_address = details.get("charity_contact_address")
+                    if charity_address:
+                        addr_clean = clean_address_string(charity_address)
+                        if addr_clean and not G.has_node(addr_clean):
+                            G.add_node(
+                                addr_clean,
+                                label=format_address_label(charity_address),
+                                type="address",
+                            )
+                        if addr_clean:
+                            G.add_edge(charity_node_id, addr_clean, label="registered_at")
+
+                    # Add Trustees
+                    if trustees:
+                        for trustee in trustees:
+                            name = trustee.get("trustee_name")
+                            if not name:
+                                continue
+                            # Charities don't provide DOB for trustees
+                            person_key = get_canonical_name_key(name, None)
+                            if not G.has_node(person_key):
+                                G.add_node(person_key, label=name, type="person")
+
+                            G.add_edge(charity_node_id, person_key, label="trustee")
+
+                            # Add trustee correspondence address if available
+                            trustee_addr = trustee.get("trustee_address")
+                            if trustee_addr:
+                                trustee_addr_clean = clean_address_string(trustee_addr)
+                                if trustee_addr_clean and not G.has_node(trustee_addr_clean):
+                                    G.add_node(
+                                        trustee_addr_clean,
+                                        label=format_address_label(trustee_addr),
+                                        type="address",
+                                    )
+                                if trustee_addr_clean:
+                                    G.add_edge(person_key, trustee_addr_clean, label="correspondence_at")
+
+        # --- Link Charitable Companies (Company <-> Charity) ---
+        for company_number, charity_number in company_charity_links:
+            charity_node_id = f"CC-{charity_number}"
+            if G.has_node(company_number) and G.has_node(charity_node_id):
+                G.add_edge(company_number, charity_node_id, label="registered_as")
+
+        return G
+
+    def _export_graph_to_csv(self, G):
+        """Exports the graph's connections (edges) to a CSV file."""
+        if G is None or G.number_of_edges() == 0:
+            self.app.after(
+                0,
+                lambda: self.status_var.set(
+                    "Export complete. No connections to export."
+                ),
+            )
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+            title="Save Graph Edge List As",
+        )
+        if not filepath:
+            self.app.after(0, lambda: self.status_var.set("Export cancelled by user."))
+            return
+
+        self.app.after(
+            0, lambda: self.status_var.set("Exporting graph connections to CSV...")
+        )
+        headers = [
+            "source_id",
+            "source_label",
+            "source_type",
+            "target_id",
+            "target_label",
+            "target_type",
+            "relationship",
+        ]
+
+        try:
+            with open(filepath, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(headers)
+
+                for source_id, target_id, edge_attrs in G.edges(data=True):
+                    source_attrs = G.nodes[source_id]
+                    target_attrs = G.nodes[target_id]
+
+                    row = [
+                        source_id,
+                        source_attrs.get("label", "").replace("\n", " "),
+                        source_attrs.get("type", ""),
+                        target_id,
+                        target_attrs.get("label", "").replace("\n", " "),
+                        target_attrs.get("type", ""),
+                        edge_attrs.get("label", ""),
+                    ]
+                    writer.writerow(row)
+
+            log_message(
+                f"Successfully exported {G.number_of_edges()} unified graph connections."
+            )
+            messagebox.showinfo(
+                "Export Successful",
+                f"Successfully exported {G.number_of_edges()} connections to CSV.",
+            )
+            self.app.after(
+                0, lambda: self.status_var.set("Graph data export complete.")
+            )
+
+        except IOError as e:
+            log_message(f"Unified graph data export failed: {e}")
+            messagebox.showerror("Export Error", f"Could not write to file: {e}")
+
+    def _finish_graph_process(self):
+        """Resets the UI after any graph process completes or is cancelled."""
+        if self.cancel_flag.is_set():
+            self.app.after(0, lambda: self.status_var.set("Operation cancelled."))
+        else:
+            if "..." not in self.status_var.get():
+                self.app.after(0, lambda: self.status_var.set("Ready."))
+
+        # Restore button states
+        self.run_btn.config(state="normal")
+        if self.results_data:
+            self.export_btn.config(state="normal")
+            self.export_graph_data_btn.config(state="normal")
 
