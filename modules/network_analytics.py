@@ -2,6 +2,7 @@
 
 import csv
 import html
+import math
 import os
 import re
 import textwrap
@@ -9,7 +10,7 @@ import threading
 import time
 import datetime
 import webbrowser
-import difflib 
+import difflib
 import tkinter as tk
 from tkinter import font as tkfont
 from typing import List, Dict, Optional, Tuple, Set
@@ -17,6 +18,7 @@ from tkinter import ttk, filedialog, messagebox
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import networkx as nx
+import pgeocode
 from pyvis.network import Network
 
 from ..ui.searchable_entry import SearchableEntry
@@ -218,6 +220,9 @@ class NetworkAnalytics(InvestigationModuleBase):
         # --- Legacy cohort support (for cohort A/B comparison) ---
         self.cohort_a_ids = set()
         self.cohort_b_ids = set()
+
+        # --- Hidden links discovery ---
+        self.discovered_hidden_links = []
         
         # --- Converter state variables ---
         self.converter_source_data = []
@@ -588,7 +593,66 @@ class NetworkAnalytics(InvestigationModuleBase):
             command=self._open_deduplication_dialog
         )
         self.scan_dupes_btn.pack(side=tk.LEFT)
-        
+
+        # --- Hidden Links ---
+        hidden_links_frame = ttk.LabelFrame(
+            container,
+            text="Inferred Links",
+            padding=10,
+        )
+        hidden_links_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(
+            hidden_links_frame,
+            text="Discover potential connections between entities based on proximity and surname matching. Entities separated by a single node only (e.g. shared directorship) are not be included.",
+            foreground="gray",
+            wraplength=500
+        ).pack(anchor="w", pady=(0, 10))
+
+        # Proximity radius input
+        radius_frame = ttk.Frame(hidden_links_frame)
+        radius_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(radius_frame, text="Proximity radius:").pack(side=tk.LEFT)
+        self.proximity_radius_var = tk.StringVar(value="1.0")
+        self.proximity_radius_entry = ttk.Entry(
+            radius_frame,
+            textvariable=self.proximity_radius_var,
+            width=6
+        )
+        self.proximity_radius_entry.pack(side=tk.LEFT, padx=(5, 5))
+        ttk.Label(radius_frame, text="km").pack(side=tk.LEFT)
+        Tooltip(self.proximity_radius_entry, "Distance in kilometres (0.1 to 50.0)")
+
+        # Status and buttons
+        status_frame = ttk.Frame(hidden_links_frame)
+        status_frame.pack(fill=tk.X, pady=(0, 5))
+
+        self.hidden_links_status = ttk.Label(
+            status_frame,
+            text="No hidden links discovered yet.",
+            foreground="gray"
+        )
+        self.hidden_links_status.pack(side=tk.LEFT)
+
+        btn_frame = ttk.Frame(hidden_links_frame)
+        btn_frame.pack(fill=tk.X, pady=(5, 0))
+
+        self.scan_hidden_links_btn = ttk.Button(
+            btn_frame,
+            text="Scan for Inferred Links",
+            command=self._scan_for_hidden_links
+        )
+        self.scan_hidden_links_btn.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.view_hidden_results_btn = ttk.Button(
+            btn_frame,
+            text="View/Edit Results",
+            command=lambda: self._show_hidden_links_dialog(self.discovered_hidden_links),
+            state="disabled"
+        )
+        self.view_hidden_results_btn.pack(side=tk.LEFT)
+
         # --- Advanced (collapsed) ---
         self.advanced_section = CollapsibleSection(
             container,
@@ -658,14 +722,14 @@ class NetworkAnalytics(InvestigationModuleBase):
             value="two_lists",
             command=self._update_analyse_mode_ui
         ).pack(anchor="w", padx=(20, 0))
-        
+
         ttk.Separator(connections_frame, orient="horizontal").pack(fill=tk.X, pady=10)
         
         # Dynamic content area (changes based on mode)
         self.analyse_dynamic_frame = ttk.Frame(connections_frame)
         self.analyse_dynamic_frame.pack(fill=tk.X, pady=(0, 10))
         
-        # Build all three mode UIs, show/hide as needed
+        # Build all mode UIs, show/hide as needed
         self._build_two_entities_ui(self.analyse_dynamic_frame)
         self._build_single_list_ui(self.analyse_dynamic_frame)
         self._build_two_lists_ui(self.analyse_dynamic_frame)
@@ -677,29 +741,31 @@ class NetworkAnalytics(InvestigationModuleBase):
         options_frame.pack(fill=tk.X, pady=(0, 10))
         
         ttk.Label(options_frame, text="Max hops:").pack(side=tk.LEFT)
-        self.max_hops_var = tk.IntVar(value=5)
+        self.max_hops_var = tk.IntVar(value=10)
         self.max_hops_combo = ttk.Combobox(
             options_frame,
             textvariable=self.max_hops_var,
-            values=list(range(1, 11)),
+            values=list(range(1, 21)),
             state="readonly",
             width=5,
         )
         self.max_hops_combo.pack(side=tk.LEFT, padx=(5, 20))
         
         self.shortest_only_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
+        self.shortest_only_check = ttk.Checkbutton(
             options_frame,
             text="Shortest path only",
             variable=self.shortest_only_var
-        ).pack(side=tk.LEFT, padx=(0, 20))
-        
+        )
+        self.shortest_only_check.pack(side=tk.LEFT, padx=(0, 20))
+
         self.enforce_direction_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
+        self.enforce_direction_check = ttk.Checkbutton(
             options_frame,
             text="Enforce edge direction",
             variable=self.enforce_direction_var
-        ).pack(side=tk.LEFT)
+        )
+        self.enforce_direction_check.pack(side=tk.LEFT)
         
         # Action button
         self.find_connections_btn = ttk.Button(
@@ -835,12 +901,17 @@ class NetworkAnalytics(InvestigationModuleBase):
     def _update_analyse_mode_ui(self):
         """Shows/hides the appropriate UI based on selected analysis mode."""
         mode = self.analyse_mode_var.get()
-        
+
         # Hide all frames first
         self.two_entities_frame.pack_forget()
         self.single_list_frame.pack_forget()
         self.two_lists_frame.pack_forget()
-        
+
+        # All modes use path-finding options
+        self.max_hops_combo.config(state="readonly")
+        self.shortest_only_check.config(state="normal")
+        self.enforce_direction_check.config(state="normal")
+
         # Show the selected frame
         if mode == "two_entities":
             self.two_entities_frame.pack(fill=tk.X)
@@ -984,7 +1055,17 @@ class NetworkAnalytics(InvestigationModuleBase):
             state="disabled"
         )
         self.show_highlighted_check.pack(anchor="w", pady=(10, 0))
-        
+
+        # Show inferred/hidden connections option
+        self.show_inferred_var = tk.BooleanVar(value=False)
+        self.show_inferred_check = ttk.Checkbutton(
+            options_frame,
+            text="Show inferred connections (dotted lines)",
+            variable=self.show_inferred_var,
+            state="disabled"
+        )
+        self.show_inferred_check.pack(anchor="w", pady=(5, 0))
+
         # Generate button
         btn_frame = ttk.Frame(container)
         btn_frame.pack(fill=tk.X, pady=(5, 0))
@@ -2118,7 +2199,7 @@ class NetworkAnalytics(InvestigationModuleBase):
     def _execute_find_connections(self):
         """Executes the connection search based on selected mode."""
         mode = self.analyse_mode_var.get()
-        
+
         if mode == "two_entities":
             self._find_connection_two_entities()
         elif mode == "single_list":
@@ -2128,27 +2209,28 @@ class NetworkAnalytics(InvestigationModuleBase):
 
 
     def _find_connection_two_entities(self):
-        """Finds path between two specific entities."""
+        """Finds path between two specific entities, respecting Max Hops limit."""
         pruned_graph = self._get_pruned_graph()
-        
+        max_hops = self.max_hops_var.get()
+
         start_selection = self.start_node_entry.get()
         end_selection = self.end_node_entry.get()
-        
+
         if not start_selection or not end_selection:
             messagebox.showerror("Input Error", "Please select both entities.")
             return
-        
+
         try:
             start_id = start_selection.split("(")[-1].strip(")")
             end_id = end_selection.split("(")[-1].strip(")")
         except IndexError:
             messagebox.showerror("Input Error", "Invalid node selection.")
             return
-        
+
         if start_id not in pruned_graph or end_id not in pruned_graph:
             messagebox.showwarning("Node Not Found", "Selected nodes do not exist in graph.")
             return
-        
+
         try:
             graph_to_search = (
                 pruned_graph.to_undirected()
@@ -2156,20 +2238,30 @@ class NetworkAnalytics(InvestigationModuleBase):
                 else pruned_graph
             )
             path = nx.shortest_path(graph_to_search, source=start_id, target=end_id)
-            
-            path_details = "Connection Path Found:\n\n"
+
+            # Check if path exceeds max hops (path length - 1 = number of hops)
+            path_hops = len(path) - 1
+            if path_hops > max_hops:
+                messagebox.showinfo(
+                    "No Path Within Limit",
+                    f"The shortest path is {path_hops} hops, which exceeds the maximum of {max_hops} hops.\n\n"
+                    "Increase Max Hops or try different entities."
+                )
+                return
+
+            path_details = f"Connection Path Found ({path_hops} hops):\n\n"
             for i, node_id in enumerate(path):
                 node_label = pruned_graph.nodes[node_id].get("label", node_id)
                 path_details += f"{i+1}. {node_label}\n"
-            
+
             result = messagebox.askyesno(
                 "Path Found",
                 f"{path_details}\n\nGenerate visual graph with path highlighted?"
             )
-            
+
             if result:
                 self._generate_highlighted_graph(pruned_graph, path)
-            
+
         except nx.NetworkXNoPath:
             messagebox.showinfo("No Path", "No connection could be found between these entities.")
         except Exception as e:
@@ -2234,6 +2326,394 @@ class NetworkAnalytics(InvestigationModuleBase):
             args=(output_filepath,),
             daemon=True,
         ).start()
+
+
+    def _haversine_distance(self, lat1, lon1, lat2, lon2):
+        """Calculate the great-circle distance between two points in kilometres."""
+        R = 6371  # Earth's radius in kilometres
+
+        lat1_rad = math.radians(lat1)
+        lat2_rad = math.radians(lat2)
+        delta_lat = math.radians(lat2 - lat1)
+        delta_lon = math.radians(lon2 - lon1)
+
+        a = math.sin(delta_lat / 2) ** 2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon / 2) ** 2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+        return R * c
+
+    def _get_all_neighbors(self, entity_id, graph):
+        """Get all neighbors (any type) of an entity for 2-hop check."""
+        neighbors = set()
+        for neighbor in list(graph.successors(entity_id)) + list(graph.predecessors(entity_id)):
+            neighbors.add(neighbor)
+        return neighbors
+
+    def _scan_for_hidden_links(self):
+        """Scans for hidden links: Address-to-Address (Proximity) and Person-to-Person (Surname)."""
+        if not self.graph_built:
+            messagebox.showwarning("No Graph", "Please build the graph first.")
+            return
+
+        # Validate radius
+        try:
+            radius_km = float(self.proximity_radius_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid Radius", "Please enter a valid number for the radius.")
+            return
+
+        self.discovered_hidden_links = []
+        pruned_graph = self._get_pruned_graph()
+
+        # Initialize pgeocode
+        try:
+            nomi = pgeocode.Nominatim('gb')
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not initialize postcode lookup: {e}")
+            return
+
+        # --- Step 1: Map Addresses to Coordinates ---
+        address_nodes = [] # List of (node_id, label, postcode)
+        postcode_coords = {} 
+        failed_geocodes = 0
+        
+        for node_id, attrs in pruned_graph.nodes(data=True):
+            if attrs.get("type") == "address":
+                label = attrs.get("label", node_id)
+                postcode = self._extract_postcode(label) or self._extract_postcode(node_id)
+                
+                if postcode:
+                    normalized = postcode.upper().replace(" ", "")
+                    if len(normalized) >= 5:
+                        formatted_pc = normalized[:-3] + " " + normalized[-3:]
+                        address_nodes.append((node_id, label, formatted_pc))
+                        
+                        # Cache coords if new
+                        if formatted_pc not in postcode_coords:
+                            res = nomi.query_postal_code(formatted_pc)
+                            if res is not None and not math.isnan(res.latitude):
+                                postcode_coords[formatted_pc] = (res.latitude, res.longitude)
+                            else:
+                                failed_geocodes += 1
+                                # Mark as failed so we don't retry, but don't crash
+                                postcode_coords[formatted_pc] = (None, None)
+
+        # --- Step 2: Scan Address-to-Address (Proximity) ---
+        # This replaces the "Neighbour" scan between people
+        seen_addr_pairs = set()
+        
+        for i in range(len(address_nodes)):
+            for j in range(i + 1, len(address_nodes)):
+                id_a, label_a, pc_a = address_nodes[i]
+                id_b, label_b, pc_b = address_nodes[j]
+                
+                # Check 1: Already linked?
+                if pruned_graph.has_edge(id_a, id_b) or pruned_graph.has_edge(id_b, id_a):
+                    continue
+                
+                # Check 2: Get Coords
+                lat_a, lon_a = postcode_coords.get(pc_a, (None, None))
+                lat_b, lon_b = postcode_coords.get(pc_b, (None, None))
+                
+                if lat_a is not None and lat_b is not None:
+                    dist = self._haversine_distance(lat_a, lon_a, lat_b, lon_b)
+                    
+                    if dist <= radius_km:
+                        # Found a Neighboring Address!
+                        self.discovered_hidden_links.append({
+                            "Entity A": label_a, "Type A": "Address",
+                            "Entity B": label_b, "Type B": "Address",
+                            "ID A": id_a, "ID B": id_b,
+                            "Type": "Neighbouring Address",
+                            "Detail": f"Distance: {dist:.2f} km",
+                            "Method": "proximity_address"
+                        })
+
+        # --- Step 3: Scan Person-to-Person (Surnames) ---
+        # We still need this loop for relatives, but we REMOVE the proximity check from it
+        
+        # 3a. Extract Surnames
+        person_nodes = []
+        corporate_suffixes = ("LIMITED", "LTD", "PLC", "LLP", "COUNCIL")
+        
+        for node_id, attrs in pruned_graph.nodes(data=True):
+            if attrs.get("type") == "person":
+                label = attrs.get("label", "").upper()
+                if any(s in label for s in corporate_suffixes): continue
+                
+                surname = ""
+                if "," in label: surname = label.split(",", 1)[0].strip()
+                else: surname = label.split()[-1].strip() if label.split() else ""
+                
+                if len(surname) > 2: # Ignore tiny surnames to reduce noise
+                    person_nodes.append((node_id, attrs.get("label"), surname))
+
+        # 3b. Check Surnames
+        # (We can optimize this by grouping by surname rather than N^2 loop)
+        from collections import defaultdict
+        surname_buckets = defaultdict(list)
+        for p in person_nodes:
+            surname_buckets[p[2]].append(p)
+            
+        for surname, people in surname_buckets.items():
+            if len(people) < 2: continue
+            
+            # Only compare people with SAME surname
+            for i in range(len(people)):
+                for j in range(i + 1, len(people)):
+                    id_a, lbl_a, _ = people[i]
+                    id_b, lbl_b, _ = people[j]
+                    
+                    # Check if already connected
+                    if pruned_graph.has_edge(id_a, id_b) or pruned_graph.has_edge(id_b, id_a):
+                        continue
+                        
+                    # 2-Hop Check: Do they share a company? (Co-Directors)
+                    # We use full_graph to ensure we catch hidden companies
+                    neigh_a = set(self.full_graph.neighbors(id_a))
+                    neigh_b = set(self.full_graph.neighbors(id_b))
+                    
+                    if not neigh_a.isdisjoint(neigh_b):
+                        continue # Already connected via a company/address
+
+                    self.discovered_hidden_links.append({
+                        "Entity A": lbl_a, "Type A": "Person",
+                        "Entity B": lbl_b, "Type B": "Person",
+                        "ID A": id_a, "ID B": id_b,
+                        "Type": "Potential Relative",
+                        "Detail": f"Shared Surname: {surname}",
+                        "Method": "surname_match"
+                    })
+
+        # --- Step 4: Finalize UI ---
+        count = len(self.discovered_hidden_links)
+        msg = f"Found {count} links."
+        if failed_geocodes > 0: msg += f" ({failed_geocodes} postcodes failed)"
+        
+        self.hidden_links_status.config(text=msg, foreground="green" if count > 0 else "gray")
+        if count > 0:
+            self.view_hidden_results_btn.config(state="normal")
+            # Auto-enable "Inferred" checkbox in visualizer
+            if hasattr(self, 'show_inferred_check'):
+                self.show_inferred_check.config(state="normal")
+                self.show_inferred_var.set(True)
+            messagebox.showinfo("Scan Complete", msg)
+        else:
+            messagebox.showinfo("Scan Complete", "No hidden links found.")
+
+
+    def _show_hidden_links_dialog(self, links_data):
+        """Opens a dialog to view/edit discovered hidden links."""
+        if not links_data:
+            messagebox.showinfo("No Data", "No hidden links to display.")
+            return
+
+        dialog = tk.Toplevel(self.app)
+        dialog.title("Discovered Hidden Links")
+        dialog.geometry("1200x550")
+
+        pruned_graph = self._get_pruned_graph()
+
+        # Description
+        ttk.Label(
+            dialog,
+            text="Select links to add to the graph. Click column headers to sort. 'Connected?' shows if an indirect path already exists.",
+            foreground="gray",
+            wraplength=1150
+        ).pack(anchor="w", padx=10, pady=(10, 5))
+
+        # Treeview with scrollbar
+        tree_frame = ttk.Frame(dialog)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        tree_scroll_y = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
+        tree_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+
+        cols = ("Entity A", "Type A", "Entity B", "Type B", "Link Type", "Detail", "Connected?")
+        tree = ttk.Treeview(
+            tree_frame,
+            columns=cols,
+            show="headings",
+            height=15,
+            yscrollcommand=tree_scroll_y.set,
+            selectmode="extended"
+        )
+        tree_scroll_y.config(command=tree.yview)
+
+        # Track sort state for each column
+        sort_state = {col: False for col in cols}
+
+        def sort_by_column(col):
+            """Sort treeview by column."""
+            items = [(tree.set(item, col), item) for item in tree.get_children("")]
+            sort_state[col] = not sort_state[col]
+            items.sort(reverse=sort_state[col])
+            for index, (_, item) in enumerate(items):
+                tree.move(item, "", index)
+
+        tree.heading("Entity A", text="Entity A", command=lambda: sort_by_column("Entity A"))
+        tree.heading("Type A", text="Type A", command=lambda: sort_by_column("Type A"))
+        tree.heading("Entity B", text="Entity B", command=lambda: sort_by_column("Entity B"))
+        tree.heading("Type B", text="Type B", command=lambda: sort_by_column("Type B"))
+        tree.heading("Link Type", text="Link Type", command=lambda: sort_by_column("Link Type"))
+        tree.heading("Detail", text="Detail", command=lambda: sort_by_column("Detail"))
+        tree.heading("Connected?", text="Connected?", command=lambda: sort_by_column("Connected?"))
+
+        tree.column("Entity A", width=200)
+        tree.column("Type A", width=70)
+        tree.column("Entity B", width=200)
+        tree.column("Type B", width=70)
+        tree.column("Link Type", width=130)
+        tree.column("Detail", width=250)
+        tree.column("Connected?", width=80)
+
+        tree.pack(fill=tk.BOTH, expand=True)
+
+        def check_indirect_connection(id_a, id_b):
+            """Check if there's an indirect path between two nodes."""
+            try:
+                undirected = pruned_graph.to_undirected()
+                return "Yes" if nx.has_path(undirected, id_a, id_b) else "No"
+            except Exception:
+                return "N/A"
+
+        def populate_tree():
+            """Populate tree from discovered_hidden_links."""
+            for item in tree.get_children():
+                tree.delete(item)
+            for idx, link in enumerate(self.discovered_hidden_links):
+                id_a = link.get("ID A")
+                id_b = link.get("ID B")
+                connected = check_indirect_connection(id_a, id_b)
+                tree.insert("", "end", iid=str(idx), values=(
+                    link.get("Entity A", ""),
+                    link.get("Type A", ""),
+                    link.get("Entity B", ""),
+                    link.get("Type B", ""),
+                    link.get("Type", ""),
+                    link.get("Detail", ""),
+                    connected
+                ))
+
+        # Initial population
+        populate_tree()
+
+        # Button frame
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        def add_selected_to_graph():
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning("No Selection", "Please select links to add to the graph.")
+                return
+
+            added_count = 0
+            for iid in selected:
+                idx = int(iid)
+                if 0 <= idx < len(self.discovered_hidden_links):
+                    link = self.discovered_hidden_links[idx]
+                    id_a = link.get("ID A")
+                    id_b = link.get("ID B")
+                    method = link.get("Method", "inferred")
+                    link_type = link.get("Type", "Inferred")
+
+                    # Add edge to the full graph with inferred attributes
+                    if not self.full_graph.has_edge(id_a, id_b) and not self.full_graph.has_edge(id_b, id_a):
+                        self.full_graph.add_edge(
+                            id_a,
+                            id_b,
+                            label=f"inferred ({link_type})",
+                            type="inferred",
+                            method=method
+                        )
+                        added_count += 1
+
+            if added_count > 0:
+                # Remove added links from discovered list
+                indices_to_remove = sorted([int(iid) for iid in selected], reverse=True)
+                for idx in indices_to_remove:
+                    if 0 <= idx < len(self.discovered_hidden_links):
+                        del self.discovered_hidden_links[idx]
+
+                # Rebuild tree
+                populate_tree()
+
+                # Update status
+                count = len(self.discovered_hidden_links)
+                self.hidden_links_status.config(
+                    text=f"{count} link(s) remaining to review." if count > 0 else "All links processed.",
+                    foreground="green" if count > 0 else "gray"
+                )
+
+                if count == 0:
+                    self.view_hidden_results_btn.config(state="disabled")
+
+                # Update section header
+                self._update_section_header_status()
+
+                messagebox.showinfo("Success", f"Added {added_count} link(s) to the graph.")
+            else:
+                messagebox.showinfo("No Changes", "Selected links were already in the graph.")
+
+        def remove_selected():
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning("No Selection", "Please select rows to remove.")
+                return
+
+            indices_to_remove = sorted([int(iid) for iid in selected], reverse=True)
+            for idx in indices_to_remove:
+                if 0 <= idx < len(self.discovered_hidden_links):
+                    del self.discovered_hidden_links[idx]
+
+            populate_tree()
+
+            count = len(self.discovered_hidden_links)
+            if count > 0:
+                self.hidden_links_status.config(
+                    text=f"Found {count} potential hidden link(s).",
+                    foreground="green"
+                )
+            else:
+                self.hidden_links_status.config(
+                    text="No hidden links discovered.",
+                    foreground="gray"
+                )
+                self.view_hidden_results_btn.config(state="disabled")
+
+        def export_to_csv():
+            if not self.discovered_hidden_links:
+                messagebox.showwarning("No Data", "No hidden links to export.")
+                return
+
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv")],
+                title="Export Hidden Links"
+            )
+            if not filepath:
+                return
+
+            try:
+                with open(filepath, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=["Entity A", "Type A", "Entity B", "Type B", "ID A", "ID B", "Type", "Detail", "Method"])
+                    writer.writeheader()
+                    for link in self.discovered_hidden_links:
+                        writer.writerow(link)
+                messagebox.showinfo("Export Complete", f"Exported {len(self.discovered_hidden_links)} link(s) to:\n{filepath}")
+            except Exception as e:
+                messagebox.showerror("Export Error", f"Could not export: {e}")
+
+        def select_all():
+            for item in tree.get_children():
+                tree.selection_add(item)
+
+        ttk.Button(btn_frame, text="Add Selected to Graph", command=add_selected_to_graph).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Remove Selected", command=remove_selected).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Select All", command=select_all).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Export to CSV", command=export_to_csv).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Close", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
 
 
     def _converter_run(self):
@@ -2439,6 +2919,24 @@ class NetworkAnalytics(InvestigationModuleBase):
         return pruned_graph
 
 
+    def _get_edge_type_description(self, graph, node_a, node_b):
+        """Get the edge type description for an edge between two nodes."""
+        # Check both directions since graph may be directed
+        edge_data = None
+        if graph.has_edge(node_a, node_b):
+            edge_data = graph.edges[node_a, node_b]
+        elif graph.has_edge(node_b, node_a):
+            edge_data = graph.edges[node_b, node_a]
+
+        if edge_data:
+            edge_type = edge_data.get("type", "")
+            if edge_type == "inferred":
+                method = edge_data.get("method", "inferred")
+                return f"Inferred ({method})"
+            else:
+                return "Explicit"
+        return "Unknown"
+
     def _run_cohort_connection_thread(self, output_filepath):
         """Runs the cohort connection search in a background thread."""
         try:
@@ -2456,7 +2954,7 @@ class NetworkAnalytics(InvestigationModuleBase):
             total_pairs = len(cohort_a) * len(cohort_b)
             self.app.after(0, lambda: self.analyse_progress_bar.config(maximum=total_pairs, value=0))
 
-            headers = [f"Hop {i+1}" for i in range(max_hops + 1)]
+            headers = [f"Hop {i+1}" for i in range(max_hops + 1)] + ["Edge Types"]
 
             with open(output_filepath, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
@@ -2488,7 +2986,13 @@ class NetworkAnalytics(InvestigationModuleBase):
                                         pruned_graph.nodes[node_id].get("label", node_id)
                                         for node_id in path
                                     ]
-                                    writer.writerow(labeled_path)
+                                    # Build edge types string
+                                    edge_types = []
+                                    for i in range(len(path) - 1):
+                                        edge_type = self._get_edge_type_description(pruned_graph, path[i], path[i+1])
+                                        edge_types.append(edge_type)
+                                    edge_types_str = ", ".join(edge_types)
+                                    writer.writerow(labeled_path + [edge_types_str])
                             except nx.NetworkXNoPath:
                                 continue
                         else:
@@ -2503,7 +3007,13 @@ class NetworkAnalytics(InvestigationModuleBase):
                                     pruned_graph.nodes[node_id].get("label", node_id)
                                     for node_id in path
                                 ]
-                                writer.writerow(labeled_path)
+                                # Build edge types string
+                                edge_types = []
+                                for i in range(len(path) - 1):
+                                    edge_type = self._get_edge_type_description(pruned_graph, path[i], path[i+1])
+                                    edge_types.append(edge_type)
+                                edge_types_str = ", ".join(edge_types)
+                                writer.writerow(labeled_path + [edge_types_str])
 
             self.app.after(0, lambda: self.analyse_progress_bar.config(value=total_pairs))
             self.app.after(
@@ -2682,6 +3192,34 @@ class NetworkAnalytics(InvestigationModuleBase):
 
             graph_to_render = graph_to_render.subgraph(valid_nodes).copy()
 
+        # Create a working copy to add inferred connections
+        viz_graph = graph_to_render.copy()
+
+        # Add inferred connections as edges if checkbox is enabled
+        if self.show_inferred_var.get() and self.discovered_hidden_links:
+            for link in self.discovered_hidden_links:
+                id_a = link.get("ID A")
+                id_b = link.get("ID B")
+                if id_a and id_b:
+                    # Only add if both nodes exist in the graph
+                    if viz_graph.has_node(id_a) and viz_graph.has_node(id_b):
+                        # Don't duplicate existing edges
+                        if not viz_graph.has_edge(id_a, id_b) and not viz_graph.has_edge(id_b, id_a):
+                            # Skip if entities share any common neighbor (2-hop rule)
+                            neighbors_a = set(viz_graph.predecessors(id_a)) | set(viz_graph.successors(id_a))
+                            neighbors_b = set(viz_graph.predecessors(id_b)) | set(viz_graph.successors(id_b))
+                            if neighbors_a & neighbors_b:
+                                continue  # They share a neighbor, don't show inferred edge
+                            if not viz_graph.has_edge(id_a, id_b) and not viz_graph.has_edge(id_b, id_a):
+                                viz_graph.add_edge(
+                                    id_a,
+                                    id_b,
+                                    label=f"Inferred: {link.get('Type', '')}",
+                                    type="hidden",     # Used for finding the edge later
+                                    method=link.get("Method", ""), # ✅ CRITICAL: Pass the method for styling
+                                    detail=link.get("Detail", "")  # ✅ Good practice: Pass detail for tooltips
+                                )
+
         # Build the visual network
         net = Network(height="95vh", width="100%", directed=True, notebook=False, cdn_resources="local")
         net.set_options("""var options = {"configure": {"enabled": true }, "physics": {"solver": "forceAtlas2Based"}}""")
@@ -2697,16 +3235,16 @@ class NetworkAnalytics(InvestigationModuleBase):
         distinguish_by_file = self.distinguish_var.get()
         file_color_map = {}
         if distinguish_by_file:
-            border_colors = ["#FF00FF", "#00FFFF", "#FFD700", "#ADFF2F", "#FF69B4", "#BA55D3"]
+            border_colors = ["#00FFFF", "#FFD700", "#ADFF2F", "#FF69B4", "#BA55D3", "#00FF00"]
             unique_sources = sorted(
-                list({name for attrs in graph_to_render.nodes.values() for name in attrs.get("source_files", set())})
+                list({name for attrs in viz_graph.nodes.values() for name in attrs.get("source_files", set())})
             )
             file_color_map = {source: color for source, color in zip(unique_sources, border_colors)}
 
         # Use highlight_entity_list instead of cohort_ids
         highlight_ids = self.highlight_entity_list or set()
 
-        for node_id, attrs in graph_to_render.nodes(data=True):
+        for node_id, attrs in viz_graph.nodes(data=True):
             node_type = attrs.get("type")
             base_color = "#B9D9EB" if node_type == "company" else ("#FFB347" if node_type == "address" else "#D9E8B9")
             size = 15
@@ -2770,14 +3308,32 @@ class NetworkAnalytics(InvestigationModuleBase):
                 shapeProperties=shape_properties,
             )
 
-        for source, target, edge_attrs in graph_to_render.edges(data=True):
+        for source, target, edge_attrs in viz_graph.edges(data=True):
             width = 1
             edge_color = "#848484"
+            dashes = False
+
+            # Check if this is an inferred edge
+            if edge_attrs.get("type") == "inferred":
+                edge_color = "#FF00FF"  # Magenta
+                width = 3
+                dashes = [10, 10]
+                # Check label or method to distinguish Relatives vs Neighbours
+                lbl = edge_attrs.get("label", "").lower()
+                method = edge_attrs.get("method", "")
+                
+                # If it involves a Surname match (Relative), make it Yellow/Gold
+                if "surname" in lbl or "surname" in method:
+                    edge_color = "#FFD700"  # Gold
+                else:
+                    # Otherwise it's just a Neighbour/Proximity match
+                    edge_color = "#FF00FF"  # Magenta
             if path and (source, target) in path_edges:
                 width = 5
                 edge_color = "#FF0000"
+
             safe_title = html.escape(edge_attrs.get("label", ""))
-            net.add_edge(source, target, title=safe_title, width=width, color=edge_color)
+            net.add_edge(source, target, title=safe_title, width=width, color=edge_color, dashes=dashes)
 
         try:
             filename = os.path.join(CONFIG_DIR, "combined_network_graph.html")
