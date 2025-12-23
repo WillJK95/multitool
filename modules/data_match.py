@@ -314,7 +314,7 @@ class DataMatch(InvestigationModuleBase):
     def _run_investigation_thread(self):
         from rapidfuzz import process, fuzz
 
-        self.progress_bar["maximum"] = len(self.primary_data)
+        self.safe_ui_call(self.progress_bar.config, maximum=len(self.primary_data))
         self.results_data = []
 
         logic = self.match_logic_var.get()

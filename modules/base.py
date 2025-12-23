@@ -141,12 +141,32 @@ class InvestigationModuleBase(ttk.Frame):
     def safe_update(self, func: Callable, *args) -> None:
         """
         Schedule a function to run via after() only if widget exists.
-        
+
         Args:
             func: Function to schedule
             *args: Arguments to pass to the function
         """
         self._schedule_update(func, *args)
+
+    def safe_ui_call(self, func: Callable, *args, **kwargs) -> None:
+        """
+        Thread-safe UI call dispatcher.
+
+        Schedules a function to run on the main Tkinter thread via after().
+        Use this for all UI updates from background threads including:
+        - Widget method calls (.config, .insert, .set, etc.)
+        - StringVar/IntVar/BooleanVar updates
+        - messagebox calls
+        - Progress bar updates
+
+        Args:
+            func: Function to schedule on the main thread
+            *args: Positional arguments to pass to the function
+            **kwargs: Keyword arguments to pass to the function
+        """
+        if self.winfo_exists():
+            after_id = self.after(0, lambda: func(*args, **kwargs))
+            self._after_ids.append(after_id)
     
     def safe_go_back(self) -> None:
         """Safely navigate back to main menu, cancelling pending operations."""
