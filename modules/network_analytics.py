@@ -2008,8 +2008,6 @@ class NetworkAnalytics(InvestigationModuleBase):
             )
             self._update_visualise_checkbox_state()
             
-            # Show the "use as highlight" option in Visualise
-            self._update_highlight_from_analyse_prompt()
             
         except Exception as e:
             messagebox.showerror("Load Error", f"Could not load entity list: {e}")
@@ -2440,7 +2438,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         # Description
         ttk.Label(
             dialog,
-            text="Select links to add to the graph. Click column headers to sort. 'Connected?' shows if an indirect path already exists.",
+            text="Select links to add to the graph. Click column headers to sort.",
             foreground="gray",
             wraplength=1150
         ).pack(anchor="w", padx=10, pady=(10, 5))
@@ -2901,7 +2899,8 @@ class NetworkAnalytics(InvestigationModuleBase):
                                         edge_type = self._get_edge_type_description(pruned_graph, path[i], path[i+1])
                                         edge_types.append(edge_type)
                                     edge_types_str = ", ".join(edge_types)
-                                    writer.writerow(labeled_path + [edge_types_str])
+                                    padded_path = labeled_path + [''] * (max_hops + 1 - len(labeled_path))
+                                    writer.writerow(padded_path + [edge_types_str])
                             except nx.NetworkXNoPath:
                                 continue
                         else:
@@ -2922,7 +2921,8 @@ class NetworkAnalytics(InvestigationModuleBase):
                                     edge_type = self._get_edge_type_description(pruned_graph, path[i], path[i+1])
                                     edge_types.append(edge_type)
                                 edge_types_str = ", ".join(edge_types)
-                                writer.writerow(labeled_path + [edge_types_str])
+                                padded_path = labeled_path + [''] * (max_hops + 1 - len(labeled_path))
+                                writer.writerow(padded_path + [edge_types_str])
 
             self.app.after(0, lambda: self.analyse_progress_bar.config(value=total_pairs))
             self.app.after(
