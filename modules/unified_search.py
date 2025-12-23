@@ -519,7 +519,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
             MAX_WORKERS = 2
         else:
             # If ONLY Companies House is searched, use the faster limit
-            MAX_WORKERS = 4
+            MAX_WORKERS = 2
 
         self.app.after(
             0,

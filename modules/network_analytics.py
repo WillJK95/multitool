@@ -215,7 +215,6 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.files_changed_since_build = False
         self.analyse_entity_list = None           # Entity list loaded in Analyse section
         self.analyse_entity_list_path = None      # Path for display
-        self.highlight_entity_list = None         # Entity list for visualisation
         
         # --- Legacy cohort support (for cohort A/B comparison) ---
         self.cohort_a_ids = set()
@@ -922,66 +921,10 @@ class NetworkAnalytics(InvestigationModuleBase):
         elif mode == "two_lists":
             self.two_lists_frame.pack(fill=tk.X)
             self.find_connections_btn.config(text="Find Connections & Export...")
-
+        self._update_visualise_checkbox_state()
 
     def _build_visualise_content(self, container):
         """Builds the Visualise section content."""
-        
-        # --- Highlight Entities ---
-        highlight_frame = ttk.LabelFrame(
-            container,
-            text="Highlight Entities",
-            padding=10,
-        )
-        highlight_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        desc_row = ttk.Frame(highlight_frame)
-        desc_row.pack(fill=tk.X, pady=(0, 5))
-        ttk.Label(
-            desc_row,
-            text="Upload an entity list to visually emphasise these entities in the generated graph.",
-            foreground="gray",
-            wraplength=450
-        ).pack(side=tk.LEFT)
-        info_label = ttk.Label(desc_row, text="ℹ️", foreground="blue", cursor="hand2", font=("", 11))
-        info_label.pack(side=tk.LEFT, padx=(10, 0))
-        Tooltip(info_label, self._get_entity_list_tooltip())
-        
-        upload_row = ttk.Frame(highlight_frame)
-        upload_row.pack(fill=tk.X, pady=(5, 0))
-        ttk.Button(
-            upload_row,
-            text="Upload Highlight List...",
-            command=self._upload_highlight_list
-        ).pack(side=tk.LEFT)
-        self.highlight_status_label = ttk.Label(upload_row, text="No list loaded", foreground="gray")
-        self.highlight_status_label.pack(side=tk.LEFT, padx=(10, 0))
-        self.clear_highlight_btn = ttk.Button(
-            upload_row,
-            text="Clear",
-            command=self._clear_highlight_list
-        )
-        # Clear button hidden until list loaded
-        
-        # "Use from Analyse" prompt (shown conditionally)
-        self.use_analyse_list_frame = ttk.Frame(highlight_frame)
-        # Initially hidden, shown when analyse has a list
-        
-        ttk.Label(
-            self.use_analyse_list_frame,
-            text="💡",
-            font=("", 11)
-        ).pack(side=tk.LEFT)
-        ttk.Label(
-            self.use_analyse_list_frame,
-            text="You have an entity list loaded in Analyse.",
-            foreground="gray"
-        ).pack(side=tk.LEFT, padx=(5, 10))
-        ttk.Button(
-            self.use_analyse_list_frame,
-            text="Use as Highlight List",
-            command=self._use_analyse_list_as_highlight
-        ).pack(side=tk.LEFT)
         
         # --- Display Options ---
         options_frame = ttk.LabelFrame(
@@ -1050,7 +993,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.show_highlighted_only_var = tk.BooleanVar(value=False)
         self.show_highlighted_check = ttk.Checkbutton(
             options_frame,
-            text="Show only networks containing highlighted entities",
+            text="Show only networks containing connections",
             variable=self.show_highlighted_only_var,
             state="disabled"
         )
@@ -2063,6 +2006,7 @@ class NetworkAnalytics(InvestigationModuleBase):
                 text=f"{len(entity_ids)} entities loaded",
                 foreground="green"
             )
+            self._update_visualise_checkbox_state()
             
             # Show the "use as highlight" option in Visualise
             self._update_highlight_from_analyse_prompt()
@@ -2087,6 +2031,7 @@ class NetworkAnalytics(InvestigationModuleBase):
                 text=f"{len(entity_ids)} entities loaded",
                 foreground="green"
             )
+            self._update_visualise_checkbox_state()
         except Exception as e:
             messagebox.showerror("Load Error", f"Could not load entity list: {e}")
 
@@ -2107,6 +2052,7 @@ class NetworkAnalytics(InvestigationModuleBase):
                 text=f"{len(entity_ids)} entities loaded",
                 foreground="green"
             )
+            self._update_visualise_checkbox_state()
         except Exception as e:
             messagebox.showerror("Load Error", f"Could not load entity list: {e}")
 
@@ -2138,60 +2084,6 @@ class NetworkAnalytics(InvestigationModuleBase):
                     entity_ids.add(entity_id)
         
         return entity_ids
-
-
-    def _upload_highlight_list(self):
-        """Uploads entity list for highlighting in visualisation."""
-        path = filedialog.askopenfilename(
-            title="Select Highlight List CSV",
-            filetypes=[("CSV Files", "*.csv")]
-        )
-        if not path:
-            return
-        
-        try:
-            entity_ids = self._load_entity_list_file(path)
-            self.highlight_entity_list = entity_ids
-            self.highlight_status_label.config(
-                text=f"{len(entity_ids)} entities loaded",
-                foreground="green"
-            )
-            self.clear_highlight_btn.pack(side=tk.LEFT, padx=(10, 0))
-            self.show_highlighted_check.config(state="normal")
-            
-        except Exception as e:
-            messagebox.showerror("Load Error", f"Could not load entity list: {e}")
-
-
-    def _clear_highlight_list(self):
-        """Clears the highlight entity list."""
-        self.highlight_entity_list = None
-        self.highlight_status_label.config(text="No list loaded", foreground="gray")
-        self.clear_highlight_btn.pack_forget()
-        self.show_highlighted_only_var.set(False)
-        self.show_highlighted_check.config(state="disabled")
-
-
-    def _update_highlight_from_analyse_prompt(self):
-        """Shows/hides the 'use from Analyse' prompt in Visualise section."""
-        if self.analyse_entity_list:
-            self.use_analyse_list_frame.pack(fill=tk.X, pady=(10, 0))
-        else:
-            self.use_analyse_list_frame.pack_forget()
-
-
-    def _use_analyse_list_as_highlight(self):
-        """Copies the entity list from Analyse to use as highlight list."""
-        if not self.analyse_entity_list:
-            return
-        
-        self.highlight_entity_list = self.analyse_entity_list.copy()
-        self.highlight_status_label.config(
-            text=f"{len(self.highlight_entity_list)} entities loaded (from Analyse)",
-            foreground="green"
-        )
-        self.clear_highlight_btn.pack(side=tk.LEFT, padx=(10, 0))
-        self.show_highlighted_check.config(state="normal")
 
 
     # --- Connection Finding ---
@@ -2350,12 +2242,16 @@ class NetworkAnalytics(InvestigationModuleBase):
         return neighbors
 
     def _scan_for_hidden_links(self):
-        """Scans for hidden links: Address-to-Address (Proximity) and Person-to-Person (Surname)."""
+        """
+        Scans for hidden links.
+        Logic:
+        1. Address-to-Address: Proximity Only (Neighbours)
+        2. Person-to-Person: Surname AND (Proximity OR Shared Postcode)
+        """
         if not self.graph_built:
             messagebox.showwarning("No Graph", "Please build the graph first.")
             return
 
-        # Validate radius
         try:
             radius_km = float(self.proximity_radius_var.get())
         except ValueError:
@@ -2365,61 +2261,57 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.discovered_hidden_links = []
         pruned_graph = self._get_pruned_graph()
 
-        # Initialize pgeocode
         try:
             nomi = pgeocode.Nominatim('gb')
         except Exception as e:
             messagebox.showerror("Error", f"Could not initialize postcode lookup: {e}")
             return
 
-        # --- Step 1: Map Addresses to Coordinates ---
-        address_nodes = [] # List of (node_id, label, postcode)
-        postcode_coords = {} 
+        # --- Step 1: Map Addresses & Postcodes ---
+        address_nodes = [] 
+        postcode_coords = {}
         failed_geocodes = 0
         
         for node_id, attrs in pruned_graph.nodes(data=True):
             if attrs.get("type") == "address":
-                label = attrs.get("label", node_id)
-                postcode = self._extract_postcode(label) or self._extract_postcode(node_id)
+                raw_label = attrs.get("label", node_id)
                 
-                if postcode:
-                    normalized = postcode.upper().replace(" ", "")
-                    if len(normalized) >= 5:
-                        formatted_pc = normalized[:-3] + " " + normalized[-3:]
-                        address_nodes.append((node_id, label, formatted_pc))
-                        
-                        # Cache coords if new
-                        if formatted_pc not in postcode_coords:
-                            res = nomi.query_postal_code(formatted_pc)
-                            if res is not None and not math.isnan(res.latitude):
-                                postcode_coords[formatted_pc] = (res.latitude, res.longitude)
-                            else:
-                                failed_geocodes += 1
-                                # Mark as failed so we don't retry, but don't crash
-                                postcode_coords[formatted_pc] = (None, None)
+                # Extract and normalize postcode
+                pc = self._extract_postcode(raw_label) or self._extract_postcode(node_id)
+                clean_pc = pc.upper().replace(" ", "") if pc else None
+                
+                if clean_pc and len(clean_pc) >= 5:
+                    # Format for pgeocode (e.g., "SW1A 1AA")
+                    formatted_pc = clean_pc[:-3] + " " + clean_pc[-3:]
+                    
+                    # Store (ID, Label, CleanPostcode, FormattedPostcode)
+                    address_nodes.append((node_id, raw_label, clean_pc, formatted_pc))
+                    
+                    # Geocode if new
+                    if formatted_pc not in postcode_coords:
+                        res = nomi.query_postal_code(formatted_pc)
+                        if res is not None and not math.isnan(res.latitude):
+                            postcode_coords[formatted_pc] = (res.latitude, res.longitude)
+                        else:
+                            failed_geocodes += 1
+                            postcode_coords[formatted_pc] = (None, None)
 
-        # --- Step 2: Scan Address-to-Address (Proximity) ---
-        # This replaces the "Neighbour" scan between people
-        seen_addr_pairs = set()
-        
+        # --- Step 2: Address-to-Address (Neighbours) ---
+        # (Same logic as before - linking buildings via proximity)
         for i in range(len(address_nodes)):
             for j in range(i + 1, len(address_nodes)):
-                id_a, label_a, pc_a = address_nodes[i]
-                id_b, label_b, pc_b = address_nodes[j]
+                id_a, label_a, _, pc_fmt_a = address_nodes[i]
+                id_b, label_b, _, pc_fmt_b = address_nodes[j]
                 
-                # Check 1: Already linked?
                 if pruned_graph.has_edge(id_a, id_b) or pruned_graph.has_edge(id_b, id_a):
                     continue
                 
-                # Check 2: Get Coords
-                lat_a, lon_a = postcode_coords.get(pc_a, (None, None))
-                lat_b, lon_b = postcode_coords.get(pc_b, (None, None))
+                lat_a, lon_a = postcode_coords.get(pc_fmt_a, (None, None))
+                lat_b, lon_b = postcode_coords.get(pc_fmt_b, (None, None))
                 
-                if lat_a is not None and lat_b is not None:
+                if lat_a and lat_b:
                     dist = self._haversine_distance(lat_a, lon_a, lat_b, lon_b)
-                    
                     if dist <= radius_km:
-                        # Found a Neighboring Address!
                         self.discovered_hidden_links.append({
                             "Entity A": label_a, "Type A": "Address",
                             "Entity B": label_b, "Type B": "Address",
@@ -2429,13 +2321,17 @@ class NetworkAnalytics(InvestigationModuleBase):
                             "Method": "proximity_address"
                         })
 
-        # --- Step 3: Scan Person-to-Person (Surnames) ---
-        # We still need this loop for relatives, but we REMOVE the proximity check from it
+        # --- Step 3: Person-to-Person (Surname AND (Proximity OR Postcode)) ---
         
-        # 3a. Extract Surnames
         person_nodes = []
         corporate_suffixes = ("LIMITED", "LTD", "PLC", "LLP", "COUNCIL")
         
+        # Build lookup: Address ID -> (Lat, Lon, CleanPostcode)
+        addr_lookup = {}
+        for nid, _, clean_pc, fmt_pc in address_nodes:
+            coords = postcode_coords.get(fmt_pc, (None, None))
+            addr_lookup[nid] = (coords, clean_pc)
+
         for node_id, attrs in pruned_graph.nodes(data=True):
             if attrs.get("type") == "person":
                 label = attrs.get("label", "").upper()
@@ -2445,47 +2341,75 @@ class NetworkAnalytics(InvestigationModuleBase):
                 if "," in label: surname = label.split(",", 1)[0].strip()
                 else: surname = label.split()[-1].strip() if label.split() else ""
                 
-                if len(surname) > 2: # Ignore tiny surnames to reduce noise
-                    person_nodes.append((node_id, attrs.get("label"), surname))
+                if len(surname) < 3: continue 
 
-        # 3b. Check Surnames
-        # (We can optimize this by grouping by surname rather than N^2 loop)
+                # Find Linked Address ID
+                my_addr_id = None
+                for neighbor in self.full_graph.neighbors(node_id):
+                     if self.full_graph.nodes[neighbor].get("type") == "address":
+                         my_addr_id = neighbor
+                         break
+                
+                if my_addr_id and my_addr_id in addr_lookup:
+                    person_nodes.append({
+                        "id": node_id, "label": attrs.get("label"), 
+                        "surname": surname, "addr_id": my_addr_id
+                    })
+
+        # Group by Surname
         from collections import defaultdict
         surname_buckets = defaultdict(list)
         for p in person_nodes:
-            surname_buckets[p[2]].append(p)
-            
+            surname_buckets[p["surname"]].append(p)
+
+        # Comparison Loop
         for surname, people in surname_buckets.items():
             if len(people) < 2: continue
             
-            # Only compare people with SAME surname
             for i in range(len(people)):
                 for j in range(i + 1, len(people)):
-                    id_a, lbl_a, _ = people[i]
-                    id_b, lbl_b, _ = people[j]
+                    p_a = people[i]
+                    p_b = people[j]
                     
-                    # Check if already connected
-                    if pruned_graph.has_edge(id_a, id_b) or pruned_graph.has_edge(id_b, id_a):
+                    if pruned_graph.has_edge(p_a["id"], p_b["id"]) or pruned_graph.has_edge(p_b["id"], p_a["id"]):
                         continue
-                        
-                    # 2-Hop Check: Do they share a company? (Co-Directors)
-                    # We use full_graph to ensure we catch hidden companies
-                    neigh_a = set(self.full_graph.neighbors(id_a))
-                    neigh_b = set(self.full_graph.neighbors(id_b))
                     
+                    neigh_a = set(self.full_graph.neighbors(p_a["id"]))
+                    neigh_b = set(self.full_graph.neighbors(p_b["id"]))
                     if not neigh_a.isdisjoint(neigh_b):
-                        continue # Already connected via a company/address
+                        continue
 
-                    self.discovered_hidden_links.append({
-                        "Entity A": lbl_a, "Type A": "Person",
-                        "Entity B": lbl_b, "Type B": "Person",
-                        "ID A": id_a, "ID B": id_b,
-                        "Type": "Potential Relative",
-                        "Detail": f"Shared Surname: {surname}",
-                        "Method": "surname_match"
-                    })
+                    # Get Location Data
+                    (coords_a, pc_a) = addr_lookup[p_a["addr_id"]]
+                    (coords_b, pc_b) = addr_lookup[p_b["addr_id"]]
+                    
+                    match_found = False
+                    detail = ""
 
-        # --- Step 4: Finalize UI ---
+                    # CHECK 1: Postcode Match (Strongest Signal, works without Geocoding)
+                    if pc_a and pc_b and pc_a == pc_b:
+                        match_found = True
+                        detail = f"Surname: {surname}, Same Postcode ({pc_a})"
+
+                    # CHECK 2: Proximity (Fallback if postcodes differ but are close)
+                    elif coords_a[0] and coords_b[0]:
+                        dist = self._haversine_distance(coords_a[0], coords_a[1], coords_b[0], coords_b[1])
+                        if dist <= radius_km:
+                            match_found = True
+                            detail = f"Surname: {surname}, Distance: {dist:.2f} km"
+
+                    if match_found:
+                        self.discovered_hidden_links.append({
+                            "Entity A": p_a["label"], "Type A": "Person",
+                            "Entity B": p_b["label"], "Type B": "Person",
+                            "ID A": p_a["id"], "ID B": p_b["id"],
+                            "Type": "Potential Relative",
+                            "Detail": detail,
+                            "Method": "surname_match"
+                        })
+
+        # --- Step 4: UI Updates ---
+        # (Same as before)
         count = len(self.discovered_hidden_links)
         msg = f"Found {count} links."
         if failed_geocodes > 0: msg += f" ({failed_geocodes} postcodes failed)"
@@ -2493,7 +2417,6 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.hidden_links_status.config(text=msg, foreground="green" if count > 0 else "gray")
         if count > 0:
             self.view_hidden_results_btn.config(state="normal")
-            # Auto-enable "Inferred" checkbox in visualizer
             if hasattr(self, 'show_inferred_check'):
                 self.show_inferred_check.config(state="normal")
                 self.show_inferred_var.set(True)
@@ -2529,7 +2452,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         tree_scroll_y = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
         tree_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
 
-        cols = ("Entity A", "Type A", "Entity B", "Type B", "Link Type", "Detail", "Connected?")
+        cols = ("Entity A", "Type A", "Entity B", "Type B", "Link Type", "Detail")
         tree = ttk.Treeview(
             tree_frame,
             columns=cols,
@@ -2557,7 +2480,6 @@ class NetworkAnalytics(InvestigationModuleBase):
         tree.heading("Type B", text="Type B", command=lambda: sort_by_column("Type B"))
         tree.heading("Link Type", text="Link Type", command=lambda: sort_by_column("Link Type"))
         tree.heading("Detail", text="Detail", command=lambda: sort_by_column("Detail"))
-        tree.heading("Connected?", text="Connected?", command=lambda: sort_by_column("Connected?"))
 
         tree.column("Entity A", width=200)
         tree.column("Type A", width=70)
@@ -2565,34 +2487,21 @@ class NetworkAnalytics(InvestigationModuleBase):
         tree.column("Type B", width=70)
         tree.column("Link Type", width=130)
         tree.column("Detail", width=250)
-        tree.column("Connected?", width=80)
 
         tree.pack(fill=tk.BOTH, expand=True)
-
-        def check_indirect_connection(id_a, id_b):
-            """Check if there's an indirect path between two nodes."""
-            try:
-                undirected = pruned_graph.to_undirected()
-                return "Yes" if nx.has_path(undirected, id_a, id_b) else "No"
-            except Exception:
-                return "N/A"
 
         def populate_tree():
             """Populate tree from discovered_hidden_links."""
             for item in tree.get_children():
                 tree.delete(item)
-            for idx, link in enumerate(self.discovered_hidden_links):
-                id_a = link.get("ID A")
-                id_b = link.get("ID B")
-                connected = check_indirect_connection(id_a, id_b)
+            for idx, link in enumerate(self.discovered_hidden_links):   
                 tree.insert("", "end", iid=str(idx), values=(
                     link.get("Entity A", ""),
                     link.get("Type A", ""),
                     link.get("Entity B", ""),
                     link.get("Type B", ""),
                     link.get("Type", ""),
-                    link.get("Detail", ""),
-                    connected
+                    link.get("Detail", "")
                 ))
 
         # Initial population
@@ -3126,28 +3035,83 @@ class NetworkAnalytics(InvestigationModuleBase):
             )
         return profile, officers, pscs
 
+    def _update_visualise_checkbox_state(self):
+        """
+        Enables/Disables the 'Show only networks...' checkbox based on 
+        whether the required entity lists for the current mode are loaded.
+        """
+        if not hasattr(self, 'show_highlighted_check'):
+            return
+
+        mode = self.analyse_mode_var.get()
+        should_enable = False
+
+        if mode == "single_list":
+            # Enable if we have the single list
+            if self.analyse_entity_list:
+                should_enable = True
+        
+        elif mode == "two_lists":
+            # Enable if we have BOTH lists (since we need to check connections BETWEEN them)
+            if self.cohort_a_ids and self.cohort_b_ids:
+                should_enable = True
+        
+        elif mode == "two_entities":
+            # This filter doesn't make sense for just two specific entities
+            should_enable = False
+
+        # Apply state
+        state = "normal" if should_enable else "disabled"
+        self.show_highlighted_check.config(state=state)
+        
+        # If disabling, uncheck it to avoid confusion
+        if not should_enable:
+            self.show_highlighted_only_var.set(False)
+
+
     def _generate_highlighted_graph(self, graph_to_render, path=None):
         """Modified: Uses new highlight list and entity type filtering for isolated networks."""
         
-        # Handle "show only highlighted" filter
-        if self.show_highlighted_only_var.get():
-            if not self.highlight_entity_list:
-                messagebox.showwarning("Warning", "Please load a highlight list first.")
-                return
+        # 1. Determine "Active" Entities based on Analyse Mode
+        mode = self.analyse_mode_var.get()
+        highlight_ids = set()
+        list_a = set()
+        list_b = set()
 
+        if mode == "single_list" and self.analyse_entity_list:
+            highlight_ids = self.analyse_entity_list
+        elif mode == "two_lists":
+            if self.cohort_a_ids: list_a = self.cohort_a_ids
+            if self.cohort_b_ids: list_b = self.cohort_b_ids
+            highlight_ids = list_a | list_b
+        
+        # 2. Handle "Show Only Networks Containing Connections" Filter
+        if self.show_highlighted_only_var.get():
             undirected_view = graph_to_render.to_undirected()
             connected_components = list(nx.connected_components(undirected_view))
-
             valid_nodes = set()
+
             for component in connected_components:
-                highlighted_in_component = [
-                    node for node in component if node in self.highlight_entity_list
-                ]
-                if len(highlighted_in_component) >= 2:
-                    valid_nodes.update(component)
+                # Mode A: Single List (Standard "Cohort" logic)
+                if mode == "single_list":
+                    hits = [node for node in component if node in highlight_ids]
+                    if len(hits) >= 2:
+                        valid_nodes.update(component)
+                
+                # Mode B: Two Lists (Intersection logic)
+                elif mode == "two_lists":
+                    has_a = any(node in list_a for node in component)
+                    has_b = any(node in list_b for node in component)
+                    if has_a and has_b:
+                        valid_nodes.update(component)
+                
+                # Mode C: Two Specific Entities (Just ensure they are present)
+                elif mode == "two_entities":
+                     # Fallback to standard behavior if someone tries this
+                     pass
 
             if not valid_nodes:
-                messagebox.showinfo("No Networks", "No networks connecting highlighted entities found.")
+                messagebox.showinfo("No Networks", "No networks matching the connection criteria found.")
                 return
 
             graph_to_render = graph_to_render.subgraph(valid_nodes).copy()
@@ -3192,33 +3156,16 @@ class NetworkAnalytics(InvestigationModuleBase):
 
             graph_to_render = graph_to_render.subgraph(valid_nodes).copy()
 
-        # Create a working copy to add inferred connections
+        # Create a working copy for visualization
         viz_graph = graph_to_render.copy()
 
-        # Add inferred connections as edges if checkbox is enabled
-        if self.show_inferred_var.get() and self.discovered_hidden_links:
-            for link in self.discovered_hidden_links:
-                id_a = link.get("ID A")
-                id_b = link.get("ID B")
-                if id_a and id_b:
-                    # Only add if both nodes exist in the graph
-                    if viz_graph.has_node(id_a) and viz_graph.has_node(id_b):
-                        # Don't duplicate existing edges
-                        if not viz_graph.has_edge(id_a, id_b) and not viz_graph.has_edge(id_b, id_a):
-                            # Skip if entities share any common neighbor (2-hop rule)
-                            neighbors_a = set(viz_graph.predecessors(id_a)) | set(viz_graph.successors(id_a))
-                            neighbors_b = set(viz_graph.predecessors(id_b)) | set(viz_graph.successors(id_b))
-                            if neighbors_a & neighbors_b:
-                                continue  # They share a neighbor, don't show inferred edge
-                            if not viz_graph.has_edge(id_a, id_b) and not viz_graph.has_edge(id_b, id_a):
-                                viz_graph.add_edge(
-                                    id_a,
-                                    id_b,
-                                    label=f"Inferred: {link.get('Type', '')}",
-                                    type="hidden",     # Used for finding the edge later
-                                    method=link.get("Method", ""), 
-                                    detail=link.get("Detail", "")
-                                )
+        # Filter out inferred edges if the checkbox is unchecked
+        if not self.show_inferred_var.get():
+            inferred_edges = [
+                (u, v) for u, v, attrs in viz_graph.edges(data=True)
+                if attrs.get("type") == "inferred"
+            ]
+            viz_graph.remove_edges_from(inferred_edges)
 
         # Build the visual network
         net = Network(height="95vh", width="100%", directed=True, notebook=False, cdn_resources="local")
@@ -3241,9 +3188,6 @@ class NetworkAnalytics(InvestigationModuleBase):
             )
             file_color_map = {source: color for source, color in zip(unique_sources, border_colors)}
 
-        # Use highlight_entity_list instead of cohort_ids
-        highlight_ids = self.highlight_entity_list or set()
-
         for node_id, attrs in viz_graph.nodes(data=True):
             node_type = attrs.get("type")
             base_color = "#B9D9EB" if node_type == "company" else ("#FFB347" if node_type == "address" else "#D9E8B9")
@@ -3261,6 +3205,18 @@ class NetworkAnalytics(InvestigationModuleBase):
             if path and node_id in path:
                 final_color = "#FF0000"
                 size = 25
+
+            if node_id in highlight_ids:
+                shape_properties["borderDashes"] = [10, 10]
+                border_width = 5
+                size = 30
+                
+                # Optional: Distinguish List A vs List B with border colors?
+                if mode == "two_lists":
+                    if node_id in list_a: 
+                        final_color = {"background": base_color, "border": "#0000FF"} # Blue for A
+                    elif node_id in list_b:
+                        final_color = {"background": base_color, "border": "#FF0000"} # Red for B
 
             if distinguish_by_file:
                 source_files = attrs.get("source_files", set())
