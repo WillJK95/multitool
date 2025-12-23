@@ -512,7 +512,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
     def _run_investigation_thread(self):
 
-        self.progress_bar["maximum"] = len(self.original_data)
+        self.safe_ui_call(self.progress_bar.config, maximum=len(self.original_data))
 
         if self.search_cc_var.get():
             # If Charity Commission is being searched, use the slower, safer limit
@@ -551,7 +551,9 @@ class CompanyCharitySearch(InvestigationModuleBase):
                     self.app.after(0, self.progress_bar.step, 1)
             except Exception as e:
                 log_message(f"A fatal error occurred during unified search: {e}")
-                messagebox.showerror("Error", f"A processing error occurred: {e}")
+                self.safe_ui_call(
+                    messagebox.showerror, "Error", f"A processing error occurred: {e}"
+                )
 
         self.after(100, self._finish_investigation)
 
@@ -872,7 +874,8 @@ class CompanyCharitySearch(InvestigationModuleBase):
                 self.after(100, self._export_graph_to_csv, graph_object)
         except Exception as e:
             log_message(f"Unified graph data export failed: {e}")
-            messagebox.showerror(
+            self.safe_ui_call(
+                messagebox.showerror,
                 "Error", f"An error occurred during graph data export: {e}"
             )
         finally:

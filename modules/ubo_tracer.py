@@ -268,7 +268,8 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                 )
 
         if len(root_companies) > 20:
-            messagebox.showwarning(
+            self.safe_ui_call(
+                messagebox.showwarning,
                 "Large Input File",
                 f"You have loaded {len(root_companies)} root companies. The investigation and graph may take a long time to process.",
             )
@@ -279,14 +280,15 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             try:
                 snapshot_date = datetime.strptime(snapshot_date_str, "%d/%m/%Y")
             except ValueError:
-                messagebox.showerror(
+                self.safe_ui_call(
+                    messagebox.showerror,
                     "Invalid Date",
                     "The date format must be DD/MM/YYYY. Investigation cancelled.",
                 )
                 self.after(100, self._finish_investigation)
                 return
 
-        self.progress_bar["maximum"] = len(root_companies)
+        self.safe_ui_call(self.progress_bar.config, maximum=len(root_companies))
         self.app.after(
             0,
             lambda: self.status_var.set(
@@ -512,7 +514,8 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             self.after(10, self._generate_and_open_graph)  # Call the final renderer
         except Exception as e:
             log_message(f"UBO visual graph generation failed: {e}")
-            messagebox.showerror(
+            self.safe_ui_call(
+                messagebox.showerror,
                 "Error", f"An error occurred during graph generation: {e}"
             )
         finally:
@@ -532,7 +535,8 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                 self.after(100, self._export_graph_to_csv, full_graph_object)
         except Exception as e:
             log_message(f"UBO graph data export failed: {e}")
-            messagebox.showerror(
+            self.safe_ui_call(
+                messagebox.showerror,
                 "Error", f"An error occurred during graph data export: {e}"
             )
         finally:
@@ -628,7 +632,8 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                 snapshot_date = datetime.strptime(snapshot_date_str, "%d/%m/%Y")
             except ValueError:
                 # Show an error if the date is invalid but continue without filtering
-                messagebox.showwarning(
+                self.safe_ui_call(
+                    messagebox.showwarning,
                     "Invalid Date for Graph",
                     f"The date '{snapshot_date_str}' is not a valid format (DD/MM/YYYY). "
                     "The graph will be generated with all historic data.",

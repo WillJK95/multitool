@@ -301,8 +301,9 @@ class GrantsSearch(InvestigationModuleBase):
 
     def _run_investigation_thread(self):
 
-        self.progress_bar["maximum"] = len(self.original_data)
-        self.progress_bar["value"] = 0
+        self.safe_ui_call(
+            self.progress_bar.config, maximum=len(self.original_data), value=0
+        )
 
         # --- RATE LIMITING ---
         # The GrantNav API has a strict 2 requests/second limit.
@@ -350,7 +351,9 @@ class GrantsSearch(InvestigationModuleBase):
 
             except Exception as e:
                 log_message(f"An error occurred during grant investigation: {e}")
-                messagebox.showerror("Error", f"A processing error occurred: {e}")
+                self.safe_ui_call(
+                    messagebox.showerror, "Error", f"A processing error occurred: {e}"
+                )
 
         if not self.cancel_flag.is_set():
             self.app.after(0, lambda: self.status_var.set("Investigation complete!"))
