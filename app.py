@@ -502,40 +502,13 @@ class App(tk.Tk):
 
             threading.Thread(target=run_check, daemon=True).start()
 
-        # --- 3. Network Analytics Workbench section (above footer) ---
-        workbench_frame = ttk.LabelFrame(
-            self.container,
-            text="",
-            padding=20,
-            bootstyle="success"
-        )
-        workbench_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(10, 10))
+        # --- 2 & 3. Content area (modules + workbench) ---
+        content_frame = ttk.Frame(self.container)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
 
-        ttk.Label(
-            workbench_frame,
-            text="🎯 Network Analytics Workbench",
-            font=("Helvetica", 16, "bold")
-        ).pack(anchor="center")
-
-        ttk.Label(
-            workbench_frame,
-            text="Combine and analyse relationship data from all your investigations in one place",
-            font=("Helvetica", 10),
-            foreground="gray"
-        ).pack(anchor="center", pady=(5, 10))
-
-        ttk.Button(
-            workbench_frame,
-            text="Open Workbench",
-            command=self.show_network_graph_creator,
-            bootstyle="success",
-            width=20,
-            state=tk.NORMAL
-        ).pack(anchor="center")
-
-        # --- 2. Two-column modules section (fills available space) ---
-        modules_frame = ttk.Frame(self.container)
-        modules_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
+        # Two-column modules section
+        modules_frame = ttk.Frame(content_frame)
+        modules_frame.pack(fill=tk.BOTH, expand=True)
 
         # Left Column: Network Compatible Modules
         left_col = ttk.Frame(modules_frame)
@@ -567,15 +540,46 @@ class App(tk.Tk):
             title="Standalone Tools",
             modules=[
                 ("Enhanced Due Diligence", self.show_enhanced_dd, ch_enabled,
-                 "Generate full financial & risk reports", "secondary"),
+                 "Generate full financial & risk reports", "info"),
                 ("Grants Search", self.show_grants_investigation, tk.NORMAL,
-                 "Analyse funding data from 360Giving", "secondary"),
+                 "Analyse funding data from 360Giving", "info"),
                 ("Data Match", self.show_data_match_investigation, tk.NORMAL,
-                 "Fuzzy match two independent datasets", "secondary"),
+                 "Fuzzy match two independent datasets", "info"),
             ],
-            group_bootstyle="secondary",
+            group_bootstyle="info",
             explanatory_text="Specialised analysis and data utilities"
         )
+
+        # Network Analytics Workbench section (below modules, inside content_frame)
+        workbench_frame = ttk.LabelFrame(
+            content_frame,
+            text="",
+            padding=20,
+            bootstyle="success"
+        )
+        workbench_frame.pack(fill=tk.X, pady=(10, 0))
+
+        ttk.Label(
+            workbench_frame,
+            text="🎯 Network Analytics Workbench",
+            font=("Helvetica", 16, "bold")
+        ).pack(anchor="center")
+
+        ttk.Label(
+            workbench_frame,
+            text="Combine and analyse relationship data from all your investigations in one place",
+            font=("Helvetica", 10),
+            foreground="gray"
+        ).pack(anchor="center", pady=(5, 10))
+
+        ttk.Button(
+            workbench_frame,
+            text="Open Workbench",
+            command=self.show_network_graph_creator,
+            bootstyle="success",
+            width=20,
+            state=tk.NORMAL
+        ).pack(anchor="center")
     
     def show_main_guide(self) -> None:
         """Show the main help window."""
@@ -773,10 +777,14 @@ class App(tk.Tk):
         # Safety check - panel may have been destroyed if user navigated away
         if not status_panel.winfo_exists():
             return
-        
+
         if not self.api_statuses:
             return
-        
+
+        # Clear existing children to prevent duplication
+        for widget in status_panel.winfo_children():
+            widget.destroy()
+
         self._create_status_indicator(
             status_panel, 
             "Companies House", 
