@@ -99,31 +99,48 @@ class App(tk.Tk):
         # Load API keys and show appropriate screen
         self.load_api_keys()
 
-    def _create_menu_group(self, parent, title, modules):
+    def _create_menu_group(self, parent, title, modules, group_bootstyle=None, explanatory_text=None):
         """
         Helper to create a visually distinct group of menu buttons.
-        
+
         Args:
             parent: The parent widget (Frame).
             title: The title of the group (e.g., "Discovery").
             modules: List of tuples (Button Text, Command, State, Description, Bootstyle).
+            group_bootstyle: Optional bootstyle for the LabelFrame; if provided, also
+                overrides individual button bootstyles for uniformity.
+            explanatory_text: Optional grey italic text displayed below the title,
+                above the buttons.
         """
         # Create a labeled frame for the category
-        frame = ttk.LabelFrame(parent, text=f" {title} ", padding=15, bootstyle="default")
+        frame_style = group_bootstyle if group_bootstyle else "default"
+        frame = ttk.LabelFrame(parent, text=f" {title} ", padding=15, bootstyle=frame_style)
         frame.pack(fill=tk.X, pady=10, anchor="n")
-        
+
+        # Add explanatory text if provided
+        if explanatory_text:
+            ttk.Label(
+                frame,
+                text=explanatory_text,
+                font=("Segoe UI", 9, "italic"),
+                foreground="gray"
+            ).pack(anchor="w", pady=(0, 10))
+
         for name, command, state, desc, style in modules:
             # Create a container for each row (Button + Description)
             row = ttk.Frame(frame)
             row.pack(fill=tk.X, pady=6)
-            
+
+            # Use group_bootstyle if provided, otherwise use individual button style
+            button_style = group_bootstyle if group_bootstyle else style
+
             # Action Button
             btn = ttk.Button(
-                row, 
-                text=name, 
-                command=command, 
-                state=state, 
-                bootstyle=style, 
+                row,
+                text=name,
+                command=command,
+                state=state,
+                bootstyle=button_style,
                 width=22  # Fixed width for alignment
             )
             btn.pack(side=tk.LEFT, padx=(0, 12))
@@ -419,90 +436,35 @@ class App(tk.Tk):
         ).pack()
     
     def show_main_menu(self) -> None:
-        """Display the main menu with a categorized dashboard layout (Collision Fixed)."""
+        """Display the main menu with a categorized dashboard layout."""
         self.unbind("<Return>")
         self.clear_container()
         self.title("Multi-Tool - Dashboard")
-        self.geometry("1100x600")  # Height reduced slightly as requested
-
-        # --- 1. Top Bar Container (Header Only) ---
-        top_bar = ttk.Frame(self.container)
-        top_bar.pack(fill=tk.X, padx=20, pady=(15, 10), side=tk.TOP)
-
-        # Header Section
-        header_frame = ttk.Frame(top_bar)
-        header_frame.pack(side=tk.LEFT, fill=tk.Y)
-        
-        ttk.Label(
-            header_frame, 
-            text="Module Suite", 
-            font=("Helvetica", 20, "bold"),
-            bootstyle="primary"
-        ).pack(anchor="w")
-        
-        ttk.Label(
-            header_frame, 
-            text="Select a module below to begin your analysis.", 
-            font=("Helvetica", 11),
-            foreground="gray"
-        ).pack(anchor="w")
-
-        # --- 2. Main Dashboard Area ---
-        dashboard_frame = ttk.Frame(self.container)
-        dashboard_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
+        self.geometry("1100x700")
 
         # Define Button States
         ch_enabled = tk.NORMAL if self.api_key else tk.DISABLED
         unified_enabled = tk.NORMAL if self.api_key or self.charity_api_key else tk.DISABLED
-        
-        # Create Columns
-        left_col = ttk.Frame(dashboard_frame)
-        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
-        
-        right_col = ttk.Frame(dashboard_frame)
-        right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
 
-        # --- GROUP 1: Search & Discovery (Left Column) ---
-        self._create_menu_group(
-            parent=left_col, 
-            title="Search & Discovery", 
-            modules=[
-                ("Bulk Entity Search", self.show_unified_search, unified_enabled, 
-                 "Search companies & charities via mixed ID file", "primary"),
-                ("Contracts Finder", self.show_contracts_finder, ch_enabled, 
-                 "Find government contracts & enrich with Companies House data", "primary"),
-                ("Grants Search", self.show_grants_investigation, tk.NORMAL, 
-                 "Analyse funding data from 360Giving", "primary"),
-            ]
-        )
+        # --- 1. Header at top ---
+        header_frame = ttk.Frame(self.container)
+        header_frame.pack(fill=tk.X, padx=20, pady=(15, 10))
 
-        # --- GROUP 2: Data Utilities (Left Column - Bottom) ---
-        self._create_menu_group(
-            parent=left_col,
-            title="Data Utilities",
-            modules=[
-                ("Data Match", self.show_data_match_investigation, tk.NORMAL, 
-                 "Fuzzy match two independent datasets", "secondary"),
-                ("Network Analytics", self.show_network_graph_creator, tk.NORMAL, 
-                 "Build and visualise relationship graphs", "secondary"),
-            ]
-        )
+        ttk.Label(
+            header_frame,
+            text="Module Suite",
+            font=("Helvetica", 20, "bold"),
+            bootstyle="primary"
+        ).pack(anchor="w")
 
-        # --- GROUP 3: Deep Dive & Investigation (Right Column) ---
-        self._create_menu_group(
-            parent=right_col, 
-            title="Deep Dive Investigation", 
-            modules=[
-                ("Enhanced Due Diligence", self.show_enhanced_dd, ch_enabled, 
-                 "Generate full financial & risk reports", "success"),
-                ("UBO Tracer", self.show_ubo_investigation, ch_enabled, 
-                 "Trace parent companies and ownership structures", "success"),
-                ("Director Search", self.show_director_investigation, ch_enabled, 
-                 "Locate all appointments for a specific director", "success"),
-            ]
-        )
-        
-        # --- 3. Footer Area (User Guide Left, Status Right) ---
+        ttk.Label(
+            header_frame,
+            text="Select a module below to begin your analysis.",
+            font=("Helvetica", 11),
+            foreground="gray"
+        ).pack(anchor="w")
+
+        # --- 4. Footer at bottom (pack first so it stays at bottom) ---
         footer_frame = ttk.Frame(self.container)
         footer_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(0, 15))
 
@@ -515,11 +477,11 @@ class App(tk.Tk):
         )
         footer_btn.pack(side=tk.LEFT, anchor="sw", pady=(5, 0))
 
-        # API Status Panel (Right) - Now packed into the footer frame
+        # API Status Panel (Right)
         self.status_panel = ttk.LabelFrame(footer_frame, text="API Status", padding=5)
         self.status_panel.pack(side=tk.RIGHT, anchor="se")
-        
-        # Load Status Logic (Same as before)
+
+        # Load Status Logic
         if self.api_statuses:
             self._display_api_status(self.status_panel)
         else:
@@ -530,15 +492,94 @@ class App(tk.Tk):
                 foreground='gray'
             )
             checking_label.pack()
-            
+
             def run_check():
                 self.check_api_status()
                 if checking_label.winfo_exists():
                     self.after(0, checking_label.destroy)
                 if self.status_panel.winfo_exists():
                     self.after(0, lambda: self._display_api_status(self.status_panel))
-            
+
             threading.Thread(target=run_check, daemon=True).start()
+
+        # --- 2 & 3. Content area (modules + workbench) ---
+        content_frame = ttk.Frame(self.container)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
+
+        # Two-column modules section
+        modules_frame = ttk.Frame(content_frame)
+        modules_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Left Column: Network Compatible Modules
+        left_col = ttk.Frame(modules_frame)
+        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+
+        self._create_menu_group(
+            parent=left_col,
+            title="Network Compatible Modules",
+            modules=[
+                ("UBO Tracer", self.show_ubo_investigation, ch_enabled,
+                 "Trace parent companies and ownership structures", "primary"),
+                ("Director Search", self.show_director_investigation, ch_enabled,
+                 "Locate all appointments for a specific director", "primary"),
+                ("Bulk Entity Search", self.show_unified_search, unified_enabled,
+                 "Search companies & charities via mixed ID file", "primary"),
+                ("Contracts Finder", self.show_contracts_finder, ch_enabled,
+                 "Find government contracts & enrich with CH data", "primary"),
+            ],
+            group_bootstyle="primary",
+            explanatory_text="Export graph data to combine in the Workbench"
+        )
+
+        # Right Column: Standalone Tools
+        right_col = ttk.Frame(modules_frame)
+        right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
+
+        self._create_menu_group(
+            parent=right_col,
+            title="Standalone Tools",
+            modules=[
+                ("Enhanced Due Diligence", self.show_enhanced_dd, ch_enabled,
+                 "Generate full financial & risk reports", "info"),
+                ("Grants Search", self.show_grants_investigation, tk.NORMAL,
+                 "Analyse funding data from 360Giving", "info"),
+                ("Data Match", self.show_data_match_investigation, tk.NORMAL,
+                 "Fuzzy match two independent datasets", "info"),
+            ],
+            group_bootstyle="info",
+            explanatory_text="Specialised analysis and data utilities"
+        )
+
+        # Network Analytics Workbench section (below modules, inside content_frame)
+        workbench_frame = ttk.LabelFrame(
+            content_frame,
+            text="",
+            padding=20,
+            bootstyle="success"
+        )
+        workbench_frame.pack(fill=tk.X, pady=(10, 0))
+
+        ttk.Label(
+            workbench_frame,
+            text="🎯 Network Analytics Workbench",
+            font=("Helvetica", 16, "bold")
+        ).pack(anchor="center")
+
+        ttk.Label(
+            workbench_frame,
+            text="Combine and analyse relationship data from all your investigations in one place",
+            font=("Helvetica", 10),
+            foreground="gray"
+        ).pack(anchor="center", pady=(5, 10))
+
+        ttk.Button(
+            workbench_frame,
+            text="Open Workbench",
+            command=self.show_network_graph_creator,
+            bootstyle="success",
+            width=20,
+            state=tk.NORMAL
+        ).pack(anchor="center")
     
     def show_main_guide(self) -> None:
         """Show the main help window."""
@@ -736,10 +777,14 @@ class App(tk.Tk):
         # Safety check - panel may have been destroyed if user navigated away
         if not status_panel.winfo_exists():
             return
-        
+
         if not self.api_statuses:
             return
-        
+
+        # Clear existing children to prevent duplication
+        for widget in status_panel.winfo_children():
+            widget.destroy()
+
         self._create_status_indicator(
             status_panel, 
             "Companies House", 
