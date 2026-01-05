@@ -7,291 +7,802 @@ and consistent with the current UI labels.
 
 HELP_CONTENT = {
     "main": """
-Welcome to the Data Investigation Multi-Tool.
+--- Data Investigation Multi-Tool ---
 
-This tool supports due diligence, counter-fraud, and conflict-of-interest investigations by pulling data from:
-- UK Companies House
-- Charity Commission (England & Wales)
-- 360Giving (via GrantNav)
-- Contracts Finder
+This tool supports due diligence, counter-fraud, and conflict-of-interest investigations
+by pulling data from multiple UK public data sources:
+
+    - UK Companies House (company profiles, officers, PSCs, filings)
+    - Charity Commission for England & Wales (charity details, trustees, finances)
+    - 360Giving / GrantNav (grant funding records)
+    - UK Government Contracts Finder (public sector contracts)
 
 --- HOW TO USE ---
-1. Select a module from the main menu.
-2. Follow the numbered steps inside that module (usually: upload a CSV, select columns, run, then export).
-3. Use **Export** buttons to save outputs for casework, audit trails, or further analysis.
+
+1. Select a module from the main menu
+2. Follow the numbered steps inside that module (typically: upload CSV, select columns, run, export)
+3. Use Export buttons to save outputs for casework, audit trails, or further analysis
+
+--- APPLICATION SETTINGS ---
+
+Theme Toggle:
+    Switch between Dark Mode (Superhero theme) and Light Mode (Litera theme)
+    using the toggle in the main menu.
+
+Font Size:
+    Adjust the application font size (8-16pt) using the slider in the main menu.
+    Changes apply immediately across all modules.
+
+API Status Monitor:
+    The main menu displays real-time status indicators for all four data sources.
+    - Green: API is responding normally
+    - Red: API is unavailable or returning errors
+    - Orange: API is responding with warnings
+    - Grey: Status not yet checked
+    Click "Refresh" to manually update the status of all APIs.
 
 --- COMMON TIPS ---
-- **API keys:** Companies House and Charity Commission modules require keys. You can reset stored keys from the main menu.
-- **Cache & logs:** The tool saves temporary files (logs, graphs, reports) in a hidden folder in your user directory.
-  You can clear these using the "Clear Cache & Logs" button.
-- **CSV encoding:** The tool attempts to read CSVs as UTF‑8 first, then CP1252.
-- **Graph workflow:** Several modules can export graph data (edge lists). These can be combined in **Network Analytics**
-  to build a larger graph and search for connections.
+
+API Keys:
+    Companies House and Charity Commission modules require free API keys.
+    Use "Manage API Keys" from the main menu to add, update, or delete stored keys.
+    Keys are stored securely in your system's credential manager (keyring).
+
+Cache & Logs:
+    The tool saves temporary files (logs, graphs, reports) in a hidden folder
+    in your user directory (~/.DataInvestigatorTool/).
+    Use "Clear Cache & Logs" to remove these files.
+
+CSV Encoding:
+    The tool attempts to read CSVs as UTF-8 first, then falls back to CP1252.
+
+Graph Workflow:
+    Several modules can export graph data (edge lists). These can be combined in
+    Network Analytics to build a larger graph and search for connections between entities.
+
+Cancellation:
+    Long-running operations can be cancelled using the Cancel button.
+    The tool will stop at the next safe point and preserve any data already processed.
 """,
 
     "api_keys": """
 --- About API Keys ---
 
-An API (Application Programming Interface) is a way for computer programs to talk to each other. To use this tool,
-you need a free API key from Companies House and/or the Charity Commission.
+An API (Application Programming Interface) is a way for computer programs to talk to
+each other. To use this tool, you need free API keys from Companies House and/or the
+Charity Commission.
 
-The keys you enter are stored securely in your system’s credential manager and are not shared.
+--- Security & Storage ---
 
---- How to get your keys ---
+Your API keys are stored securely using your operating system's credential manager:
+    - Windows: Windows Credential Manager
+    - macOS: Keychain
+    - Linux: Secret Service (GNOME Keyring / KWallet)
 
-1) **Companies House**
-- Register at: https://developer.company-information.service.gov.uk/
-- Go to “Your Applications”, create an application, choose “REST”
-- Copy the generated key into the tool
+Keys are never stored in plain text and are not shared with anyone.
 
-2) **Charity Commission**
-- Register at: https://api-portal.charitycommission.gov.uk/
-- In your “Profile” → “Subscriptions”, copy your primary or secondary key into the tool
+--- How to Get Your Keys ---
+
+1) Companies House
+
+   - Register at: https://developer.company-information.service.gov.uk/
+   - Go to "Your Applications" and create a new application
+   - Choose "REST" as the API type
+   - Copy the generated key into the tool
+
+2) Charity Commission
+
+   - Register at: https://api-portal.charitycommission.gov.uk/
+   - In your "Profile" -> "Subscriptions", subscribe to the Charity Commission API
+   - Copy your primary or secondary subscription key into the tool
+
+--- Managing Keys ---
+
+From the main menu:
+    - "Manage API Keys" opens a dialog to view, update, or delete stored keys
+    - "Reset API Keys" removes all stored keys (you will be prompted to re-enter them)
+
+--- API Rate Limits ---
+
+Companies House: 600 requests per 5 minutes (the tool manages this automatically)
+Charity Commission: Approximately 2 requests per second
+GrantNav: 2 requests per second (no key required)
+Contracts Finder: 2 requests per second (no key required)
 """,
 
     "director": """
---- Director Investigation Help ---
+--- Director Investigation ---
 
-This module finds company appointments for a given director/officer name (Companies House).
+This module finds company appointments for a given director or officer name using
+Companies House data.
 
-1) **Full Name**
-Enter the director’s full name. For common names, include middle names/initials where possible.
+--- WORKFLOW ---
 
-2) **Year / Month of Birth (Optional, but recommended)**
-Adding year and/or month of birth can significantly narrow down results.
+1) Enter Director Details
+   - Full Name (required): Enter the director's full name
+   - Year of Birth (optional but recommended): Helps narrow down results
+   - Month of Birth (optional): Further refines the search
 
---- QUIRKS & TIPS ---
-- **1000 result limit:** Companies House officer search returns a maximum of 1000 results. For very common names,
-  the correct person may not appear in the first 1000. Date-of-birth filtering happens *after* the initial search,
-  so use extra caution with generic names.
-- **Export Directorships:** Saves the appointment list you see in the table.
-- **Obtain Grants Data & Export:** For the companies found, fetches associated 360Giving grant records and exports
-  a separate file (useful for spotting repeat funders, patterns, and related entities).
-- **Generate Visual Graph:** Opens an interactive network graph of companies, officers/PSCs, and addresses.
-- **Export Graph Data (CSV):** Exports graph data for reuse in **Network Analytics** (e.g., to merge with other modules’ exports).
+2) Search
+   Click "Search" to query Companies House for matching officers.
+
+3) View Results
+   The results table shows all appointments found, including:
+   - Company name and number
+   - Appointment type (director, secretary, etc.)
+   - Appointment dates
+   - Resignation date (if applicable)
+   - Occupation and nationality
+
+--- EXPORT OPTIONS ---
+
+Export Directorships:
+    Saves the appointment list as a CSV file.
+
+Obtain Grants Data & Export:
+    For the companies found, fetches associated 360Giving grant records.
+    Useful for spotting repeat funders, patterns, and related entities.
+
+Generate Visual Graph:
+    Opens an interactive network graph showing:
+    - The searched director (central node)
+    - All associated companies
+    - Other officers and PSCs at those companies
+    - Registered addresses
+    Nodes are colour-coded by type and can be clicked for details.
+
+Export Graph Data (CSV):
+    Exports the graph as an edge list for use in Network Analytics.
+    Allows combining with other modules' exports for broader analysis.
+
+--- TIPS & LIMITATIONS ---
+
+1000 Result Limit:
+    Companies House officer search returns a maximum of 1000 results.
+    For very common names, the correct person may not appear in the first 1000.
+    Date-of-birth filtering happens after the initial search, so use extra
+    caution with generic names like "John Smith".
+
+Name Variations:
+    Try different name formats if initial results are poor:
+    - With/without middle names
+    - Full middle name vs initials
+    - Maiden names vs married names
 """,
 
     "ubo": """
---- UBO Investigation Help ---
+--- Ultimate Beneficial Ownership (UBO) Tracer ---
 
-This module traces Ultimate Beneficial Ownership (UBO) chains by finding Persons with Significant Control (PSCs).
+This module traces ownership chains by finding Persons with Significant Control (PSCs)
+and recursively following corporate ownership structures.
 
-1) **Input**
-Upload a CSV containing a column of company registration numbers.
+--- WORKFLOW ---
 
-2) **Process**
-The tool recursively follows PSCs. If a PSC is another company, it fetches that company’s PSCs, and so on (up to 20 levels).
+1) Upload Input File
+   Upload a CSV containing a column of company registration numbers.
 
---- QUIRKS & TIPS ---
-- **Visual Graph vs Data Export:** The visual graph is a clean, hierarchical ownership chart. The CSV export is more detailed
-  and is intended for deeper analysis and for combining in **Network Analytics**.
-- **Snapshot Date:** Use this to approximate the ownership structure on a specific date. If left blank, the tool will include
-  current and historical PSC data returned by Companies House.
-- **Shared PSCs:** Entities that appear as PSCs for multiple companies in the chain are highlighted in the visual graph.
+2) Select Column
+   Choose the column containing company numbers from the dropdown.
+
+3) Configure Options
+
+   Snapshot Date (optional):
+       Approximate the ownership structure as it existed on a specific date.
+       If left blank, the tool includes current and historical PSC data.
+
+   Include Officers:
+       Tick to also fetch director and secretary information alongside PSCs.
+
+4) Run Investigation
+   The tool recursively follows PSCs:
+   - If a PSC is an individual, they are recorded as an ultimate beneficial owner
+   - If a PSC is another company, the tool fetches that company's PSCs
+   - This continues up to 20 levels deep to handle complex ownership structures
+
+--- EXPORT OPTIONS ---
+
+Export PSC List:
+    Exports a flat CSV of all discovered PSCs with:
+    - PSC name and type (individual or corporate)
+    - Nature of control (shares, voting rights, etc.)
+    - Notified date and ceased date
+    - The chain of companies leading to each PSC
+
+Visual Ownership Graph:
+    Generates a hierarchical tree visualisation showing:
+    - Root companies at the top
+    - Ownership chains flowing downward
+    - Ultimate beneficial owners at the bottom
+    Shared PSCs (entities appearing in multiple chains) are highlighted.
+
+Export Graph Data (CSV):
+    Exports an edge list for use in Network Analytics.
+    Includes all company-PSC relationships discovered.
+
+--- TIPS ---
+
+Shared PSCs:
+    Entities appearing as PSCs for multiple companies are highlighted in the
+    visual graph - these may indicate connected ownership structures.
+
+Complex Structures:
+    For very complex ownership (e.g., offshore holding companies), some chains
+    may terminate at foreign entities not registered with Companies House.
+
+Historical Data:
+    Use the Snapshot Date to investigate ownership at a specific point in time,
+    such as when a grant was awarded or a contract was signed.
 """,
 
     "unified_search": """
---- Unified Bulk Search Help ---
+--- Unified Bulk Search ---
 
-This module checks a list of identifiers against multiple databases in one run (Companies House + Charity Commission).
+This module checks a list of identifiers against multiple databases in one run,
+enriching your data with company and charity information.
 
 --- SETUP ---
-1) **Select Databases**
-Tick the sources you want to query.
 
-2) **Select Priority**
-If your file is mostly companies or mostly charities, set the priority accordingly. Both sources can still be queried,
-but the priority setting can speed up matching (especially when fuzzy matching by name).
+1) Select Databases
+   Tick which sources you want to query:
+   - Companies House (UK company register)
+   - Charity Commission (England & Wales charities)
 
-3) **Select Columns**
-- **Distinct columns:** Map company numbers to “Company Number” and charity numbers to “Charity Number”.
-- **Single mixed column:** Map the same column to both dropdowns. The tool will try Companies House first, then (if no match)
-  try the Charity Commission.
+2) Set Search Priority
+   If your file is mostly companies or mostly charities, set the priority accordingly.
+   Both sources can still be queried, but the priority setting speeds up matching.
 
-4) **Fuzzy matching (if enabled)**
-If identifiers are names rather than numbers, fuzzy matching will attempt to find the closest record above your threshold.
-Outputs include **match_score** and **matched_name** for auditability.
+3) Upload Your File
+   Upload a CSV containing organisation identifiers (numbers or names).
+
+4) Select Columns
+   Map your columns to the appropriate identifier types:
+
+   Distinct Columns:
+       - Map company numbers to "Company Number"
+       - Map charity numbers to "Charity Number"
+
+   Single Mixed Column:
+       - Map the same column to both dropdowns
+       - The tool will try Companies House first, then Charity Commission if no match
+
+5) Configure Matching
+
+   Exact Matching:
+       Used for registration numbers. Fast and precise.
+
+   Fuzzy Matching (optional):
+       Enable for name-based matching when you don't have registration numbers.
+       - Set accuracy threshold (85-100%): higher = stricter matching
+       - Outputs include match_score and matched_name for auditability
+
+6) Select Enrichment Fields
+   Choose which data fields to include in the output:
+
+   Companies House fields:
+       Company number, status, type, incorporation date, registered address,
+       SIC codes, officers, PSCs, accounts info, jurisdiction
+
+   Charity Commission fields:
+       Charity number, registration date, trustees, financial history,
+       income/expenditure, assets/liabilities, area of operation
 
 --- OUTPUT ---
-- **match_status:** “Match Found” or “No Match Found”
-- **match_source:** Which database(s) matched, and whether the match was exact or fuzzy
-- Enriched columns for the matched source(s); non-matched source columns remain blank
 
---- GRAPH EXPORT (Optional) ---
-Use **Export Graph Data (CSV)** to build a combined graph from your matched results. This can include:
-- Companies, officers, PSCs, and registered addresses (Companies House)
-- Charities and trustees (Charity Commission)
-You can then combine and analyse this in **Network Analytics**.
+The enriched file includes:
+    - match_status: "Match Found" or "No Match Found"
+    - match_source: Which database matched (and whether exact or fuzzy)
+    - All selected enrichment fields (blank for non-matched sources)
+    - match_score and matched_name (when fuzzy matching was used)
+
+--- GRAPH EXPORT ---
+
+Export Graph Data (CSV):
+    Build a combined relationship graph from your matched results, including:
+    - Companies and their officers/PSCs/addresses
+    - Charities and their trustees
+    This edge list can be analysed in Network Analytics.
+
+--- TIPS ---
+
+Mixed Identifiers:
+    If your data has a mix of company and charity numbers in one column,
+    the tool will automatically determine which database to query based
+    on the identifier format.
+
+Fuzzy Matching Caution:
+    Fuzzy matches are leads, not conclusions. Always verify high-importance
+    matches manually, especially those with scores below 95%.
 """,
 
     "grants_search": """
---- Grants Search Help (360Giving / GrantNav) ---
+--- Grants Search (360Giving / GrantNav) ---
 
-This module finds 360Giving grant records linked to companies and/or charities.
+This module finds grant funding records linked to companies and charities using
+the 360Giving GrantNav database.
 
 --- WORKFLOW ---
-1) **Upload Input File**
-Upload a CSV containing identifiers.
 
-2) **Select Identifier Columns**
-Choose either (or both):
-- a **Company Number** column (Companies House numbers), and/or
-- a **Charity Number** column (Charity Commission numbers)
+1) Upload Input File
+   Upload a CSV containing organisation identifiers.
 
-3) **Select Grant Data Fields**
-Choose which grant fields you want in the output (you can Select/Deselect All).
+2) Select Identifier Columns
+   Choose one or both:
+   - Company Number column (Companies House registration numbers)
+   - Charity Number column (Charity Commission registration numbers)
 
-4) **Run Investigation**
-For each row, the tool:
-- tries Company Number first (converted to the standard 360Giving organisation ID format), then
-- falls back to Charity Number if no grants were found via company number
+3) Select Grant Fields
+   Choose which grant data fields you want in the output:
+   - Grant title and description
+   - Award amount and currency
+   - Award date
+   - Funder name and identifier
+   - Grant programme
+   - Planned start/end dates and duration
+   - Beneficiary location
+
+4) Run Investigation
+   For each row, the tool:
+   - Tries Company Number first (converted to 360Giving organisation ID format)
+   - Falls back to Charity Number if no grants found via company number
+   - Records all matching grants
 
 --- OUTPUT ---
-- If grants are found, the tool will output one row per grant (duplicating your input row to preserve your context).
-- If no grants are found, you still get a row back with **grant_search_status** explaining what was attempted.
+
+Grants Found:
+    One row per grant, with your input row data duplicated to preserve context.
+    All selected grant fields are populated.
+
+No Grants Found:
+    You still get a row back with grant_search_status explaining what was attempted
+    (e.g., "No grants found for company GB-COH-12345678").
 
 --- TIPS ---
-- Company numbers are normalised to 8 digits (e.g., 123456 becomes 00123456) for 360Giving organisation IDs.
-- The GrantNav API is rate-limited; large files will take time.
+
+Company Number Format:
+    Company numbers are normalised to 8 digits and converted to 360Giving
+    organisation ID format (e.g., "123456" becomes "GB-COH-00123456").
+
+Rate Limiting:
+    GrantNav API is rate-limited to 2 requests per second.
+    Large files will take time to process.
+
+Grant Coverage:
+    360Giving contains grants from participating funders only.
+    Not all UK grant-makers publish to 360Giving, so absence of records
+    does not necessarily mean no grants were received.
 """,
 
     "contracts_finder": """
-<h2>Contracts Finder</h2>
+--- Contracts Finder ---
 
-<p>This module allows for details of public sector contract awardees to be gathered based on the buyer organisation, using the UK Government Contracts Finder API.</p>
+This module searches for public sector contract awards using the UK Government
+Contracts Finder API and enriches supplier information from Companies House.
 
-<h3>Workflow</h3>
-<ol>
-  <li><b>Search Contracts</b> – enter a buyer organisation and date range to find awarded contracts</li>
-  <li><b>Enrich Suppliers</b> – fetch supplier director/PSC information from Companies House (where available)</li>
-  <li><b>Export Results</b> – save outputs for analysis</li>
-</ol>
+--- WORKFLOW ---
 
-<h3>Exports</h3>
-<ul>
-  <li><b>Supplier export</b> – enriched supplier details and contract summary fields</li>
-  <li><b>Export Graph Data</b> – outputs an edge list (companies ↔ officers/PSCs ↔ addresses) compatible with <b>Network Analytics</b></li>
-</ul>
+1) Search Contracts
 
-<h3>Tips</h3>
-<ul>
-  <li>Use the buyer name as it appears in Contracts Finder and be aware that the name must appear exactly as it does in Contracts Finder (inclusive of commas etc.)</li>
-</ul>
+   Buyer Organisation:
+       Enter the name of the public sector buyer organisation.
+       The name must match exactly as it appears in Contracts Finder
+       (including punctuation, commas, etc.).
+
+   Date Range:
+       Set the start and end dates for your search.
+       Defaults to the last 12 months.
+
+   Click "Search" to find all awarded contracts for the specified buyer.
+
+2) View Results
+   The contracts table shows:
+   - Contract title and description
+   - Award date
+   - Contract value
+   - Supplier name and identifier
+
+3) Enrich Suppliers
+   Click "Enrich Suppliers" to fetch additional information from Companies House:
+   - Company status and incorporation date
+   - Registered address
+   - Directors and PSCs
+   - SIC codes
+
+--- EXPORT OPTIONS ---
+
+Export Suppliers:
+    Saves enriched supplier details with contract summary fields as CSV.
+
+Export Graph Data:
+    Outputs an edge list showing relationships between:
+    - Supplier companies
+    - Officers and PSCs
+    - Registered addresses
+    Compatible with Network Analytics for cross-referencing with other data sources.
+
+--- TIPS ---
+
+Buyer Name Matching:
+    Contracts Finder requires exact buyer name matches. Try variations if
+    your initial search returns no results:
+    - Full legal name vs trading name
+    - With/without "The" prefix
+    - Abbreviations vs full names
+
+Finding Buyer Names:
+    Browse Contracts Finder directly (www.contractsfinder.service.gov.uk)
+    to find the exact buyer name format used.
+
+Supplier Enrichment:
+    Not all suppliers will have Companies House records (e.g., sole traders,
+    partnerships, foreign companies). These will show limited enrichment data.
 """,
 
     "data_match": """
---- Data Match Help ---
+--- Data Match ---
 
-This module joins (matches) two CSV files together using either:
-- an exact match on a unique identifier (e.g., company number), or
-- a fuzzy match on a text field (e.g., organisation or person name).
+This module joins (matches) two CSV files together using either exact or fuzzy matching.
 
 --- WORKFLOW ---
-1) **Upload Files**
-- Upload a Primary (left) file
-- Upload a Matching (right) file
 
-2) **Choose Matching Logic**
-- **Exact match on identifier:** best for company numbers, payroll IDs, invoice references, etc.
-  - Optional: pad numeric identifiers to 8 digits (useful for UK company numbers).
-- **Fuzzy match on text:** best for names where spelling varies.
-  - Use the accuracy slider to trade recall vs precision.
+1) Upload Files
 
-3) **Select Columns**
-Pick the join columns (and any additional columns from the matching file you want to append).
+   Primary File (Left):
+       Your main dataset - all rows will be preserved in the output.
 
-4) **Run & Export**
-The export will contain the original primary file rows, plus the matched columns from the right-hand file (where found),
-and match metadata (e.g., match score) when using fuzzy matching.
+   Matching File (Right):
+       The lookup dataset - matching columns will be appended to your primary file.
+
+2) Choose Matching Logic
+
+   Exact Match on Identifier:
+       Best for: company numbers, payroll IDs, invoice references, postcodes
+       - Fast and precise
+       - Optional: Pad numeric identifiers to 8 digits (useful for UK company numbers)
+
+   Fuzzy Match on Text:
+       Best for: organisation names, person names where spelling varies
+       - Uses advanced text matching algorithms
+       - Configurable accuracy threshold
+
+3) Configure Fuzzy Matching (if selected)
+
+   Accuracy Slider (0-100%):
+       - Higher values = stricter matching (fewer false positives)
+       - Lower values = looser matching (may catch more variations)
+       - Recommended: Start at 85% and adjust based on results
+
+   Algorithm Selection:
+       - Weighted Ratio: Smart combination of methods (recommended default)
+       - Token Sort: Good for names in different orders ("Smith John" vs "John Smith")
+       - Token Set: Good for partial matches and extra words
+       - Partial Ratio: Good for substring matching
+
+4) Select Columns
+
+   Join Column (Primary):
+       The column in your primary file to match on.
+
+   Join Column (Matching):
+       The column in your matching file to match against.
+
+   Columns to Append:
+       Select which columns from the matching file to add to your output.
+
+5) Run & Export
+   The output contains:
+   - All rows from your primary file
+   - Appended columns from matching file (where matches found)
+   - Match metadata: match_score, match_type, matched_value (for fuzzy matches)
 
 --- TIPS ---
-- Fuzzy matching is powerful but can create false positives. Treat outputs as leads, not conclusions.
-- If you have both a number and a name, prefer number matching first and use fuzzy matching as a fallback.
+
+Prefer Numbers Over Names:
+    If you have both an identifier and a name, prefer exact matching on the
+    identifier first. Use fuzzy name matching as a fallback for unmatched records.
+
+False Positives:
+    Fuzzy matching can create false positives. Treat outputs as leads requiring
+    verification, not definitive matches. Sort by match_score to review
+    lower-confidence matches first.
+
+Data Preparation:
+    Clean your data before matching:
+    - Remove extra whitespace
+    - Standardise case (the tool handles this, but consistency helps)
+    - Remove common prefixes/suffixes that might interfere with matching
 """,
 
     "enhanced_dd": """
---- Enhanced Due Diligence (EDD) Help ---
+--- Enhanced Due Diligence (EDD) ---
 
-This module generates a structured due diligence report for a single company using Companies House data, with optional
-financial analysis from iXBRL accounts files.
+This module generates comprehensive due diligence reports for a single company,
+combining Companies House data with optional financial analysis from iXBRL accounts.
 
 --- WORKFLOW ---
-1) **Enter Company Number**
-Click <b>Fetch Company Data</b> to retrieve:
-- company profile
-- officers
-- PSCs
-- filing history (recent items)
 
-2) **Upload iXBRL Accounts (Optional)**
-Upload one or more iXBRL accounts files (XHTML/HTML). If accounts are loaded, additional financial checks become available.
+1) Enter Company Number
+   Enter the 8-character Companies House registration number.
+   Click "Fetch Company Data" to retrieve:
+   - Company profile (status, type, incorporation date, address)
+   - Officers (directors, secretaries)
+   - Persons with Significant Control (PSCs)
+   - Filing history (recent submissions)
 
-3) **Choose Checks**
-Tick the checks you want to run. Some checks depend on accounts data and will be disabled until accounts are loaded.
+2) Upload Accounts (Optional)
+   Upload one or more iXBRL accounts files (.xhtml or .html format).
+   These are the machine-readable accounts filed with Companies House.
+   If accounts are loaded, additional financial analysis becomes available.
 
-4) **Generate Report**
-The tool outputs an HTML report and opens it in your browser. It includes:
-- executive summary
-- company profile
-- risk indicators grouped by severity
-- (if accounts were uploaded) charts and financial commentary
-- limitations & disclaimers section for safe use in government settings
+   Note: The tool validates that uploaded accounts match the company number.
+   You will be warned if there appears to be a mismatch.
 
---- NOTES ---
-- The report is point-in-time and relies on filed/public data. It should not be the sole basis for decisions.
-- iXBRL files are validated against the selected company number where possible; you will be warned if they appear to mismatch.
+3) Select Checks
+   Choose which due diligence checks to run. Checks are organised in three tiers:
+
+   CORE CHECKS (fast, always available):
+       - Company status warnings (dissolved, liquidation, etc.)
+       - Filing compliance (overdue accounts/confirmation statements)
+       - Late filing history analysis
+       - Solvency position (if accounts loaded)
+       - Liquidity ratios (if accounts loaded)
+
+   ENHANCED CHECKS (moderate speed):
+       - Director/PSC turnover analysis (unusual changes)
+       - Revenue and profitability trends (if accounts loaded)
+       - Predictive financial outlook
+       - Companies House default address detection
+       - Accounting reference date changes
+       - Filing category changes (audit exemptions, etc.)
+       - Offshore PSC analysis (non-UK controlling entities)
+
+   DEEP INVESTIGATION (slower, more thorough):
+       - Director insolvency history search
+       - Phoenix company detection (similar names after dissolution)
+       - Duplicate registered address analysis (shared addresses)
+
+4) Generate Report
+   Click "Generate Report" to produce an HTML report containing:
+   - Executive summary with key findings
+   - Company profile overview
+   - Risk indicators grouped by severity (High/Medium/Low)
+   - Officer and PSC listings
+   - Financial analysis and charts (if accounts were uploaded)
+   - Limitations and disclaimers section
+
+   The report opens automatically in your default web browser.
+
+--- FINANCIAL ANALYSIS ---
+
+When iXBRL accounts are uploaded, the tool extracts and analyses:
+
+Financial Position:
+    - Total assets and liabilities
+    - Net assets / shareholders' funds
+    - Cash and cash equivalents
+    - Trade debtors and creditors
+
+Financial Ratios:
+    - Current ratio (current assets / current liabilities)
+    - Quick ratio (liquid assets / current liabilities)
+    - Debt-to-equity ratio
+    - Gross and net profit margins (if P&L data available)
+
+Trend Analysis:
+    - Year-on-year changes in key metrics
+    - Revenue growth trends
+    - Profitability trajectory
+    - Employee count changes
+
+Charts:
+    - Asset/liability composition
+    - Revenue and profit trends over time
+    - Key ratio comparisons
+
+--- TIPS ---
+
+Multiple Years of Accounts:
+    Upload accounts from multiple years to enable trend analysis.
+    The tool will compare figures across periods.
+
+Report Limitations:
+    The report is point-in-time and relies on filed public data.
+    It should not be the sole basis for decisions. Always consider
+    information from other sources and professional judgement.
+
+iXBRL Availability:
+    iXBRL accounts are available from Companies House for most companies
+    filing online since 2011. Download from the company's filing history
+    on the Companies House website.
 """,
 
-    # Backwards-compatible key (older UI label)
     "network_creator": """
---- Network Analytics Help ---
+--- Network Analytics ---
 
-This module has been renamed to <b>Network Analytics</b>. See the Network Analytics help section for the current workflow.
+This module has been renamed to Network Analytics.
+Please see the Network Analytics help section for the current workflow.
 """,
 
     "network_analytics": """
---- Network Analytics Help ---
+--- Network Analytics ---
 
-This module lets you combine multiple exported graph files into a single network graph, refine it, and then analyse
-connections between entities (companies, people, charities, addresses).
+This module lets you build, analyse, and visualise corporate networks by combining
+exported graph data from multiple sources.
 
-It includes two tabs:
-- <b>Network Analytics</b> (build, refine, analyse, visualise)
-- <b>Data Converter</b> (turn non-graph CSVs into a basic edge list format)
+The module has two tabs:
+    - Network Analytics: Build, refine, analyse, and visualise networks
+    - Data Converter: Transform standard CSVs into edge list format
 
---- TAB 1: NETWORK ANALYTICS ---
+=== TAB 1: NETWORK ANALYTICS ===
 
-<b>DATA SOURCES</b>
-- Add one or more exported graph CSV files (edge lists) from other modules.
-- Optional: seed the network by fetching a single company (with options to expand via PSCs / associated companies).
+--- DATA SOURCES ---
 
-<b>BUILD & REFINE</b>
-- Build the combined graph (mandatory before analysis).
-- Remove entities to reduce noise (temporary, non-destructive pruning).
-  Use this to exclude “supernodes” such as formation agents or mailbox addresses.
+Add Graph Files:
+    Import one or more CSV edge list files exported from other modules:
+    - Director Investigation graph exports
+    - UBO Tracer graph exports
+    - Unified Search graph exports
+    - Contracts Finder graph exports
+    - Data Converter outputs
 
-<b>ANALYSE</b>
-- Find the shortest connection between two entities.
-- Find connections between two lists (List A vs List B), or within one list (all vs all).
-  <i>Max hops</i> limits path length; large values on dense graphs can be slow.
+    Each file adds its relationships to the combined network.
 
-<b>Hidden links discovery (optional)</b>
-Scan the current (pruned) graph for inferred links not present in source data, such as:
-- neighbouring registered addresses (postcode proximity)
-- people with the same surname at the same postcode / within a proximity radius
-These are investigative leads and should be treated as hypotheses, not evidence.
+Seed from Company (optional):
+    Start the network from a specific company by entering its registration number.
+    Options:
+    - Expand via PSCs: Include all persons with significant control
+    - Include Officers: Include all directors and secretaries
+    - Fetch Associated Companies: Include companies linked to the same people
 
-<b>VISUALISE</b>
-Generate an interactive graph. Options typically include:
-- distinguish nodes by source file
-- hide isolated “islands”
-- highlight a cohort/list of entity IDs
+--- BUILD & REFINE ---
 
---- TAB 2: DATA CONVERTER ---
-A wizard to convert a normal CSV into a simple edge list. Typical uses:
-- linking “supplier → company number”
-- linking “grant recipient → identifier”
-- linking “staff member → organisation / address”
-The output can then be imported into the Network Analytics graph alongside other exports.
+Build Graph:
+    Click "Build Graph" to combine all loaded data into a single network.
+    This must be done before analysis. The status bar shows:
+    - Total nodes (entities)
+    - Total edges (relationships)
+    - Number of connected components (separate sub-networks)
+
+Remove Entities:
+    Temporarily remove specific entities to reduce noise:
+    - Formation agents (e.g., "COMPANIES HOUSE DEFAULT ADDRESS")
+    - Mailbox addresses used by many companies
+    - Other "supernodes" that create false connections
+
+    Removal is non-destructive - rebuild the graph to restore removed entities.
+
+Graph Statistics:
+    View metrics about your network:
+    - Node count by type (companies, people, addresses)
+    - Edge count by relationship type
+    - Most connected nodes (potential hubs)
+    - Isolated nodes (no connections)
+
+--- ANALYSE ---
+
+Shortest Path:
+    Find the shortest connection between two specific entities.
+    Enter entity names or IDs and click "Find Path".
+    Results show each step in the connection chain.
+
+List Connections:
+    Find connections between groups of entities:
+
+    List A vs List B:
+        Upload two CSV files with entity identifiers.
+        The tool finds all paths connecting entities in List A to entities in List B.
+
+    Within One List:
+        Upload a single CSV file.
+        The tool finds all paths connecting any entity in the list to any other.
+
+    Max Hops:
+        Limit the maximum path length (default: 3).
+        Higher values find more connections but take longer on dense graphs.
+
+Connection Results:
+    Results show:
+    - Entity pairs with connections found
+    - Path length (number of hops)
+    - Full path details (each entity and relationship in the chain)
+    - Common intermediaries (entities appearing in multiple paths)
+
+--- HIDDEN LINKS DISCOVERY ---
+
+Scan for Inferred Relationships:
+    Discover potential connections not explicitly in your source data.
+    These are investigative leads, not evidence.
+
+    Address Proximity:
+        Find companies with neighbouring registered addresses:
+        - Same postcode
+        - Adjacent building numbers
+        - Configurable proximity radius
+
+    Surname Matching:
+        Find people with the same surname:
+        - At the same registered address
+        - At the same postcode
+        - Within a configurable geographic radius
+
+    Results are flagged as "inferred" relationships for careful review.
+
+--- VISUALISE ---
+
+Generate Interactive Graph:
+    Create an HTML visualisation of your network with:
+
+    Display Options:
+        - Colour by source file (see which data came from where)
+        - Colour by entity type (companies, people, addresses)
+        - Hide isolated nodes (show only connected entities)
+        - Highlight cohort (emphasise specific entities from a list)
+
+    Interaction:
+        - Pan and zoom to navigate
+        - Click nodes to see full details
+        - Drag nodes to rearrange layout
+        - Physics-based layout (force-directed)
+
+Export Options:
+    - Save graph as HTML file for sharing
+    - Export current edge list as CSV
+    - Export node list with attributes
+
+=== TAB 2: DATA CONVERTER ===
+
+Convert standard CSV files into edge list format for import into Network Analytics.
+
+--- WORKFLOW ---
+
+1) Upload CSV
+   Upload any CSV file you want to convert.
+
+2) Select Conversion Type
+   Choose the type of relationships to create:
+
+   Entity to Identifier:
+       Create links between names and their identifiers.
+       e.g., "Supplier Name" -> "Company Number"
+
+   Entity to Entity:
+       Create links between two name columns.
+       e.g., "Buyer" -> "Supplier"
+
+   Entity to Attribute:
+       Create links between entities and their properties.
+       e.g., "Company" -> "Postcode"
+
+3) Map Columns
+   Select which columns contain your source and target entities.
+
+4) Set Relationship Label
+   Optionally specify a label for the relationship type
+   (e.g., "SUPPLIES_TO", "LOCATED_AT", "EMPLOYED_BY").
+
+5) Convert & Export
+   The output is a standard edge list CSV with columns:
+   - source: The source entity
+   - target: The target entity
+   - relationship: The relationship type
+   - source_type: Entity type of source
+   - target_type: Entity type of target
+
+This output can be directly imported into Network Analytics.
+
+--- TIPS ---
+
+Graph Size:
+    Very large graphs (>10,000 nodes) may be slow to visualise.
+    Use the Remove Entities feature to focus on relevant portions.
+
+Supernode Removal:
+    Common addresses or formation agents can create misleading connections.
+    Review the "most connected nodes" statistics and consider removing
+    entities that are connected to many unrelated companies.
+
+Combining Sources:
+    The power of Network Analytics comes from combining multiple data sources.
+    A connection visible when combining Director Search, UBO Tracer, and
+    Contracts Finder exports may not be apparent in any single source alone.
 """,
 }
