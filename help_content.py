@@ -615,14 +615,14 @@ iXBRL Availability:
     on the Companies House website.
 """,
 
-    "network_creator": """
+    "network_analytics": """
 --- Network Analytics ---
 
 This module has been renamed to Network Analytics.
 Please see the Network Analytics help section for the current workflow.
 """,
 
-    "network_analytics": """
+    "network_creator": """
 --- Network Analytics ---
 
 This module lets you build, analyse, and visualise corporate networks by combining
