@@ -303,3 +303,9 @@ class InvestigationModuleBase(ttk.Frame):
         self.scroller.canvas.configure(
             scrollregion=self.scroller.canvas.bbox("all")
         )
+        def update():
+            self.scroller.canvas.configure(
+                scrollregion=self.scroller.canvas.bbox("all")
+            )
+        # Defer until after all pending geometry calculations are complete
+        self.after_idle(update)
