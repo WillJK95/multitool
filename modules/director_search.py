@@ -45,6 +45,8 @@ class DirectorSearch(InvestigationModuleBase):
         self.ch_token_bucket = ch_token_bucket
         # --- Add a new instance variable for grant results ---
         self.grants_results = []
+        # --- Track explicit row selection for selective export ---
+        self.explicit_selection_made = False
 
         input_frame = ttk.LabelFrame(
             self.content_frame, text="Director Search", padding=10
@@ -126,6 +128,23 @@ class DirectorSearch(InvestigationModuleBase):
         results_frame.pack(fill=tk.BOTH, expand=True, pady=10, padx=10)
         self.tree = self._create_treeview(results_frame)
 
+        # --- Selection controls frame ---
+        selection_frame = ttk.Frame(self.content_frame)
+        selection_frame.pack(fill=tk.X, pady=(0, 5), padx=10)
+
+        self.selection_label_var = tk.StringVar(value="Selected: All (0 rows)")
+        ttk.Label(selection_frame, textvariable=self.selection_label_var).pack(side=tk.LEFT)
+
+        ttk.Button(
+            selection_frame, text="Clear Selection", command=self._clear_selection
+        ).pack(side=tk.RIGHT, padx=(5, 0))
+        ttk.Button(
+            selection_frame, text="Select All", command=self._select_all
+        ).pack(side=tk.RIGHT)
+
+        # Bind selection event
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_selection_changed)
+
         status_export_frame = ttk.Frame(self.content_frame)
         status_export_frame.pack(fill=tk.X, pady=5, side="bottom")
         self.status_var = tk.StringVar(value="Ready.")
@@ -144,6 +163,10 @@ class DirectorSearch(InvestigationModuleBase):
             command=self.export_csv,
         )
         self.export_btn.pack(side=tk.RIGHT, padx=5)
+        Tooltip(
+            self.export_btn,
+            "Export selected directorship rows to CSV. If no rows are selected, all rows are exported.",
+        )
 
         self.grants_btn = ttk.Button(
             button_export_frame,
@@ -154,7 +177,7 @@ class DirectorSearch(InvestigationModuleBase):
         self.grants_btn.pack(side=tk.RIGHT, padx=(5, 0))
         Tooltip(
             self.grants_btn,
-            "For the companies found above, fetch all associated grant data from the 360Giving API and generate a separate export file.",
+            "For selected companies, fetch all associated grant data from the 360Giving API. If no rows are selected, all companies are searched.",
         )
 
         # --- MODIFIED: Graph and Export Buttons ---
@@ -167,7 +190,7 @@ class DirectorSearch(InvestigationModuleBase):
         self.graph_btn.pack(side=tk.RIGHT, padx=(5, 0))
         Tooltip(
             self.graph_btn,
-            "Generate an interactive network graph of all companies, directors, PSCs, and addresses from the results.",
+            "Generate an interactive network graph for selected companies, including their directors, PSCs, and addresses. If no rows are selected, all companies are included.",
         )
 
         self.export_graph_data_btn = ttk.Button(
@@ -179,7 +202,7 @@ class DirectorSearch(InvestigationModuleBase):
         self.export_graph_data_btn.pack(side=tk.RIGHT, padx=(5, 0))
         Tooltip(
             self.export_graph_data_btn,
-            "Export the raw node data (companies, people, addresses) from the network graph to a CSV file for analysis.",
+            "Export the network graph data (companies, people, addresses) for selected rows to CSV. If no rows are selected, all data is exported.",
         )
 
     def cancel_search(self):
@@ -217,6 +240,67 @@ class DirectorSearch(InvestigationModuleBase):
     def validate_year(self, P):
         return (str.isdigit(P) or P == "") and len(P) <= 4
 
+    # --- Selection handling methods ---
+
+    def _on_tree_selection_changed(self, event=None):
+        """Called when the treeview selection changes."""
+        self.explicit_selection_made = True
+        self._update_selection_label()
+
+    def _select_all(self):
+        """Select all rows in the treeview."""
+        all_items = self.tree.get_children()
+        if all_items:
+            self.tree.selection_set(all_items)
+        self.explicit_selection_made = False
+        self._update_selection_label()
+
+    def _clear_selection(self):
+        """Clear all selections in the treeview."""
+        self.tree.selection_remove(self.tree.selection())
+        self.explicit_selection_made = True
+        self._update_selection_label()
+
+    def _update_selection_label(self):
+        """Update the selection status label."""
+        total_rows = len(self.tree.get_children())
+        selected_items = self.tree.selection()
+        selected_count = len(selected_items)
+
+        if not self.explicit_selection_made or selected_count == total_rows:
+            self.selection_label_var.set(f"Selected: All ({total_rows} rows)")
+        elif selected_count == 0:
+            self.selection_label_var.set(f"Selected: None (0 of {total_rows} rows)")
+        else:
+            self.selection_label_var.set(f"Selected: {selected_count} of {total_rows} rows")
+
+    def _get_selected_results(self):
+        """
+        Returns the results data based on current selection.
+        If no explicit selection made, returns all results.
+        Otherwise returns only the selected rows.
+        """
+        if not self.explicit_selection_made:
+            return self.results_data
+
+        selected_items = self.tree.selection()
+        if not selected_items:
+            # User explicitly cleared selection - return empty to trigger warning
+            return []
+
+        # Build list of selected results by matching treeview values
+        selected_results = []
+        for item_id in selected_items:
+            values = self.tree.item(item_id, "values")
+            # Find matching record in results_data
+            for record in self.results_data:
+                record_values = tuple(str(v) for v in record.values())
+                if record_values == values:
+                    selected_results.append(record)
+                    break
+
+        return selected_results
+
     def _create_treeview(self, parent):
         cols = (
             "officer_name",
@@ -227,7 +311,7 @@ class DirectorSearch(InvestigationModuleBase):
             "role",
             "address",
         )
-        tree = ttk.Treeview(parent, columns=cols, show="headings")
+        tree = ttk.Treeview(parent, columns=cols, show="headings", selectmode="extended")
         for col in cols:
             tree.heading(col, text=col.replace("_", " ").title())
             tree.column(col, width=150)
@@ -248,6 +332,8 @@ class DirectorSearch(InvestigationModuleBase):
 
         self.cancel_flag.clear()
         self.results_data = []
+        # Reset selection state for new search
+        self.explicit_selection_made = False
 
         self.search_btn.pack_forget()
         self.cancel_btn.pack(ipady=10)
@@ -255,6 +341,7 @@ class DirectorSearch(InvestigationModuleBase):
 
         for item in self.tree.get_children():
             self.tree.delete(item)
+        self._update_selection_label()
         threading.Thread(target=self._run_search, daemon=True).start()
 
     def _run_search(self):
@@ -329,6 +416,9 @@ class DirectorSearch(InvestigationModuleBase):
         for record in self.results_data:
             self.tree.insert("", tk.END, values=list(record.values()))
 
+        # Update selection label after populating results
+        self._update_selection_label()
+
         if self.cancel_flag.is_set():
             self.app.after(0, lambda: self.status_var.set("Search cancelled."))
         else:
@@ -347,16 +437,26 @@ class DirectorSearch(InvestigationModuleBase):
             messagebox.showinfo("No Data", "Please run a director search first.")
             return
 
+        selected_results = self._get_selected_results()
+        if not selected_results:
+            messagebox.showinfo(
+                "No Selection",
+                "No rows selected for grants search. Please select rows or use 'Select All'."
+            )
+            return
+
         self._disable_all_buttons()
         self.cancel_flag.clear()
         self.grants_results = []
+        # Store selected results for the thread to use
+        self._selected_for_processing = selected_results
 
         threading.Thread(target=self._run_grants_thread, daemon=True).start()
 
     def _run_grants_thread(self):
 
         unique_companies = {
-            d["company_number"]: d for d in self.results_data if d.get("company_number")
+            d["company_number"]: d for d in self._selected_for_processing if d.get("company_number")
         }.values()
 
         if not unique_companies:
@@ -522,8 +622,18 @@ class DirectorSearch(InvestigationModuleBase):
             )
             return
 
+        selected_results = self._get_selected_results()
+        if not selected_results:
+            messagebox.showinfo(
+                "No Selection",
+                "No rows selected for graph generation. Please select rows or use 'Select All'."
+            )
+            return
+
         self._disable_all_buttons()
         self.cancel_flag.clear()
+        # Store selected results for the thread to use
+        self._selected_for_processing = selected_results
 
         self.app.after(
             0, lambda: self.status_var.set("Starting network data collection...")
@@ -567,7 +677,7 @@ class DirectorSearch(InvestigationModuleBase):
 
         G = nx.DiGraph()
         unique_company_numbers = list(
-            {d["company_number"] for d in self.results_data if d.get("company_number")}
+            {d["company_number"] for d in self._selected_for_processing if d.get("company_number")}
         )
 
         if not unique_company_numbers:
@@ -889,6 +999,16 @@ class DirectorSearch(InvestigationModuleBase):
         self._restore_button_states()
 
     def export_csv(self):
+        """Export selected directorship rows to CSV."""
+        selected_results = self._get_selected_results()
+
+        if not selected_results:
+            messagebox.showinfo(
+                "No Selection",
+                "No rows selected for export. Please select rows or use 'Select All'."
+            )
+            return
+
         headers = [
             "officer_name",
             "date_of_birth",
@@ -898,7 +1018,12 @@ class DirectorSearch(InvestigationModuleBase):
             "role",
             "address",
         ]
+
+        # Temporarily swap results_data for export
+        original_results = self.results_data
+        self.results_data = selected_results
         self.generic_export_csv(headers)
+        self.results_data = original_results
 
     def _find_matching_officers(self, full_name, year_of_birth, month_of_birth_str):
         self.app.after(
