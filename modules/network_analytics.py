@@ -1018,6 +1018,14 @@ class NetworkAnalytics(InvestigationModuleBase):
         )
         self.show_inferred_check.pack(anchor="w", pady=(5, 0))
 
+        # Scale node size by connection count option
+        self.scale_by_connections_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            options_frame,
+            text="Scale node size by connection count",
+            variable=self.scale_by_connections_var
+        ).pack(anchor="w", pady=(5, 0))
+
         # Generate button
         btn_frame = ttk.Frame(container)
         btn_frame.pack(fill=tk.X, pady=(5, 0))
@@ -3178,8 +3186,21 @@ class NetworkAnalytics(InvestigationModuleBase):
 
         # Build the visual network
         net = Network(height="95vh", width="100%", directed=True, notebook=False, cdn_resources="local")
-        net.set_options("""var options = {"configure": {"enabled": true }, "physics": {"solver": "forceAtlas2Based"}}""")
-
+        # Configure options including node scaling
+        scale_by_connections = self.scale_by_connections_var.get()
+        if scale_by_connections:
+            net.set_options("""{
+                "configure": {"enabled": true},
+                "physics": {"solver": "forceAtlas2Based"},
+                "nodes": {
+                    "scaling": {
+                        "min": 15,
+                        "max": 40
+                    }
+                }
+            }""")
+        else:
+            net.set_options("""{"configure": {"enabled": true}, "physics": {"solver": "forceAtlas2Based"}}""")
         path_edges = set()
         if path:
             for i in range(len(path) - 1):
@@ -3197,6 +3218,9 @@ class NetworkAnalytics(InvestigationModuleBase):
             )
             file_color_map = {source: color for source, color in zip(unique_sources, border_colors)}
 
+        # Calculate max degree for connection-based node scaling
+        scale_by_connections = self.scale_by_connections_var.get()
+
         for node_id, attrs in viz_graph.nodes(data=True):
             node_type = attrs.get("type")
             base_color = "#B9D9EB" if node_type == "company" else ("#FFB347" if node_type == "address" else "#D9E8B9")
@@ -3206,19 +3230,22 @@ class NetworkAnalytics(InvestigationModuleBase):
             border_width = 1
             shape_properties = {}
 
+            # Get node degree for connection-based scaling
+            node_degree = self.full_graph.degree(node_id) if node_id in self.full_graph else 0
+
             if highlight_ids and node_id in highlight_ids:
                 shape_properties["borderDashes"] = [10, 10]
                 border_width = 5
-                size = 30
+                size = max(size, 30)
 
             if path and node_id in path:
                 final_color = "#FF0000"
-                size = 25
+                size = max(size, 25)
 
             if node_id in highlight_ids:
                 shape_properties["borderDashes"] = [10, 10]
                 border_width = 5
-                size = 30
+                size = max(size, 30)
                 
                 # Optional: Distinguish List A vs List B with border colors?
                 if mode == "two_lists":
@@ -3262,17 +3289,21 @@ class NetworkAnalytics(InvestigationModuleBase):
 
             safe_label_multiline = "\n".join(label_lines)
             safe_title = html.escape(raw_label)
-            net.add_node(
-                node_id,
-                label=safe_label_multiline,
-                title=safe_title,
-                color=final_color,
-                borderWidth=border_width,
-                size=size,
-                shape=shape,
-                shapeProperties=shape_properties,
-            )
-
+            # Build node kwargs - use 'value' for scaling when enabled
+            node_kwargs = {
+                "label": safe_label_multiline,
+                "title": safe_title,
+                "color": final_color,
+                "borderWidth": border_width,
+                "shape": shape,
+                "shapeProperties": shape_properties,
+                "size": size,
+            }
+            if scale_by_connections:
+                # Pass degree directly - vis.js will scale based on min/max values
+                node_kwargs["value"] = node_degree
+ 
+            net.add_node(node_id, **node_kwargs)
         for source, target, edge_attrs in viz_graph.edges(data=True):
             width = 1
             edge_color = "#848484"
