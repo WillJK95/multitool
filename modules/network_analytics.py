@@ -3209,7 +3209,8 @@ class NetworkAnalytics(InvestigationModuleBase):
         scale_by_connections = self.scale_by_connections_var.get()
         max_degree = 2  # Floor value to prevent edge cases
         if scale_by_connections:
-            degrees = [viz_graph.degree(n) for n in viz_graph.nodes()]
+            # Use full_graph degree to get true connection counts (not filtered viz_graph)
+            degrees = [self.full_graph.degree(n) for n in viz_graph.nodes() if n in self.full_graph]
             if degrees:
                 max_degree = max(max(degrees), 2)
 
@@ -3223,8 +3224,8 @@ class NetworkAnalytics(InvestigationModuleBase):
             shape_properties = {}
 
             # Apply connection-based scaling to node size
-            if scale_by_connections:
-                node_degree = viz_graph.degree(node_id)
+            if scale_by_connections and node_id in self.full_graph:
+                node_degree = self.full_graph.degree(node_id)
                 if node_degree >= 2 and max_degree >= 2:
                     # Logarithmic scaling: 1.0x to 2.5x base size
                     scale_factor = 1 + (math.log(node_degree) / math.log(max_degree)) * 1.5
