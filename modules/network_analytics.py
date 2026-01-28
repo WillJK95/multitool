@@ -3220,8 +3220,11 @@ class NetworkAnalytics(InvestigationModuleBase):
             )
             file_color_map = {source: color for source, color in zip(unique_sources, border_colors)}
 
-        # Calculate max degree for connection-based node scaling (no longer needed - vis.js handles it)
-        # Keeping structure for highlighted/path node sizing
+        # Set node values for connection-based scaling using nx.set_node_attributes
+        if scale_by_connections:
+            degree_dict = {n: self.full_graph.degree(n) if n in self.full_graph else 1
+                           for n in viz_graph.nodes()}
+            nx.set_node_attributes(viz_graph, degree_dict, 'value')
 
         for node_id, attrs in viz_graph.nodes(data=True):
             node_type = attrs.get("type")
@@ -3231,9 +3234,6 @@ class NetworkAnalytics(InvestigationModuleBase):
             final_color = base_color
             border_width = 1
             shape_properties = {}
-
-            # Get node degree for connection-based scaling
-            node_degree = self.full_graph.degree(node_id) if node_id in self.full_graph else 0
 
             if highlight_ids and node_id in highlight_ids:
                 shape_properties["borderDashes"] = [10, 10]
@@ -3303,8 +3303,8 @@ class NetworkAnalytics(InvestigationModuleBase):
                 "size": size,
             }
             if scale_by_connections:
-                # Pass degree directly - vis.js will scale based on min/max values
-                node_kwargs["value"] = node_degree
+                # Read value from attrs (set via nx.set_node_attributes)
+                node_kwargs["value"] = attrs.get('value', 1)
 
             net.add_node(node_id, **node_kwargs)
 
