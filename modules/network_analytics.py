@@ -3186,7 +3186,22 @@ class NetworkAnalytics(InvestigationModuleBase):
 
         # Build the visual network
         net = Network(height="95vh", width="100%", directed=True, notebook=False, cdn_resources="local")
-        net.set_options("""var options = {"configure": {"enabled": true }, "physics": {"solver": "forceAtlas2Based"}}""")
+
+        # Configure options including node scaling
+        scale_by_connections = self.scale_by_connections_var.get()
+        if scale_by_connections:
+            net.set_options("""{
+                "configure": {"enabled": true},
+                "physics": {"solver": "forceAtlas2Based"},
+                "nodes": {
+                    "scaling": {
+                        "min": 15,
+                        "max": 40
+                    }
+                }
+            }""")
+        else:
+            net.set_options("""{"configure": {"enabled": true}, "physics": {"solver": "forceAtlas2Based"}}""")
 
         path_edges = set()
         if path:
@@ -3206,7 +3221,6 @@ class NetworkAnalytics(InvestigationModuleBase):
             file_color_map = {source: color for source, color in zip(unique_sources, border_colors)}
 
         # Calculate max degree for connection-based node scaling
-        scale_by_connections = self.scale_by_connections_var.get()
         max_degree = 2  # Floor value to prevent edge cases
         if scale_by_connections:
             # Use full_graph degree to get true connection counts (not filtered viz_graph)
@@ -3287,16 +3301,22 @@ class NetworkAnalytics(InvestigationModuleBase):
 
             safe_label_multiline = "\n".join(label_lines)
             safe_title = html.escape(raw_label)
-            net.add_node(
-                node_id,
-                label=safe_label_multiline,
-                title=safe_title,
-                color=final_color,
-                borderWidth=border_width,
-                size=size,
-                shape=shape,
-                shapeProperties=shape_properties,
-            )
+
+            # Build node kwargs - use 'value' for scaling when enabled
+            node_kwargs = {
+                "label": safe_label_multiline,
+                "title": safe_title,
+                "color": final_color,
+                "borderWidth": border_width,
+                "shape": shape,
+                "shapeProperties": shape_properties,
+            }
+            if scale_by_connections:
+                node_kwargs["value"] = size  # vis.js uses 'value' for scaling
+            else:
+                node_kwargs["size"] = size
+
+            net.add_node(node_id, **node_kwargs)
 
         for source, target, edge_attrs in viz_graph.edges(data=True):
             width = 1
