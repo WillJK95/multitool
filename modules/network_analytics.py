@@ -133,7 +133,10 @@ class CollapsibleSection(ttk.Frame):
         self._expanded.set(True)
         self.toggle_btn.config(text="▼")
         self.content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(5, 10))
-        
+
+        # Force geometry update to fix tkinter scroll region bug
+        self.update_idletasks()
+
         # Fire callback if set
         if self._on_expand_callback:
             self._on_expand_callback()
@@ -142,6 +145,9 @@ class CollapsibleSection(ttk.Frame):
         self._expanded.set(False)
         self.toggle_btn.config(text="▶")
         self.content_frame.pack_forget()
+
+        # Force geometry update to fix tkinter scroll region bug
+        self.update_idletasks()
     
     def is_expanded(self):
         return self._expanded.get()
@@ -258,7 +264,8 @@ class NetworkAnalytics(InvestigationModuleBase):
         )
         self.data_sources_section.pack(fill=tk.X, pady=(5, 0))
         self._build_data_sources_content(self.data_sources_section.content_frame)
-        
+        self.data_sources_section.set_on_toggle(self._update_scrollregion)
+
         # --- Section 2: Build & Refine ---
         self.refine_section = CollapsibleSection(
             self.sections_frame,
@@ -269,7 +276,8 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.refine_section.pack(fill=tk.X, pady=(5, 0))
         self.refine_section.set_on_expand(self._on_refine_section_expanded)
         self._build_refine_content(self.refine_section.content_frame)
-        
+        self.refine_section.set_on_toggle(self._update_scrollregion)
+
         # --- Section 3: Analyse ---
         self.analyse_section = CollapsibleSection(
             self.sections_frame,
@@ -279,7 +287,8 @@ class NetworkAnalytics(InvestigationModuleBase):
         )
         self.analyse_section.pack(fill=tk.X, pady=(5, 0))
         self._build_analyse_content(self.analyse_section.content_frame)
-        
+        self.analyse_section.set_on_toggle(self._update_scrollregion)
+
         # --- Section 4: Visualise ---
         self.visualise_section = CollapsibleSection(
             self.sections_frame,
@@ -289,7 +298,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         )
         self.visualise_section.pack(fill=tk.X, pady=(5, 0))
         self._build_visualise_content(self.visualise_section.content_frame)
-
+        self.visualise_section.set_on_toggle(self._update_scrollregion)
 
     def _setup_converter_tab(self):
         """Builds the Data Converter wizard UI."""
