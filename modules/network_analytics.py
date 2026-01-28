@@ -1018,6 +1018,14 @@ class NetworkAnalytics(InvestigationModuleBase):
         )
         self.show_inferred_check.pack(anchor="w", pady=(5, 0))
 
+        # Scale node size by connection count option
+        self.scale_by_connections_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            options_frame,
+            text="Scale node size by connection count",
+            variable=self.scale_by_connections_var
+        ).pack(anchor="w", pady=(5, 0))
+
         # Generate button
         btn_frame = ttk.Frame(container)
         btn_frame.pack(fill=tk.X, pady=(5, 0))
@@ -3197,6 +3205,14 @@ class NetworkAnalytics(InvestigationModuleBase):
             )
             file_color_map = {source: color for source, color in zip(unique_sources, border_colors)}
 
+        # Calculate max degree for connection-based node scaling
+        scale_by_connections = self.scale_by_connections_var.get()
+        max_degree = 2  # Floor value to prevent edge cases
+        if scale_by_connections:
+            degrees = [viz_graph.degree(n) for n in viz_graph.nodes()]
+            if degrees:
+                max_degree = max(max(degrees), 2)
+
         for node_id, attrs in viz_graph.nodes(data=True):
             node_type = attrs.get("type")
             base_color = "#B9D9EB" if node_type == "company" else ("#FFB347" if node_type == "address" else "#D9E8B9")
@@ -3206,19 +3222,27 @@ class NetworkAnalytics(InvestigationModuleBase):
             border_width = 1
             shape_properties = {}
 
+            # Apply connection-based scaling to node size
+            if scale_by_connections:
+                node_degree = viz_graph.degree(node_id)
+                if node_degree >= 2 and max_degree >= 2:
+                    # Logarithmic scaling: 1.0x to 2.5x base size
+                    scale_factor = 1 + (math.log(node_degree) / math.log(max_degree)) * 1.5
+                    size = int(15 * scale_factor)
+
             if highlight_ids and node_id in highlight_ids:
                 shape_properties["borderDashes"] = [10, 10]
                 border_width = 5
-                size = 30
+                size = max(size, 30)
 
             if path and node_id in path:
                 final_color = "#FF0000"
-                size = 25
+                size = max(size, 25)
 
             if node_id in highlight_ids:
                 shape_properties["borderDashes"] = [10, 10]
                 border_width = 5
-                size = 30
+                size = max(size, 30)
                 
                 # Optional: Distinguish List A vs List B with border colors?
                 if mode == "two_lists":
