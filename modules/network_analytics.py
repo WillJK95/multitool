@@ -3186,29 +3186,25 @@ class NetworkAnalytics(InvestigationModuleBase):
 
         # Build the visual network
         net = Network(height="95vh", width="100%", directed=True, notebook=False, cdn_resources="local")
-<<<<<<< HEAD
-=======
 
->>>>>>> temp-recovery-branch
-        # Configure options including node scaling
+        # Configure options
+        # NOTE: Removed the 'scaling' block from set_options because it does not work 
+        # for 'box' and 'ellipse' shapes (which require font-size adjustment instead).
         scale_by_connections = self.scale_by_connections_var.get()
         if scale_by_connections:
+            # Enable avoidOverlap so physics respects node sizes
             net.set_options("""{
                 "configure": {"enabled": true},
-                "physics": {"solver": "forceAtlas2Based"},
-                "nodes": {
-                    "scaling": {
-                        "min": 15,
-                        "max": 40
+                "physics": {
+                    "solver": "forceAtlas2Based",
+                    "forceAtlas2Based": {
+                        "avoidOverlap": 0.2
                     }
                 }
             }""")
         else:
             net.set_options("""{"configure": {"enabled": true}, "physics": {"solver": "forceAtlas2Based"}}""")
-<<<<<<< HEAD
-=======
 
->>>>>>> temp-recovery-branch
         path_edges = set()
         if path:
             for i in range(len(path) - 1):
@@ -3226,16 +3222,24 @@ class NetworkAnalytics(InvestigationModuleBase):
             )
             file_color_map = {source: color for source, color in zip(unique_sources, border_colors)}
 
-<<<<<<< HEAD
-        # Calculate max degree for connection-based node scaling
+        # --- Pre-calculate log scaling values explicitly in Python ---
         scale_by_connections = self.scale_by_connections_var.get()
-=======
-        # Set node values for connection-based scaling using nx.set_node_attributes
+        log_degree_map = {}
+        min_log = 0.0
+        max_log = 1.0
+        min_size_px = 20
+        max_size_px = 55
+        
         if scale_by_connections:
-            degree_dict = {n: self.full_graph.degree(n) if n in self.full_graph else 1
-                           for n in viz_graph.nodes()}
-            nx.set_node_attributes(viz_graph, degree_dict, 'value')
->>>>>>> temp-recovery-branch
+            # Use the degree of the *visualised* graph
+            degrees = dict(viz_graph.degree())
+            log_degree_map = {n: math.log1p(d) for n, d in degrees.items()}
+            
+            if log_degree_map:
+                min_log = min(log_degree_map.values())
+                max_log = max(log_degree_map.values())
+                if max_log == min_log:
+                    max_log = min_log + 1
 
         for node_id, attrs in viz_graph.nodes(data=True):
             node_type = attrs.get("type")
@@ -3246,27 +3250,26 @@ class NetworkAnalytics(InvestigationModuleBase):
             border_width = 1
             shape_properties = {}
 
-<<<<<<< HEAD
-            # Get node degree for connection-based scaling
-            node_degree = self.full_graph.degree(node_id) if node_id in self.full_graph else 0
-
-=======
->>>>>>> temp-recovery-branch
             if highlight_ids and node_id in highlight_ids:
                 shape_properties["borderDashes"] = [10, 10]
                 border_width = 5
-                size = max(size, 30)
+                # For highlighting, we normally bump size, but if scaling is ON, 
+                # we let the degree dictate size and use border/color to highlight.
+                if not scale_by_connections:
+                    size = max(size, 30)
 
             if path and node_id in path:
                 final_color = "#FF0000"
-                size = max(size, 25)
+                if not scale_by_connections:
+                    size = max(size, 25)
 
             if node_id in highlight_ids:
                 shape_properties["borderDashes"] = [10, 10]
                 border_width = 5
-                size = max(size, 30)
+                if not scale_by_connections:
+                    size = max(size, 30)
                 
-                # Optional: Distinguish List A vs List B with border colors?
+                # Optional: Distinguish List A vs List B with border colors
                 if mode == "two_lists":
                     if node_id in list_a: 
                         final_color = {"background": base_color, "border": "#0000FF"} # Blue for A
@@ -3308,11 +3311,7 @@ class NetworkAnalytics(InvestigationModuleBase):
 
             safe_label_multiline = "\n".join(label_lines)
             safe_title = html.escape(raw_label)
-<<<<<<< HEAD
-=======
 
->>>>>>> temp-recovery-branch
-            # Build node kwargs - use 'value' for scaling when enabled
             node_kwargs = {
                 "label": safe_label_multiline,
                 "title": safe_title,
@@ -3320,21 +3319,28 @@ class NetworkAnalytics(InvestigationModuleBase):
                 "borderWidth": border_width,
                 "shape": shape,
                 "shapeProperties": shape_properties,
-                "size": size,
             }
+
+            # Apply size
             if scale_by_connections:
-<<<<<<< HEAD
-                # Pass degree directly - vis.js will scale based on min/max values
-                node_kwargs["value"] = node_degree
- 
-            net.add_node(node_id, **node_kwargs)
-=======
-                # Read value from attrs (set via nx.set_node_attributes)
-                node_kwargs["value"] = attrs.get('value', 1)
+                # Calculate normalized size
+                val = log_degree_map.get(node_id, 0)
+                norm = (val - min_log) / (max_log - min_log)
+                calculated_size = min_size_px + (norm * (max_size_px - min_size_px))
+                
+                # IMPORTANT: For 'box' and 'ellipse' shapes, 'size' does not work in VisJS scaling.
+                # We must set the font size to make the box/ellipse bigger.
+                if shape in ["box", "ellipse", "database", "text"]:
+                    node_kwargs["font"] = {"size": int(calculated_size)}
+                    # Also set 'value' so physics avoidOverlap knows the node's collision radius
+                    node_kwargs["value"] = calculated_size * 2
+                else:
+                    node_kwargs["size"] = int(calculated_size)
+            else:
+                node_kwargs["size"] = size
 
             net.add_node(node_id, **node_kwargs)
 
->>>>>>> temp-recovery-branch
         for source, target, edge_attrs in viz_graph.edges(data=True):
             width = 1
             edge_color = "#848484"
@@ -3537,4 +3543,3 @@ class NetworkAnalytics(InvestigationModuleBase):
         seed_cnum = os.path.basename(filepath).split("-")[1] if "-" in filepath else ""
         self.seed_status_var.set(f"Successfully seeded network for {seed_cnum}. Ready to build.")
         self.seed_progress_bar.stop()
-
