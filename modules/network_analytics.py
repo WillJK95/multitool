@@ -3186,6 +3186,10 @@ class NetworkAnalytics(InvestigationModuleBase):
 
         # Build the visual network
         net = Network(height="95vh", width="100%", directed=True, notebook=False, cdn_resources="local")
+<<<<<<< HEAD
+=======
+
+>>>>>>> temp-recovery-branch
         # Configure options including node scaling
         scale_by_connections = self.scale_by_connections_var.get()
         if scale_by_connections:
@@ -3201,6 +3205,10 @@ class NetworkAnalytics(InvestigationModuleBase):
             }""")
         else:
             net.set_options("""{"configure": {"enabled": true}, "physics": {"solver": "forceAtlas2Based"}}""")
+<<<<<<< HEAD
+=======
+
+>>>>>>> temp-recovery-branch
         path_edges = set()
         if path:
             for i in range(len(path) - 1):
@@ -3218,8 +3226,16 @@ class NetworkAnalytics(InvestigationModuleBase):
             )
             file_color_map = {source: color for source, color in zip(unique_sources, border_colors)}
 
+<<<<<<< HEAD
         # Calculate max degree for connection-based node scaling
         scale_by_connections = self.scale_by_connections_var.get()
+=======
+        # Set node values for connection-based scaling using nx.set_node_attributes
+        if scale_by_connections:
+            degree_dict = {n: self.full_graph.degree(n) if n in self.full_graph else 1
+                           for n in viz_graph.nodes()}
+            nx.set_node_attributes(viz_graph, degree_dict, 'value')
+>>>>>>> temp-recovery-branch
 
         for node_id, attrs in viz_graph.nodes(data=True):
             node_type = attrs.get("type")
@@ -3230,9 +3246,12 @@ class NetworkAnalytics(InvestigationModuleBase):
             border_width = 1
             shape_properties = {}
 
+<<<<<<< HEAD
             # Get node degree for connection-based scaling
             node_degree = self.full_graph.degree(node_id) if node_id in self.full_graph else 0
 
+=======
+>>>>>>> temp-recovery-branch
             if highlight_ids and node_id in highlight_ids:
                 shape_properties["borderDashes"] = [10, 10]
                 border_width = 5
@@ -3289,6 +3308,10 @@ class NetworkAnalytics(InvestigationModuleBase):
 
             safe_label_multiline = "\n".join(label_lines)
             safe_title = html.escape(raw_label)
+<<<<<<< HEAD
+=======
+
+>>>>>>> temp-recovery-branch
             # Build node kwargs - use 'value' for scaling when enabled
             node_kwargs = {
                 "label": safe_label_multiline,
@@ -3300,10 +3323,18 @@ class NetworkAnalytics(InvestigationModuleBase):
                 "size": size,
             }
             if scale_by_connections:
+<<<<<<< HEAD
                 # Pass degree directly - vis.js will scale based on min/max values
                 node_kwargs["value"] = node_degree
  
             net.add_node(node_id, **node_kwargs)
+=======
+                # Read value from attrs (set via nx.set_node_attributes)
+                node_kwargs["value"] = attrs.get('value', 1)
+
+            net.add_node(node_id, **node_kwargs)
+
+>>>>>>> temp-recovery-branch
         for source, target, edge_attrs in viz_graph.edges(data=True):
             width = 1
             edge_color = "#848484"
