@@ -299,13 +299,23 @@ class InvestigationModuleBase(ttk.Frame):
             messagebox.showerror("Export Error", f"Could not write to file: {e}")
     
     def _update_scrollregion(self) -> None:
-        """Force the scrollable canvas to recalculate its scroll region."""
-        self.scroller.canvas.configure(
-            scrollregion=self.scroller.canvas.bbox("all")
-        )
         def update():
+            if not self.winfo_exists():
+                return
+            self.update_idletasks()
+            self.scroller.scrollable_frame.update_idletasks()
+            
+            # Explicitly set the frame height to match content
+            required_height = self.scroller.scrollable_frame.winfo_reqheight()
+            canvas_height = self.scroller.canvas.winfo_height()
+            self.scroller.canvas.itemconfig(
+                self.scroller.frame_id, 
+                height=max(required_height, canvas_height)
+            )
+            
             self.scroller.canvas.configure(
                 scrollregion=self.scroller.canvas.bbox("all")
             )
-        # Defer until after all pending geometry calculations are complete
-        self.after_idle(update)
+
+        # 10ms delay instead of after_idle
+        self.after(10, update)
