@@ -440,46 +440,37 @@ class App(tk.Tk):
         self.unbind("<Return>")
         self.clear_container()
         self.title("Multi-Tool - Dashboard")
-        self.geometry("1100x700")
+        self.geometry("1100x650")
 
         # Define Button States
         ch_enabled = tk.NORMAL if self.api_key else tk.DISABLED
         unified_enabled = tk.NORMAL if self.api_key or self.charity_api_key else tk.DISABLED
 
-        # --- 1. Header at top ---
+        # --- 1. Header at top (with API status on right) ---
         header_frame = ttk.Frame(self.container)
         header_frame.pack(fill=tk.X, padx=20, pady=(15, 10))
 
+        # Left side: Title and subtitle
+        title_frame = ttk.Frame(header_frame)
+        title_frame.pack(side=tk.LEFT, anchor="w")
+
         ttk.Label(
-            header_frame,
+            title_frame,
             text="Module Suite",
             font=("Helvetica", 20, "bold"),
             bootstyle="primary"
         ).pack(anchor="w")
 
         ttk.Label(
-            header_frame,
+            title_frame,
             text="Select a module below to begin your analysis.",
             font=("Helvetica", 11),
             foreground="gray"
         ).pack(anchor="w")
 
-        # --- 4. Footer at bottom (pack first so it stays at bottom) ---
-        footer_frame = ttk.Frame(self.container)
-        footer_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(0, 15))
-
-        # User Guide (Left)
-        footer_btn = ttk.Button(
-            footer_frame,
-            text="📖 Open User Guide",
-            command=self.show_main_guide,
-            bootstyle="link",
-        )
-        footer_btn.pack(side=tk.LEFT, anchor="sw", pady=(5, 0))
-
-        # API Status Panel (Right)
-        self.status_panel = ttk.LabelFrame(footer_frame, text="API Status", padding=5)
-        self.status_panel.pack(side=tk.RIGHT, anchor="se")
+        # Right side: API Status Panel
+        self.status_panel = ttk.LabelFrame(header_frame, text="API Status", padding=5)
+        self.status_panel.pack(side=tk.RIGHT, anchor="ne")
 
         # Load Status Logic
         if self.api_statuses:
@@ -502,13 +493,26 @@ class App(tk.Tk):
 
             threading.Thread(target=run_check, daemon=True).start()
 
+        # --- 4. Footer at bottom (pack first so it stays at bottom) ---
+        footer_frame = ttk.Frame(self.container)
+        footer_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(0, 15))
+
+        # User Guide (Left)
+        footer_btn = ttk.Button(
+            footer_frame,
+            text="📖 Open User Guide",
+            command=self.show_main_guide,
+            bootstyle="link",
+        )
+        footer_btn.pack(side=tk.LEFT, anchor="sw", pady=(5, 0))
+
         # --- 2 & 3. Content area (modules + workbench) ---
         content_frame = ttk.Frame(self.container)
         content_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
 
         # Two-column modules section
         modules_frame = ttk.Frame(content_frame)
-        modules_frame.pack(fill=tk.BOTH, expand=True)
+        modules_frame.pack(fill=tk.X)
 
         # Left Column: Network Compatible Modules
         left_col = ttk.Frame(modules_frame)
@@ -688,10 +692,11 @@ class App(tk.Tk):
         return statuses
 
 
-    def _create_status_indicator(self, parent, label, status):
+    def _create_status_indicator(self, parent, label, status, use_pack=True):
         """Create a single status indicator with colored circle."""
         frame = ttk.Frame(parent)
-        frame.pack(anchor='w', pady=2)
+        if use_pack:
+            frame.pack(anchor='w', pady=2)
         
         # Status circle (using Unicode circle characters)
         color_map = {
@@ -785,28 +790,43 @@ class App(tk.Tk):
         for widget in status_panel.winfo_children():
             widget.destroy()
 
-        self._create_status_indicator(
-            status_panel, 
+        # Create grid container for 2x2 layout
+        grid_frame = ttk.Frame(status_panel)
+        grid_frame.pack(fill=tk.X)
+
+        # Row 1: Companies House | Charity Commission
+        ch_indicator = self._create_status_indicator(
+            grid_frame, 
             "Companies House", 
-            self.api_statuses['companies_house']
+            self.api_statuses['companies_house'],
+            use_pack=False
         )
-        self._create_status_indicator(
-            status_panel, 
-            "Charity Commission", 
-            self.api_statuses['charity_commission']
-        )
-        self._create_status_indicator(
-            status_panel, 
-            "GrantNav (360Giving)", 
-            self.api_statuses['grantnav']
-        )
+        ch_indicator.grid(row=0, column=0, sticky='w', padx=(0, 15), pady=2)
         
-        # --- NEW: Add Contracts Finder Indicator ---
-        self._create_status_indicator(
-            status_panel, 
-            "Contracts Finder", 
-            self.api_statuses.get('contracts_finder', 'unknown')
+        cc_indicator = self._create_status_indicator(
+            grid_frame, 
+            "Charity Commission", 
+            self.api_statuses['charity_commission'],
+            use_pack=False
         )
+        cc_indicator.grid(row=0, column=1, sticky='w', pady=2)
+        
+        # Row 2: GrantNav | Contracts Finder
+        gn_indicator = self._create_status_indicator(
+            grid_frame, 
+            "GrantNav (360Giving)", 
+            self.api_statuses['grantnav'],
+            use_pack=False
+        )
+        gn_indicator.grid(row=1, column=0, sticky='w', padx=(0, 15), pady=2)
+        
+        cf_indicator = self._create_status_indicator(
+            grid_frame, 
+            "Contracts Finder", 
+            self.api_statuses.get('contracts_finder', 'unknown'),
+            use_pack=False
+        )
+        cf_indicator.grid(row=1, column=1, sticky='w', pady=2)
         
         # Add timestamp and refresh button
         footer_frame = ttk.Frame(status_panel)
