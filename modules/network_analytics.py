@@ -39,6 +39,426 @@ from ..ui.tooltip import Tooltip
 
 from .base import InvestigationModuleBase
 
+# --- Linked Attribute Type Definitions ---
+
+def _normalise_phone(value):
+    """Strip non-numeric except leading +"""
+    if not value:
+        return ""
+    value = value.strip()
+    if value.startswith("+"):
+        return "+" + re.sub(r"[^0-9]", "", value[1:])
+    return re.sub(r"[^0-9]", "", value)
+
+def _normalise_bank_sort_code(value, pad_zeros=True):
+    """Normalise sort code: strip non-numeric, optionally pad to 6 digits."""
+    digits = re.sub(r"[^0-9]", "", value or "")
+    if pad_zeros and digits and len(digits) < 6:
+        digits = digits.zfill(6)
+    return digits
+
+def _normalise_bank_account_number(value, pad_zeros=True):
+    """Normalise account number: strip non-numeric, optionally pad to 8 digits."""
+    digits = re.sub(r"[^0-9]", "", value or "")
+    if pad_zeros and digits and len(digits) < 8:
+        digits = digits.zfill(8)
+    return digits
+
+def _build_bank_account_id(values, options):
+    """Build normalised bank account ID from sort code and account number."""
+    pad = options.get("normalise_uk", True)
+    sort_digits = _normalise_bank_sort_code(values.get("sort", ""), pad)
+    acc_digits = _normalise_bank_account_number(values.get("account", ""), pad)
+    if sort_digits and acc_digits:
+        return f"{sort_digits}{acc_digits}"
+    return ""
+
+def _build_bank_account_label(values, options):
+    """Build human-readable bank account label."""
+    pad = options.get("normalise_uk", True)
+    sort_digits = _normalise_bank_sort_code(values.get("sort", ""), pad)
+    acc_digits = _normalise_bank_account_number(values.get("account", ""), pad)
+    # Format sort code as ##-##-##
+    if len(sort_digits) == 6:
+        sort_fmt = f"{sort_digits[:2]}-{sort_digits[2:4]}-{sort_digits[4:6]}"
+    else:
+        sort_fmt = sort_digits
+    return f"{sort_fmt} / {acc_digits}" if sort_fmt or acc_digits else ""
+
+ATTRIBUTE_TYPES = {
+    "address": {
+        "label": "Address",
+        "node_type": "address",
+        "relationship": {"person": "recorded_at", "company": "registered_at"},
+        "modes": {
+            "single": {
+                "label": "Single Column",
+                "fields": [("Full Address", "address")]
+            },
+            "composite": {
+                "label": "Composite (Line 1 + Postcode)",
+                "fields": [("Address Line 1", "line1"), ("Postcode", "postcode")]
+            }
+        },
+        "default_mode": "single",
+        "id_builder": lambda vals, opts: clean_address_string(", ".join(filter(None, [vals.get("address", ""), vals.get("line1", ""), vals.get("postcode", "")]))),
+        "label_builder": lambda vals, opts: ", ".join(filter(None, [vals.get("address", ""), vals.get("line1", ""), vals.get("postcode", "")])).strip().strip(",").strip(),
+        "options": []
+    },
+    "bank_account": {
+        "label": "Bank Account",
+        "node_type": "bank_account",
+        "relationship": "holds_account",
+        "modes": {
+            "default": {
+                "label": "Sort Code + Account Number",
+                "fields": [("Sort Code", "sort"), ("Account Number", "account")]
+            }
+        },
+        "default_mode": "default",
+        "id_builder": _build_bank_account_id,
+        "label_builder": _build_bank_account_label,
+        "options": [
+            {
+                "key": "normalise_uk",
+                "label": "Pad with leading zeros (UK format: 6-digit sort, 8-digit account)",
+                "default": True
+            }
+        ]
+    },
+    "phone": {
+        "label": "Phone Number",
+        "node_type": "phone",
+        "relationship": "uses_phone",
+        "modes": {
+            "default": {
+                "label": "Phone Number Column",
+                "fields": [("Phone Number", "phone")]
+            }
+        },
+        "default_mode": "default",
+        "id_builder": lambda vals, opts: _normalise_phone(vals.get("phone", "")),
+        "label_builder": lambda vals, opts: vals.get("phone", "").strip(),
+        "options": []
+    },
+    "email": {
+        "label": "Email Address",
+        "node_type": "email",
+        "relationship": "uses_email",
+        "modes": {
+            "default": {
+                "label": "Email Column",
+                "fields": [("Email", "email")]
+            }
+        },
+        "default_mode": "default",
+        "id_builder": lambda vals, opts: vals.get("email", "").strip().lower(),
+        "label_builder": lambda vals, opts: vals.get("email", "").strip(),
+        "options": []
+    },
+    "ip_address": {
+        "label": "IP Address",
+        "node_type": "ip_address",
+        "relationship": "used_ip",
+        "modes": {
+            "default": {
+                "label": "IP Address Column",
+                "fields": [("IP Address", "ip")]
+            }
+        },
+        "default_mode": "default",
+        "id_builder": lambda vals, opts: vals.get("ip", "").strip(),
+        "label_builder": lambda vals, opts: vals.get("ip", "").strip(),
+        "options": []
+    },
+    "custom": {
+        "label": "Custom",
+        "node_type": None,  # User-defined
+        "relationship": None,  # User-defined
+        "modes": {
+            "default": {
+                "label": "Single Column",
+                "fields": [("Value", "value")]
+            }
+        },
+        "default_mode": "default",
+        "id_builder": None,  # Built dynamically based on user options
+        "label_builder": lambda vals, opts: vals.get("value", "").strip(),
+        "options": [
+            {
+                "key": "node_type_label",
+                "label": "Node Type (e.g. 'ni_number', 'vehicle_reg')",
+                "type": "entry",
+                "default": "custom"
+            },
+            {
+                "key": "relationship_label", 
+                "label": "Relationship (e.g. 'holds_nino', 'registered_to')",
+                "type": "entry",
+                "default": "linked_to"
+            },
+            {
+                "key": "strip_non_alnum",
+                "label": "Strip non-alphanumeric characters",
+                "type": "checkbox",
+                "default": False
+            },
+            {
+                "key": "to_lowercase",
+                "label": "Convert to lowercase",
+                "type": "checkbox",
+                "default": False
+            }
+        ]
+    }
+}
+
+AUTO_DETECT_PATTERNS = {
+    # Format: field_key -> list of column name patterns (lowercase, underscores for spaces)
+    "address": ["address", "addr", "full_address", "street_address", "location"],
+    "line1": ["line1", "line_1", "address_1", "address_line_1", "street", "street_address"],
+    "postcode": ["postcode", "post_code", "postal", "postal_code", "zip", "zipcode"],
+    "sort": ["sort", "sortcode", "sort_code", "branch_code", "branch"],
+    "account": ["account", "acc_no", "account_no", "account_number", "acct", "acct_no"],
+    "phone": ["phone", "mobile", "tel", "telephone", "cell", "contact_number", "phone_number", "mobile_number"],
+    "email": ["email", "e-mail", "e_mail", "email_address", "mail"],
+    "ip": ["ip", "ip_address", "ipaddr", "source_ip", "client_ip", "ip_addr"],
+}
+
+def auto_detect_column(column_name, field_key):
+    """Check if a column name matches patterns for a given field key."""
+    if field_key not in AUTO_DETECT_PATTERNS:
+        return False
+    col_normalised = column_name.lower().replace(" ", "_").replace("-", "_")
+    for pattern in AUTO_DETECT_PATTERNS[field_key]:
+        if pattern in col_normalised or col_normalised in pattern:
+            return True
+    return False
+
+def find_best_column_match(headers, field_key):
+    """Find the best matching column from headers for a given field key."""
+    if not headers:
+        return ""
+    for header in headers:
+        if auto_detect_column(header, field_key):
+            return header
+    return ""
+
+
+class LinkedAttributeWidget(ttk.LabelFrame):
+    """A removable widget for mapping one linked attribute type to source columns."""
+    
+    def __init__(self, parent, headers, on_remove_callback, index):
+        super().__init__(parent, text=f"Attribute {index + 1}", padding=8)
+        
+        self.headers = headers or []
+        self.on_remove_callback = on_remove_callback
+        self.index = index
+        self.field_combos = {}  # field_key -> Combobox
+        self.option_vars = {}   # option_key -> tk variable
+        self.option_widgets = {}  # option_key -> widget
+        
+        # Top row: Type selector and remove button
+        top_row = ttk.Frame(self)
+        top_row.pack(fill=tk.X, pady=(0, 5))
+        
+        ttk.Label(top_row, text="Type:").pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.type_var = tk.StringVar(value="address")
+        self.type_combo = ttk.Combobox(
+            top_row, 
+            textvariable=self.type_var, 
+            values=list(ATTRIBUTE_TYPES.keys()),
+            state="readonly",
+            width=15
+        )
+        self.type_combo.pack(side=tk.LEFT, padx=(0, 10))
+        self.type_combo.bind("<<ComboboxSelected>>", self._on_type_changed)
+        
+        # Mode selector (shown only for types with multiple modes)
+        self.mode_var = tk.StringVar()
+        self.mode_frame = ttk.Frame(top_row)
+        self.mode_frame.pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(self.mode_frame, text="Mode:").pack(side=tk.LEFT, padx=(0, 5))
+        self.mode_combo = ttk.Combobox(
+            self.mode_frame,
+            textvariable=self.mode_var,
+            state="readonly",
+            width=25
+        )
+        self.mode_combo.pack(side=tk.LEFT)
+        self.mode_combo.bind("<<ComboboxSelected>>", self._on_mode_changed)
+        
+        # Remove button
+        remove_btn = ttk.Button(top_row, text="✕", width=3, command=self._on_remove)
+        remove_btn.pack(side=tk.RIGHT)
+        
+        # Fields frame (dynamic based on type/mode)
+        self.fields_frame = ttk.Frame(self)
+        self.fields_frame.pack(fill=tk.X, pady=5)
+        
+        # Options frame (dynamic based on type)
+        self.options_frame = ttk.Frame(self)
+        self.options_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        # Initial setup
+        self._on_type_changed()
+    
+    def _on_remove(self):
+        if self.on_remove_callback:
+            self.on_remove_callback(self)
+    
+    def _on_type_changed(self, event=None):
+        """Rebuild UI when attribute type changes."""
+        attr_type = self.type_var.get()
+        config = ATTRIBUTE_TYPES.get(attr_type, {})
+        
+        # Update the LabelFrame title to show the selected type
+        type_label = config.get("label", attr_type.title())
+        self.configure(text=f"{type_label}")
+        
+        # Update mode selector
+        modes = config.get("modes", {})
+        if len(modes) > 1:
+            self.mode_combo['values'] = [modes[k]["label"] for k in modes.keys()]
+            self.mode_var.set(modes[config.get("default_mode", list(modes.keys())[0])]["label"])
+            self.mode_frame.pack(side=tk.LEFT, padx=(0, 10))
+        else:
+            self.mode_frame.pack_forget()
+            if modes:
+                self.mode_var.set(list(modes.values())[0]["label"])
+        
+        self._rebuild_fields()
+        self._rebuild_options()
+    
+    def _on_mode_changed(self, event=None):
+        """Rebuild fields when mode changes."""
+        self._rebuild_fields()
+    
+    def _get_current_mode_key(self):
+        """Get the internal key for the current mode."""
+        attr_type = self.type_var.get()
+        config = ATTRIBUTE_TYPES.get(attr_type, {})
+        modes = config.get("modes", {})
+        
+        current_label = self.mode_var.get()
+        for key, mode_config in modes.items():
+            if mode_config["label"] == current_label:
+                return key
+        return config.get("default_mode", list(modes.keys())[0] if modes else "default")
+    
+    def _rebuild_fields(self):
+        """Rebuild the column mapping fields based on current type/mode."""
+        # Clear existing
+        for widget in self.fields_frame.winfo_children():
+            widget.destroy()
+        self.field_combos.clear()
+        
+        attr_type = self.type_var.get()
+        config = ATTRIBUTE_TYPES.get(attr_type, {})
+        mode_key = self._get_current_mode_key()
+        modes = config.get("modes", {})
+        mode_config = modes.get(mode_key, {})
+        fields = mode_config.get("fields", [])
+        
+        options = [""] + self.headers
+        
+        for i, (label, field_key) in enumerate(fields):
+            row = ttk.Frame(self.fields_frame)
+            row.pack(fill=tk.X, pady=2)
+            
+            ttk.Label(row, text=f"{label}:", width=20, anchor="w").pack(side=tk.LEFT, padx=(0, 5))
+            combo = ttk.Combobox(row, values=options, state="readonly", width=30)
+            combo.pack(side=tk.LEFT)
+            
+            # Auto-detect
+            best_match = find_best_column_match(self.headers, field_key)
+            if best_match:
+                combo.set(best_match)
+            
+            self.field_combos[field_key] = combo
+    
+    def _rebuild_options(self):
+        """Rebuild the options checkboxes/entries based on current type."""
+        # Clear existing
+        for widget in self.options_frame.winfo_children():
+            widget.destroy()
+        self.option_vars.clear()
+        self.option_widgets.clear()
+        
+        attr_type = self.type_var.get()
+        config = ATTRIBUTE_TYPES.get(attr_type, {})
+        options = config.get("options", [])
+        
+        if not options:
+            return
+        
+        for opt in options:
+            key = opt["key"]
+            label = opt["label"]
+            opt_type = opt.get("type", "checkbox")
+            default = opt.get("default", False if opt_type == "checkbox" else "")
+            
+            row = ttk.Frame(self.options_frame)
+            row.pack(fill=tk.X, pady=2)
+            
+            if opt_type == "checkbox":
+                var = tk.BooleanVar(value=default)
+                cb = ttk.Checkbutton(row, text=label, variable=var)
+                cb.pack(side=tk.LEFT)
+                self.option_widgets[key] = cb
+            else:  # entry
+                ttk.Label(row, text=f"{label}:", width=45, anchor="w").pack(side=tk.LEFT)
+                var = tk.StringVar(value=default)
+                entry = ttk.Entry(row, textvariable=var, width=25)
+                entry.pack(side=tk.LEFT)
+                self.option_widgets[key] = entry
+            
+            self.option_vars[key] = var
+    
+    def update_headers(self, headers):
+        """Update available headers when source file changes."""
+        self.headers = headers or []
+        options = [""] + self.headers
+        for combo in self.field_combos.values():
+            current = combo.get()
+            combo['values'] = options
+            if current in self.headers:
+                combo.set(current)
+            else:
+                combo.set("")
+    
+    def get_type(self):
+        """Return the current attribute type key."""
+        return self.type_var.get()
+    
+    def get_mode(self):
+        """Return the current mode key."""
+        return self._get_current_mode_key()
+    
+    def get_mapped_values(self, row_data):
+        """Extract values from a data row based on current column mappings."""
+        values = {}
+        for field_key, combo in self.field_combos.items():
+            col_name = combo.get()
+            if col_name:
+                values[field_key] = row_data.get(col_name, "").strip()
+            else:
+                values[field_key] = ""
+        return values
+    
+    def get_options(self):
+        """Return current option values as a dict."""
+        result = {}
+        for key, var in self.option_vars.items():
+            result[key] = var.get()
+        return result
+    
+    def has_valid_mapping(self):
+        """Check if at least one column is mapped."""
+        return any(combo.get() for combo in self.field_combos.values())
+
+
 class CollapsibleSection(ttk.Frame):
     """A collapsible frame with a clickable header."""
     
@@ -226,12 +646,20 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.cohort_a_ids = set()
         self.cohort_b_ids = set()
 
+        # --- Lynchpin analysis state ---
+        self.lynchpin_suspects = set()
+        self.lynchpin_suspects_path = None
+        self.lynchpin_results = []
+        self.lynchpin_suspects_in_graph = set()
+
         # --- Hidden links discovery ---
         self.discovered_hidden_links = []
         
         # --- Converter state variables ---
         self.converter_source_data = []
         self.converter_headers = []
+        self.linked_attribute_widgets = []
+        self.linked_attribute_counter = 0
         
         # --- Tabbed Interface Setup ---
         self.notebook = ttk.Notebook(self.content_frame)
@@ -246,6 +674,17 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.converter_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.converter_tab, text="Data Converter")
         self._setup_converter_tab()
+        
+        # Bind tab change event to reset scroll position when switching tabs
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        
+    def _on_tab_changed(self, event=None):
+        """Handle tab changes - reset scroll position for Data Converter tab."""
+        selected_tab = self.notebook.select()
+        # Check if Data Converter tab is now selected
+        if selected_tab == str(self.converter_tab):
+            # Reset scroll position to top
+            self.converter_canvas.yview_moveto(0)
         
     def _setup_analytics_tab(self):
         """Builds the network analytics UI with collapsible sections."""
@@ -301,11 +740,38 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.visualise_section.set_on_toggle(self._update_scrollregion)
 
     def _setup_converter_tab(self):
-        """Builds the Data Converter wizard UI."""
+        """Builds the Data Converter wizard UI with dynamic linked attributes."""
         container = self.converter_tab
+        
+        # Create scrollable canvas structure
+        self.converter_canvas = tk.Canvas(container, highlightthickness=0)
+        self.converter_scrollbar = ttk.Scrollbar(container, orient="vertical", command=self.converter_canvas.yview)
+        self.converter_inner_frame = ttk.Frame(self.converter_canvas)
+        
+        # Configure canvas scrolling
+        self.converter_canvas.configure(yscrollcommand=self.converter_scrollbar.set)
+        
+        # Pack scrollbar and canvas
+        self.converter_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.converter_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Create window in canvas
+        self.converter_canvas_window = self.converter_canvas.create_window(
+            (0, 0), 
+            window=self.converter_inner_frame, 
+            anchor="nw"
+        )
+        
+        # Bind events for scroll region updates
+        self.converter_inner_frame.bind("<Configure>", self._on_converter_frame_configure)
+        self.converter_canvas.bind("<Configure>", self._on_converter_canvas_configure)
+        
+        # Enable mousewheel scrolling
+        self.converter_canvas.bind("<Enter>", lambda e: self.converter_canvas.bind_all("<MouseWheel>", self._on_converter_mousewheel))
+        self.converter_canvas.bind("<Leave>", lambda e: self.converter_canvas.unbind_all("<MouseWheel>"))
 
         # Step 1: Load
-        step1_frame = ttk.LabelFrame(container, text="1. Load Source File", padding=10)
+        step1_frame = ttk.LabelFrame(self.converter_inner_frame, text="1. Load Source File", padding=10)
         step1_frame.pack(fill=tk.X, pady=10, padx=10)
         
         load_btn = ttk.Button(step1_frame, text="Load CSV...", command=self._converter_load_file)
@@ -318,9 +784,10 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.converter_preview_tree.pack(fill=tk.X, pady=5, padx=5)
 
         # Step 2: Map Columns
-        step2_frame = ttk.LabelFrame(container, text="2. Map Columns", padding=10)
+        step2_frame = ttk.LabelFrame(self.converter_inner_frame, text="2. Map Columns", padding=10)
         step2_frame.pack(fill=tk.X, pady=10, padx=10)
 
+        # Entity type selection
         type_frame = ttk.Frame(step2_frame)
         type_frame.pack(fill=tk.X, pady=5)
         ttk.Label(type_frame, text="Entity Type:").pack(side=tk.LEFT, padx=5)
@@ -337,53 +804,46 @@ class NetworkAnalytics(InvestigationModuleBase):
         ttk.Radiobutton(type_frame, text="Person", variable=self.converter_entity_type, value="person", command=on_type_change).pack(side=tk.LEFT, padx=10)
         ttk.Radiobutton(type_frame, text="Company", variable=self.converter_entity_type, value="company", command=on_type_change).pack(side=tk.LEFT, padx=10)
 
-        map_grid = ttk.Frame(step2_frame)
-        map_grid.pack(fill=tk.X, pady=5)
+        # Primary entity mapping (Name/DOB or Company Number/Name)
+        entity_map_frame = ttk.Frame(step2_frame)
+        entity_map_frame.pack(fill=tk.X, pady=5)
 
-        self.lbl_id_col = ttk.Label(map_grid, text="Full Name:")
+        self.lbl_id_col = ttk.Label(entity_map_frame, text="Full Name:")
         self.lbl_id_col.grid(row=0, column=0, sticky="w", padx=5, pady=5)
-        self.combo_id_col = ttk.Combobox(map_grid, state="readonly", width=30)
+        self.combo_id_col = ttk.Combobox(entity_map_frame, state="readonly", width=30)
         self.combo_id_col.grid(row=0, column=1, sticky="w", padx=5, pady=5)
 
-        self.lbl_sec_col = ttk.Label(map_grid, text="Date of Birth (DD/MM/YYYY):")
+        self.lbl_sec_col = ttk.Label(entity_map_frame, text="Date of Birth (DD/MM/YYYY):")
         self.lbl_sec_col.grid(row=1, column=0, sticky="w", padx=5, pady=5)
-        self.combo_sec_col = ttk.Combobox(map_grid, state="readonly", width=30)
+        self.combo_sec_col = ttk.Combobox(entity_map_frame, state="readonly", width=30)
         self.combo_sec_col.grid(row=1, column=1, sticky="w", padx=5, pady=5)
 
-        ttk.Separator(map_grid, orient="horizontal").grid(row=2, column=0, columnspan=2, sticky="ew", pady=10)
+        # Separator before linked attributes
+        ttk.Separator(step2_frame, orient="horizontal").pack(fill=tk.X, pady=10)
         
-        ttk.Label(map_grid, text="Address Mapping Mode:").grid(row=3, column=0, sticky="w", padx=5)
-        self.address_mode_var = tk.StringVar(value="single")
+        # Linked Attributes section header
+        linked_header = ttk.Frame(step2_frame)
+        linked_header.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(linked_header, text="Linked Attributes", font=("", 10, "bold")).pack(side=tk.LEFT)
+        ttk.Label(linked_header, text="(optional - add data that links entities together)", foreground="gray").pack(side=tk.LEFT, padx=(10, 0))
         
-        def toggle_addr_inputs():
-            if self.address_mode_var.get() == "single":
-                self.combo_addr_full.state(["!disabled"])
-                self.combo_addr_line1.state(["disabled"])
-                self.combo_addr_postcode.state(["disabled"])
-            else:
-                self.combo_addr_full.state(["disabled"])
-                self.combo_addr_line1.state(["!disabled"])
-                self.combo_addr_postcode.state(["!disabled"])
-
-        mode_frame = ttk.Frame(map_grid)
-        mode_frame.grid(row=3, column=1, sticky="w")
-        ttk.Radiobutton(mode_frame, text="Single Column", variable=self.address_mode_var, value="single", command=toggle_addr_inputs).pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(mode_frame, text="Composite (Line 1 + Postcode)", variable=self.address_mode_var, value="composite", command=toggle_addr_inputs).pack(side=tk.LEFT, padx=5)
-
-        ttk.Label(map_grid, text="Full Address:").grid(row=4, column=0, sticky="w", padx=5, pady=2)
-        self.combo_addr_full = ttk.Combobox(map_grid, state="readonly", width=30)
-        self.combo_addr_full.grid(row=4, column=1, sticky="w", padx=5, pady=2)
-
-        ttk.Label(map_grid, text="Address Line 1:").grid(row=5, column=0, sticky="w", padx=5, pady=2)
-        self.combo_addr_line1 = ttk.Combobox(map_grid, state="disabled", width=30)
-        self.combo_addr_line1.grid(row=5, column=1, sticky="w", padx=5, pady=2)
-
-        ttk.Label(map_grid, text="Postcode:").grid(row=6, column=0, sticky="w", padx=5, pady=2)
-        self.combo_addr_postcode = ttk.Combobox(map_grid, state="disabled", width=30)
-        self.combo_addr_postcode.grid(row=6, column=1, sticky="w", padx=5, pady=2)
+        # Container for linked attribute widgets
+        self.linked_attributes_container = ttk.Frame(step2_frame)
+        self.linked_attributes_container.pack(fill=tk.X, pady=5)
+        
+        # Add button
+        add_btn_frame = ttk.Frame(step2_frame)
+        add_btn_frame.pack(fill=tk.X, pady=5)
+        self.add_linked_attr_btn = ttk.Button(
+            add_btn_frame, 
+            text="+ Add Linked Attribute", 
+            command=self._add_linked_attribute,
+            state="disabled"
+        )
+        self.add_linked_attr_btn.pack(side=tk.LEFT)
 
         # Step 3: Convert
-        step3_frame = ttk.LabelFrame(container, text="3. Generate Output", padding=10)
+        step3_frame = ttk.LabelFrame(self.converter_inner_frame, text="3. Generate Output", padding=10)
         step3_frame.pack(fill=tk.X, pady=10, padx=10)
 
         self.convert_mode = tk.StringVar(value="cohort")
@@ -397,6 +857,52 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.convert_btn.pack(side=tk.LEFT)
         self.converter_status = ttk.Label(btn_frame, text="", foreground="green")
         self.converter_status.pack(side=tk.LEFT, padx=10)
+    
+    def _on_converter_frame_configure(self, event=None):
+        """Update scroll region when inner frame size changes."""
+        # Use winfo_reqheight/reqwidth to get actual content size, not bbox
+        # which can be polluted by geometry from other notebook tabs
+        req_height = self.converter_inner_frame.winfo_reqheight()
+        req_width = self.converter_inner_frame.winfo_reqwidth()
+        self.converter_canvas.configure(scrollregion=(0, 0, req_width, req_height))
+    
+    def _on_converter_canvas_configure(self, event=None):
+        """Update inner frame width to match canvas width."""
+        if event:
+            self.converter_canvas.itemconfig(self.converter_canvas_window, width=event.width)
+    
+    def _on_converter_mousewheel(self, event):
+        """Handle mousewheel scrolling in converter tab."""
+        self.converter_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+    
+    def _update_converter_scroll_region(self):
+        """Force scroll region update after adding/removing widgets."""
+        def do_update():
+            self.converter_inner_frame.update_idletasks()
+            req_height = self.converter_inner_frame.winfo_reqheight()
+            req_width = self.converter_inner_frame.winfo_reqwidth()
+            self.converter_canvas.configure(scrollregion=(0, 0, req_width, req_height))
+        self.app.after(10, do_update)
+    
+    def _add_linked_attribute(self):
+        """Add a new linked attribute widget."""
+        widget = LinkedAttributeWidget(
+            self.linked_attributes_container,
+            headers=self.converter_headers,
+            on_remove_callback=self._remove_linked_attribute,
+            index=self.linked_attribute_counter
+        )
+        widget.pack(fill=tk.X, pady=5)
+        self.linked_attribute_widgets.append(widget)
+        self.linked_attribute_counter += 1
+        self._update_converter_scroll_region()
+    
+    def _remove_linked_attribute(self, widget):
+        """Remove a linked attribute widget."""
+        if widget in self.linked_attribute_widgets:
+            self.linked_attribute_widgets.remove(widget)
+        widget.destroy()
+        self._update_converter_scroll_region()
 
     def _build_data_sources_content(self, container):
         """Builds the Data Sources section content."""
@@ -730,6 +1236,14 @@ class NetworkAnalytics(InvestigationModuleBase):
             value="two_lists",
             command=self._update_analyse_mode_ui
         ).pack(anchor="w", padx=(20, 0))
+        
+        ttk.Radiobutton(
+            mode_frame,
+            text="Find lynchpins in entity list",
+            variable=self.analyse_mode_var,
+            value="lynchpin",
+            command=self._update_analyse_mode_ui
+        ).pack(anchor="w", padx=(20, 0))
 
         ttk.Separator(connections_frame, orient="horizontal").pack(fill=tk.X, pady=10)
         
@@ -741,6 +1255,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         self._build_two_entities_ui(self.analyse_dynamic_frame)
         self._build_single_list_ui(self.analyse_dynamic_frame)
         self._build_two_lists_ui(self.analyse_dynamic_frame)
+        self._build_lynchpin_ui(self.analyse_dynamic_frame)
         
         ttk.Separator(connections_frame, orient="horizontal").pack(fill=tk.X, pady=10)
         
@@ -893,6 +1408,101 @@ class NetworkAnalytics(InvestigationModuleBase):
         ).pack(anchor="w", pady=(5, 0))
 
 
+    def _build_lynchpin_ui(self, parent):
+        """Builds UI for 'Find lynchpins in entity list' mode."""
+        self.lynchpin_frame = ttk.Frame(parent)
+        
+        # Suspect list upload
+        row1 = ttk.Frame(self.lynchpin_frame)
+        row1.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(row1, text="Suspect list:").pack(side=tk.LEFT)
+        ttk.Button(
+            row1,
+            text="Upload Suspects...",
+            command=self._upload_lynchpin_suspects
+        ).pack(side=tk.LEFT, padx=(10, 5))
+        
+        # Info tooltip
+        info_label = ttk.Label(row1, text="ℹ️", foreground="blue", cursor="hand2", font=("", 11))
+        info_label.pack(side=tk.LEFT, padx=(0, 10))
+        Tooltip(info_label, self._get_lynchpin_tooltip())
+        
+        self.lynchpin_list_status = ttk.Label(row1, text="No list loaded", foreground="gray")
+        self.lynchpin_list_status.pack(side=tk.LEFT)
+        
+        # Filter options
+        filter_frame = ttk.LabelFrame(self.lynchpin_frame, text="Lynchpin Type Filter", padding=5)
+        filter_frame.pack(fill=tk.X, pady=(10, 5))
+        
+        self.lynchpin_type_var = tk.StringVar(value="all")
+        
+        type_row = ttk.Frame(filter_frame)
+        type_row.pack(fill=tk.X)
+        
+        ttk.Radiobutton(
+            type_row,
+            text="All entity types",
+            variable=self.lynchpin_type_var,
+            value="all"
+        ).pack(side=tk.LEFT, padx=(0, 15))
+        
+        ttk.Radiobutton(
+            type_row,
+            text="People only",
+            variable=self.lynchpin_type_var,
+            value="person"
+        ).pack(side=tk.LEFT, padx=(0, 15))
+        
+        ttk.Radiobutton(
+            type_row,
+            text="Addresses only",
+            variable=self.lynchpin_type_var,
+            value="address"
+        ).pack(side=tk.LEFT, padx=(0, 15))
+        
+        ttk.Radiobutton(
+            type_row,
+            text="Companies only",
+            variable=self.lynchpin_type_var,
+            value="company"
+        ).pack(side=tk.LEFT)
+        
+        # Minimum connections threshold
+        threshold_row = ttk.Frame(self.lynchpin_frame)
+        threshold_row.pack(fill=tk.X, pady=(5, 5))
+        
+        ttk.Label(threshold_row, text="Minimum suspect connections:").pack(side=tk.LEFT)
+        self.lynchpin_min_connections_var = tk.IntVar(value=2)
+        threshold_spin = ttk.Spinbox(
+            threshold_row,
+            from_=2,
+            to=100,
+            width=5,
+            textvariable=self.lynchpin_min_connections_var
+        )
+        threshold_spin.pack(side=tk.LEFT, padx=(10, 0))
+        Tooltip(threshold_spin, "Only show entities connected to at least this many suspects")
+        
+        ttk.Label(
+            self.lynchpin_frame,
+            text="Identifies entities (people, addresses, companies) that connect to multiple suspects.\n"
+                 "Results are ranked by number of suspect connections - potential ringleaders appear at top.",
+            foreground="gray",
+            wraplength=450
+        ).pack(anchor="w", pady=(10, 0))
+
+
+    def _get_lynchpin_tooltip(self):
+        """Returns tooltip text for lynchpin analysis."""
+        return (
+            "Upload a CSV containing your suspect entities (e.g. fraudulent companies).\n\n"
+            "The tool will automatically find all entities in your network that are\n"
+            "connected to multiple suspects, ranked by how many suspects they link to.\n\n"
+            "This helps identify potential ringleaders, shared addresses, or common\n"
+            "officers that might indicate coordinated fraud."
+        )
+
+
     def _get_entity_list_tooltip(self):
         """Returns the standard entity list tooltip text."""
         return (
@@ -914,6 +1524,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.two_entities_frame.pack_forget()
         self.single_list_frame.pack_forget()
         self.two_lists_frame.pack_forget()
+        self.lynchpin_frame.pack_forget()
 
         # All modes use path-finding options
         self.max_hops_combo.config(state="readonly")
@@ -930,6 +1541,13 @@ class NetworkAnalytics(InvestigationModuleBase):
         elif mode == "two_lists":
             self.two_lists_frame.pack(fill=tk.X)
             self.find_connections_btn.config(text="Find Connections & Export...")
+        elif mode == "lynchpin":
+            self.lynchpin_frame.pack(fill=tk.X)
+            self.find_connections_btn.config(text="Find Lynchpins")
+            # Disable irrelevant options for lynchpin mode
+            self.max_hops_combo.config(state="disabled")
+            self.shortest_only_check.config(state="disabled")
+            self.enforce_direction_check.config(state="disabled")
         self._update_visualise_checkbox_state()
 
     def _build_visualise_content(self, container):
@@ -1490,12 +2108,19 @@ class NetworkAnalytics(InvestigationModuleBase):
             # Update UI
             self.converter_file_label.config(text=os.path.basename(path))
             
-            # Update Combos
-            combos = [self.combo_id_col, self.combo_sec_col, self.combo_addr_full, self.combo_addr_line1, self.combo_addr_postcode]
+            # Update primary entity combos
             options = [""] + self.converter_headers
-            for c in combos:
-                c['values'] = options
-                c.set("")
+            self.combo_id_col['values'] = options
+            self.combo_sec_col['values'] = options
+            self.combo_id_col.set("")
+            self.combo_sec_col.set("")
+            
+            # Update any existing linked attribute widgets
+            for widget in self.linked_attribute_widgets:
+                widget.update_headers(self.converter_headers)
+            
+            # Enable the "Add Linked Attribute" button
+            self.add_linked_attr_btn.config(state="normal")
 
             # Update Preview
             self.converter_preview_tree['columns'] = self.converter_headers
@@ -2072,6 +2697,28 @@ class NetworkAnalytics(InvestigationModuleBase):
             messagebox.showerror("Load Error", f"Could not load entity list: {e}")
 
 
+    def _upload_lynchpin_suspects(self):
+        """Uploads suspect list for lynchpin analysis mode."""
+        path = filedialog.askopenfilename(
+            title="Select Suspect List CSV",
+            filetypes=[("CSV Files", "*.csv")]
+        )
+        if not path:
+            return
+        
+        try:
+            entity_ids = self._load_entity_list_file(path)
+            self.lynchpin_suspects = entity_ids
+            self.lynchpin_suspects_path = path
+            self.lynchpin_list_status.config(
+                text=f"{len(entity_ids)} suspects loaded",
+                foreground="green"
+            )
+            self._update_visualise_checkbox_state()
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Could not load suspect list: {e}")
+
+
     def _load_entity_list_file(self, path):
         """Loads entity IDs from a CSV file. Returns a set of IDs."""
         entity_ids = set()
@@ -2113,6 +2760,8 @@ class NetworkAnalytics(InvestigationModuleBase):
             self._find_connections_single_list()
         elif mode == "two_lists":
             self._find_connections_two_lists()
+        elif mode == "lynchpin":
+            self._find_lynchpins()
 
 
     def _find_connection_two_entities(self):
@@ -2233,6 +2882,403 @@ class NetworkAnalytics(InvestigationModuleBase):
             args=(output_filepath,),
             daemon=True,
         ).start()
+
+
+    def _find_lynchpins(self):
+        """Finds entities that connect to multiple suspects (potential ringleaders)."""
+        if not hasattr(self, 'lynchpin_suspects') or not self.lynchpin_suspects:
+            messagebox.showwarning("No Suspects", "Please upload a suspect list first.")
+            return
+        
+        if not self.graph_built:
+            messagebox.showwarning("No Graph", "Please build the graph first.")
+            return
+        
+        self.find_connections_btn.config(state="disabled")
+        self.analyse_status_var.set("Analysing lynchpins...")
+        
+        # Run analysis in background thread
+        threading.Thread(
+            target=self._run_lynchpin_analysis_thread,
+            daemon=True
+        ).start()
+
+
+    def _run_lynchpin_analysis_thread(self):
+        """Background thread for lynchpin analysis."""
+        try:
+            pruned_graph = self._get_pruned_graph()
+            min_connections = self.lynchpin_min_connections_var.get()
+            type_filter = self.lynchpin_type_var.get()
+            
+            # Find which suspects are actually in the graph
+            suspects_in_graph = set()
+            for suspect_id in self.lynchpin_suspects:
+                if suspect_id in pruned_graph:
+                    suspects_in_graph.add(suspect_id)
+            
+            if not suspects_in_graph:
+                self.app.after(0, lambda: messagebox.showwarning(
+                    "No Matches",
+                    "None of the suspects in your list were found in the network graph.\n\n"
+                    "Check that your suspect IDs match the format used in the graph."
+                ))
+                self.app.after(0, lambda: self.find_connections_btn.config(state="normal"))
+                self.app.after(0, lambda: self.analyse_status_var.set(""))
+                return
+            
+            self.app.after(0, lambda: self.analyse_status_var.set(
+                f"Found {len(suspects_in_graph)}/{len(self.lynchpin_suspects)} suspects in graph. Analysing..."
+            ))
+            
+            # Build a map of entity -> set of connected suspects
+            # For each non-suspect node, find which suspects it connects to (directly or via 1 hop)
+            entity_to_suspects = {}
+            
+            # Use undirected view for connectivity
+            undirected_graph = pruned_graph.to_undirected()
+            
+            # Get all non-suspect nodes
+            all_nodes = set(pruned_graph.nodes())
+            non_suspect_nodes = all_nodes - suspects_in_graph
+            
+            total_nodes = len(non_suspect_nodes)
+            processed = 0
+            
+            for node_id in non_suspect_nodes:
+                processed += 1
+                if processed % 500 == 0:
+                    progress = int((processed / total_nodes) * 100)
+                    self.app.after(0, lambda p=progress: self.analyse_status_var.set(f"Analysing... {p}%"))
+                
+                # Apply type filter
+                node_type = pruned_graph.nodes[node_id].get("type", "unknown")
+                if type_filter != "all" and node_type != type_filter:
+                    continue
+                
+                # Find all suspects this node is directly connected to
+                connected_suspects = set()
+                
+                # Check direct neighbors
+                for neighbor in undirected_graph.neighbors(node_id):
+                    if neighbor in suspects_in_graph:
+                        connected_suspects.add(neighbor)
+                
+                # Only include if meets minimum threshold
+                if len(connected_suspects) >= min_connections:
+                    entity_to_suspects[node_id] = connected_suspects
+            
+            # Sort by number of connections (descending)
+            sorted_lynchpins = sorted(
+                entity_to_suspects.items(),
+                key=lambda x: len(x[1]),
+                reverse=True
+            )
+            
+            # Prepare results for display
+            results = []
+            for node_id, connected_suspects in sorted_lynchpins:
+                node_attrs = pruned_graph.nodes[node_id]
+                node_label = node_attrs.get("label", node_id)
+                node_type = node_attrs.get("type", "unknown")
+                
+                # Get labels for connected suspects
+                suspect_labels = []
+                for suspect_id in connected_suspects:
+                    suspect_label = pruned_graph.nodes[suspect_id].get("label", suspect_id)
+                    suspect_labels.append(suspect_label)
+                
+                results.append({
+                    "id": node_id,
+                    "label": node_label,
+                    "type": node_type,
+                    "connection_count": len(connected_suspects),
+                    "connected_suspect_ids": connected_suspects,
+                    "connected_suspect_labels": suspect_labels
+                })
+            
+            # Store results and show dialog
+            self.lynchpin_results = results
+            self.lynchpin_suspects_in_graph = suspects_in_graph
+            
+            self.app.after(0, lambda: self._show_lynchpin_results_dialog(results, len(suspects_in_graph)))
+            self.app.after(0, lambda: self.find_connections_btn.config(state="normal"))
+            self.app.after(0, lambda: self.analyse_status_var.set(f"Found {len(results)} potential lynchpins"))
+            
+        except Exception as e:
+            log_message(f"Lynchpin analysis error: {e}")
+            self.app.after(0, lambda: messagebox.showerror("Error", f"Analysis failed: {e}"))
+            self.app.after(0, lambda: self.find_connections_btn.config(state="normal"))
+            self.app.after(0, lambda: self.analyse_status_var.set(""))
+
+
+    def _show_lynchpin_results_dialog(self, results, total_suspects):
+        """Display lynchpin analysis results in a dialog."""
+        if not results:
+            messagebox.showinfo(
+                "No Lynchpins Found",
+                f"No entities found connecting to {self.lynchpin_min_connections_var.get()} or more suspects.\n\n"
+                "Try lowering the minimum connections threshold."
+            )
+            return
+        
+        dialog = tk.Toplevel(self.app)
+        dialog.title("Lynchpin Analysis Results")
+        dialog.geometry("1000x600")
+        
+        # Summary header
+        summary_frame = ttk.Frame(dialog)
+        summary_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Label(
+            summary_frame,
+            text=f"Found {len(results)} potential lynchpins connecting to {total_suspects} suspects",
+            font=("", 11, "bold")
+        ).pack(anchor="w")
+        
+        ttk.Label(
+            summary_frame,
+            text="Ranked by number of suspect connections. Click column headers to sort. Double-click to see connected suspects.",
+            foreground="gray"
+        ).pack(anchor="w", pady=(5, 0))
+        
+        # Treeview with scrollbar
+        tree_frame = ttk.Frame(dialog)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        tree_scroll_y = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
+        tree_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        tree_scroll_x = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL)
+        tree_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        cols = ("Rank", "Entity", "Type", "Suspect Connections", "% of Suspects", "Entity ID")
+        tree = ttk.Treeview(
+            tree_frame,
+            columns=cols,
+            show="headings",
+            height=20,
+            yscrollcommand=tree_scroll_y.set,
+            xscrollcommand=tree_scroll_x.set,
+            selectmode="extended"
+        )
+        tree_scroll_y.config(command=tree.yview)
+        tree_scroll_x.config(command=tree.xview)
+        
+        # Sort state tracking
+        sort_state = {col: False for col in cols}
+        
+        def sort_by_column(col):
+            items = [(tree.set(item, col), item) for item in tree.get_children("")]
+            sort_state[col] = not sort_state[col]
+            # Numeric sort for Rank, Suspect Connections, % of Suspects
+            if col in ("Rank", "Suspect Connections"):
+                items.sort(key=lambda x: int(x[0]) if x[0].isdigit() else 0, reverse=sort_state[col])
+            elif col == "% of Suspects":
+                items.sort(key=lambda x: float(x[0].rstrip('%')) if x[0].rstrip('%').replace('.','').isdigit() else 0, reverse=sort_state[col])
+            else:
+                items.sort(reverse=sort_state[col])
+            for index, (_, item) in enumerate(items):
+                tree.move(item, "", index)
+        
+        tree.heading("Rank", text="Rank", command=lambda: sort_by_column("Rank"))
+        tree.heading("Entity", text="Entity", command=lambda: sort_by_column("Entity"))
+        tree.heading("Type", text="Type", command=lambda: sort_by_column("Type"))
+        tree.heading("Suspect Connections", text="Suspect Connections", command=lambda: sort_by_column("Suspect Connections"))
+        tree.heading("% of Suspects", text="% of Suspects", command=lambda: sort_by_column("% of Suspects"))
+        tree.heading("Entity ID", text="Entity ID", command=lambda: sort_by_column("Entity ID"))
+        
+        tree.column("Rank", width=50, anchor="center")
+        tree.column("Entity", width=300)
+        tree.column("Type", width=80, anchor="center")
+        tree.column("Suspect Connections", width=140, anchor="center")
+        tree.column("% of Suspects", width=100, anchor="center")
+        tree.column("Entity ID", width=200)
+        
+        tree.pack(fill=tk.BOTH, expand=True)
+        
+        # Populate tree
+        for idx, result in enumerate(results):
+            pct = (result["connection_count"] / total_suspects) * 100
+            tree.insert("", "end", iid=str(idx), values=(
+                idx + 1,
+                result["label"],
+                result["type"].title(),
+                result["connection_count"],
+                f"{pct:.1f}%",
+                result["id"]
+            ))
+        
+        # Double-click handler to show connected suspects
+        def on_double_click(event):
+            item = tree.identify_row(event.y)
+            if item:
+                idx = int(item)
+                result = results[idx]
+                self._show_connected_suspects_dialog(dialog, result)
+        
+        tree.bind("<Double-1>", on_double_click)
+        
+        # Button frame
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        def export_results():
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv")],
+                title="Export Lynchpin Results"
+            )
+            if not filepath:
+                return
+            
+            try:
+                with open(filepath, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        "Rank", "Entity Label", "Entity Type", "Entity ID",
+                        "Suspect Connections", "% of Suspects", "Connected Suspect IDs", "Connected Suspect Labels"
+                    ])
+                    for idx, result in enumerate(results):
+                        pct = (result["connection_count"] / total_suspects) * 100
+                        writer.writerow([
+                            idx + 1,
+                            result["label"],
+                            result["type"],
+                            result["id"],
+                            result["connection_count"],
+                            f"{pct:.1f}%",
+                            "; ".join(result["connected_suspect_ids"]),
+                            "; ".join(result["connected_suspect_labels"])
+                        ])
+                messagebox.showinfo("Export Complete", f"Results exported to:\n{filepath}")
+            except Exception as e:
+                messagebox.showerror("Export Error", f"Could not export results: {e}")
+        
+        def visualise_selected():
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning("No Selection", "Please select one or more lynchpins to visualise.")
+                return
+            
+            # Get selected lynchpin IDs and their connected suspects
+            nodes_to_include = set()
+            for item in selected:
+                idx = int(item)
+                result = results[idx]
+                nodes_to_include.add(result["id"])
+                nodes_to_include.update(result["connected_suspect_ids"])
+            
+            # Create subgraph and visualise
+            pruned_graph = self._get_pruned_graph()
+            subgraph = pruned_graph.subgraph(nodes_to_include).copy()
+            
+            if subgraph.number_of_nodes() == 0:
+                messagebox.showwarning("No Nodes", "Selected entities not found in graph.")
+                return
+            
+            # Mark lynchpins and suspects for visual distinction
+            lynchpin_ids = {results[int(item)]["id"] for item in selected}
+            
+            self._visualise_lynchpin_subgraph(subgraph, lynchpin_ids, self.lynchpin_suspects_in_graph)
+        
+        ttk.Button(btn_frame, text="Export to CSV...", command=export_results).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text="Visualise Selected", command=visualise_selected).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text="Close", command=dialog.destroy).pack(side=tk.RIGHT)
+
+
+    def _show_connected_suspects_dialog(self, parent, result):
+        """Show dialog listing the suspects connected to a lynchpin."""
+        dialog = tk.Toplevel(parent)
+        dialog.title(f"Suspects Connected to: {result['label']}")
+        dialog.geometry("600x400")
+        
+        ttk.Label(
+            dialog,
+            text=f"Entity: {result['label']} ({result['type']})",
+            font=("", 10, "bold")
+        ).pack(anchor="w", padx=10, pady=(10, 5))
+        
+        ttk.Label(
+            dialog,
+            text=f"Connected to {result['connection_count']} suspects:",
+            foreground="gray"
+        ).pack(anchor="w", padx=10, pady=(0, 10))
+        
+        # Listbox with connected suspects
+        list_frame = ttk.Frame(dialog)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        scrollbar = ttk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, font=("", 10))
+        listbox.pack(fill=tk.BOTH, expand=True)
+        scrollbar.config(command=listbox.yview)
+        
+        for suspect_id, suspect_label in zip(result["connected_suspect_ids"], result["connected_suspect_labels"]):
+            listbox.insert(tk.END, f"{suspect_label}  ({suspect_id})")
+        
+        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=10)
+
+
+    def _visualise_lynchpin_subgraph(self, subgraph, lynchpin_ids, suspect_ids):
+        """Visualise a subgraph highlighting lynchpins and suspects."""
+        net = Network(
+            height="900px",
+            width="100%",
+            bgcolor="#FFFFFF",
+            font_color="black",
+            directed=True,
+        )
+        net.barnes_hut(gravity=-3000, central_gravity=0.3, spring_length=150)
+        
+        # Node colors
+        LYNCHPIN_COLOR = "#FF0000"  # Red for lynchpins
+        SUSPECT_COLOR = "#FFA500"   # Orange for suspects
+        
+        NODE_COLORS = {
+            "company": "#4A90D9",
+            "person": "#50C878",
+            "address": "#DA70D6",
+        }
+        DEFAULT_COLOR = "#808080"
+        
+        for node_id, attrs in subgraph.nodes(data=True):
+            label = attrs.get("label", str(node_id))
+            node_type = attrs.get("type", "unknown")
+            
+            # Determine color based on role
+            if node_id in lynchpin_ids:
+                color = LYNCHPIN_COLOR
+                size = 30
+                title = f"LYNCHPIN: {label}"
+            elif node_id in suspect_ids:
+                color = SUSPECT_COLOR
+                size = 25
+                title = f"SUSPECT: {label}"
+            else:
+                color = NODE_COLORS.get(node_type, DEFAULT_COLOR)
+                size = 20
+                title = label
+            
+            safe_label = html.escape(str(label)[:50])
+            safe_title = html.escape(title)
+            
+            net.add_node(node_id, label=safe_label, title=safe_title, color=color, size=size)
+        
+        for source, target, edge_attrs in subgraph.edges(data=True):
+            edge_label = edge_attrs.get("label", "")
+            safe_title = html.escape(edge_label)
+            net.add_edge(source, target, title=safe_title, width=2)
+        
+        try:
+            filename = os.path.join(CONFIG_DIR, "lynchpin_network_graph.html")
+            net.write_html(filename, notebook=False)
+            webbrowser.open(f"file://{os.path.realpath(filename)}")
+        except Exception as e:
+            log_message(f"Failed to save or open lynchpin graph: {e}")
+            messagebox.showerror("Graph Error", f"Could not save graph: {e}")
 
 
     def _haversine_distance(self, lat1, lon1, lat2, lon2):
@@ -2641,24 +3687,19 @@ class NetworkAnalytics(InvestigationModuleBase):
 
 
     def _converter_run(self):
-        """Main execution logic for the Data Converter."""
-        entity_type = self.converter_entity_type.get() # "person" or "company"
-        output_mode = self.convert_mode.get() # "cohort" or "graph"
+        """Main execution logic for the Data Converter with dynamic linked attributes."""
+        entity_type = self.converter_entity_type.get()  # "person" or "company"
+        output_mode = self.convert_mode.get()  # "cohort" or "graph"
         
-        col_id = self.combo_id_col.get() 
-        col_sec = self.combo_sec_col.get() 
-        
-        addr_mode = self.address_mode_var.get()
-        col_addr_full = self.combo_addr_full.get()
-        col_addr_l1 = self.combo_addr_line1.get()
-        col_addr_pc = self.combo_addr_postcode.get()
+        col_id = self.combo_id_col.get()
+        col_sec = self.combo_sec_col.get()
 
         if not col_id:
             messagebox.showwarning("Missing Map", "Please select the primary ID column.")
             return
 
         save_path = filedialog.asksaveasfilename(
-            defaultextension=".csv", 
+            defaultextension=".csv",
             filetypes=[("CSV Files", "*.csv")],
             title=f"Save {output_mode.title()} File"
         )
@@ -2689,13 +3730,13 @@ class NetworkAnalytics(InvestigationModuleBase):
                         dt = datetime.datetime.strptime(dob_str, "%d/%m/%Y")
                         dob_obj = {"year": str(dt.year), "month": f"{dt.month:02d}"}
                     except ValueError:
-                        pass 
+                        pass
                 
                 entity_id = get_canonical_name_key(raw_id_val, dob_obj)
             
-            else: # Company
+            else:  # Company
                 cnum = clean_company_number(raw_id_val)
-                if not cnum: 
+                if not cnum:
                     count_skipped += 1
                     continue
                 entity_id = cnum
@@ -2708,48 +3749,83 @@ class NetworkAnalytics(InvestigationModuleBase):
 
             unique_ids.add(entity_id)
 
-            # 2. Process Address
-            addr_id = ""
-            addr_label = ""
-            raw_addr_str = ""
-            if addr_mode == "single" and col_addr_full:
-                raw_addr_str = row.get(col_addr_full, "")
-            elif addr_mode == "composite" and col_addr_l1 and col_addr_pc:
-                p1 = row.get(col_addr_l1, "").strip()
-                p2 = row.get(col_addr_pc, "").strip()
-                if p1 or p2:
-                    raw_addr_str = f"{p1}, {p2}"
-            
-            if raw_addr_str:
-                addr_id = clean_address_string(raw_addr_str)
-                addr_label = raw_addr_str.strip().strip(",").strip()
-
-            # 3. Build Output
-            if output_mode == "cohort":
-                pass 
-            else: # Graph
-                if addr_id:
-                    rel_type = "recorded_at" if entity_type == "person" else "registered_at"
+            # 2. Process Linked Attributes
+            if output_mode == "graph":
+                has_any_link = False
+                
+                for attr_widget in self.linked_attribute_widgets:
+                    if not attr_widget.has_valid_mapping():
+                        continue
+                    
+                    attr_type = attr_widget.get_type()
+                    config = ATTRIBUTE_TYPES.get(attr_type, {})
+                    options = attr_widget.get_options()
+                    values = attr_widget.get_mapped_values(row)
+                    
+                    # Skip if no values
+                    if not any(v for v in values.values()):
+                        continue
+                    
+                    # Handle custom type
+                    if attr_type == "custom":
+                        node_type = options.get("node_type_label", "custom").strip() or "custom"
+                        relationship = options.get("relationship_label", "linked_to").strip() or "linked_to"
+                        
+                        # Build ID with custom normalisation options
+                        raw_value = values.get("value", "")
+                        attr_id = raw_value
+                        if options.get("strip_non_alnum", False):
+                            attr_id = re.sub(r"[^a-zA-Z0-9]", "", attr_id)
+                        if options.get("to_lowercase", False):
+                            attr_id = attr_id.lower()
+                        attr_label = raw_value.strip()
+                    else:
+                        node_type = config.get("node_type", attr_type)
+                        relationship = config.get("relationship", "linked_to")
+                        
+                        # Handle relationship as dict (varies by entity type)
+                        if isinstance(relationship, dict):
+                            relationship = relationship.get(entity_type, "linked_to")
+                        
+                        # Build ID and label using config functions
+                        id_builder = config.get("id_builder")
+                        label_builder = config.get("label_builder")
+                        
+                        if id_builder:
+                            attr_id = id_builder(values, options)
+                        else:
+                            attr_id = ""
+                        
+                        if label_builder:
+                            attr_label = label_builder(values, options)
+                        else:
+                            attr_label = ""
+                    
+                    # Only add if we got a valid ID
+                    if attr_id:
+                        has_any_link = True
+                        converted_rows.append({
+                            "source_id": entity_id,
+                            "source_label": entity_label,
+                            "source_type": entity_node_type,
+                            "target_id": attr_id,
+                            "target_label": attr_label,
+                            "target_type": node_type,
+                            "relationship": relationship
+                        })
+                
+                # If no linked attributes produced output, add entity-only row
+                if not has_any_link:
                     converted_rows.append({
                         "source_id": entity_id,
                         "source_label": entity_label,
                         "source_type": entity_node_type,
-                        "target_id": addr_id,
-                        "target_label": addr_label,
-                        "target_type": "address",
-                        "relationship": rel_type
-                    })
-                else:
-                    converted_rows.append({
-                        "source_id": entity_id, 
-                        "source_label": entity_label, 
-                        "source_type": entity_node_type,
-                        "target_id": "", 
-                        "target_label": "", 
-                        "target_type": "", 
+                        "target_id": "",
+                        "target_label": "",
+                        "target_type": "",
                         "relationship": ""
                     })
-                
+
         try:
             with open(save_path, "w", newline="", encoding="utf-8") as f:
                 if output_mode == "cohort":
