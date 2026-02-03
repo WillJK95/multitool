@@ -113,6 +113,29 @@ class DataMatch(InvestigationModuleBase):
             width=35  # Wide enough to see the explanations
         )
         self.algo_combo.pack(side=tk.LEFT, padx=5)
+
+        # Cardinality row (second row of fuzzy settings)
+        self.cardinality_frame = ttk.Frame(logic_frame)
+        self.cardinality_frame.pack(fill=tk.X, padx=20, pady=(5, 0))
+        
+        self.cardinality_label = ttk.Label(self.cardinality_frame, text="Match Cardinality:")
+        self.cardinality_label.pack(side=tk.LEFT)
+        
+        self.CARDINALITY_OPTIONS = {
+            "Many-to-Many (all above threshold)": "many_to_many",
+            "One-to-Many (best match per primary)": "one_to_many",
+            "One-to-One (strict pairing, no reuse)": "one_to_one",
+        }
+        
+        self.cardinality_var = tk.StringVar(value="One-to-Many (best match per primary)")
+        self.cardinality_combo = ttk.Combobox(
+            self.cardinality_frame,
+            textvariable=self.cardinality_var,
+            values=list(self.CARDINALITY_OPTIONS.keys()),
+            state="readonly",
+            width=38
+        )
+        self.cardinality_combo.pack(side=tk.LEFT, padx=5)
         
         self.toggle_slider()
 
@@ -293,10 +316,14 @@ class DataMatch(InvestigationModuleBase):
     def toggle_slider(self):
         if self.match_logic_var.get() == "name":
             self.accuracy_slider.config(state="normal")
-            self.accuracy_label.config(foreground="black")
+            self.accuracy_label.config(state="normal")
+            self.cardinality_combo.config(state="readonly")
+            self.cardinality_label.config(state="normal")
         else:
             self.accuracy_slider.config(state="disabled")
-            self.accuracy_label.config(foreground="grey")
+            self.accuracy_label.config(state="disabled")
+            self.cardinality_combo.config(state="disabled")
+            self.cardinality_label.config(state="disabled")
 
     def start_investigation(self):
         self.cancel_flag.clear()
@@ -305,6 +332,18 @@ class DataMatch(InvestigationModuleBase):
         self.export_btn.config(state="disabled")
         self.progress_bar["value"] = 0
         self.results_data = []
+        
+        # Capture all tkinter variable values in the main thread to avoid threading issues
+        self._thread_params = {
+            "logic": self.match_logic_var.get(),
+            "primary_key": self.primary_key_var.get(),
+            "match_key": self.match_key_var.get(),
+            "should_pad": self.pad_numbers_var.get(),
+            "threshold": self.accuracy_var.get(),
+            "algo_name": self.algo_var.get(),
+            "cardinality_name": self.cardinality_var.get(),
+        }
+        
         threading.Thread(target=self._run_investigation_thread, daemon=True).start()
 
     def cancel_investigation(self):
@@ -317,10 +356,12 @@ class DataMatch(InvestigationModuleBase):
         self.safe_ui_call(self.progress_bar.config, maximum=len(self.primary_data))
         self.results_data = []
 
-        logic = self.match_logic_var.get()
-        primary_key = self.primary_key_var.get()
-        match_key = self.match_key_var.get()
-        should_pad = self.pad_numbers_var.get()
+        # Use parameters captured in main thread to avoid tkinter threading issues
+        params = self._thread_params
+        logic = params["logic"]
+        primary_key = params["primary_key"]
+        match_key = params["match_key"]
+        should_pad = params["should_pad"]
 
         if logic == "number":
             self.app.after(
@@ -377,49 +418,172 @@ class DataMatch(InvestigationModuleBase):
                 ),
             )
             match_choices = [row.get(match_key, "") for row in self.matching_data]
-            threshold = self.accuracy_var.get()
+            threshold = params["threshold"]
 
-            # --- NEW: Get the selected scorer from the map ---
-            selected_algo_name = self.algo_var.get()
-            # Default to WRatio if something goes wrong, though generic text keeps it safe
+            # Get the selected scorer from the map
+            selected_algo_name = params["algo_name"]
             scorer_func = self.ALGO_MAP.get(selected_algo_name, fuzz.WRatio)
-            # -------------------------------------------------
+            
+            # Get selected cardinality
+            cardinality_name = params["cardinality_name"]
+            cardinality = self.CARDINALITY_OPTIONS.get(cardinality_name, "one_to_many")
+            
+            # Use default processor for case-insensitive matching
+            from rapidfuzz.utils import default_process
 
-            for i, p_row in enumerate(self.primary_data):
-                if self.cancel_flag.is_set():
-                    break
+            if cardinality == "many_to_many":
+                # Original behaviour: all matches above threshold
+                for i, p_row in enumerate(self.primary_data):
+                    if self.cancel_flag.is_set():
+                        break
 
-                self.safe_update(
-                    self.status_var.set,
-                    f"Processing primary row {i + 1}/{len(self.primary_data)}...",
-                )
-                self.app.after(0, self.progress_bar.step, 1)
+                    self.safe_update(
+                        self.status_var.set,
+                        f"Processing primary row {i + 1}/{len(self.primary_data)}...",
+                    )
+                    self.app.after(0, self.progress_bar.step, 1)
 
-                p_name = p_row.get(primary_key, "")
-                if not p_name:
-                    continue
+                    p_name = p_row.get(primary_key, "")
+                    if not p_name:
+                        continue
 
-                matches = process.extract(
-                    p_name,
-                    match_choices,
-                    scorer=scorer_func,  # <--- CHANGED: Use the variable here
-                    limit=None,
-                    score_cutoff=threshold,
-                )
+                    matches = process.extract(
+                        p_name,
+                        match_choices,
+                        scorer=scorer_func,
+                        processor=default_process,
+                        limit=None,
+                        score_cutoff=threshold,
+                    )
 
-                if not matches:
-                    new_row = p_row.copy()
-                    new_row["match_score"] = 0
-                    self.results_data.append(new_row)
-                else:
-                    for match_string, score, index in matches:
+                    if not matches:
                         new_row = p_row.copy()
+                        new_row["match_score"] = 0
+                        self.results_data.append(new_row)
+                    else:
+                        for match_string, score, index in matches:
+                            new_row = p_row.copy()
+                            matched_row = self.matching_data[index]
+                            renamed_matched_row = {
+                                f"{key}_match": val for key, val in matched_row.items()
+                            }
+                            new_row.update(renamed_matched_row)
+                            new_row["match_score"] = round(score, 2)
+                            self.results_data.append(new_row)
+
+            elif cardinality == "one_to_many":
+                # Each primary record gets only its best match
+                for i, p_row in enumerate(self.primary_data):
+                    if self.cancel_flag.is_set():
+                        break
+
+                    self.safe_update(
+                        self.status_var.set,
+                        f"Processing primary row {i + 1}/{len(self.primary_data)}...",
+                    )
+                    self.app.after(0, self.progress_bar.step, 1)
+
+                    p_name = p_row.get(primary_key, "")
+                    if not p_name:
+                        new_row = p_row.copy()
+                        new_row["match_score"] = 0
+                        self.results_data.append(new_row)
+                        continue
+
+                    best_match = process.extractOne(
+                        p_name,
+                        match_choices,
+                        scorer=scorer_func,
+                        processor=default_process,
+                        score_cutoff=threshold,
+                    )
+
+                    new_row = p_row.copy()
+                    if best_match is None:
+                        new_row["match_score"] = 0
+                    else:
+                        match_string, score, index = best_match
                         matched_row = self.matching_data[index]
                         renamed_matched_row = {
                             f"{key}_match": val for key, val in matched_row.items()
                         }
                         new_row.update(renamed_matched_row)
                         new_row["match_score"] = round(score, 2)
+                    self.results_data.append(new_row)
+
+            elif cardinality == "one_to_one":
+                # Each matching record can only be used once (assigned to best primary)
+                self.safe_update(
+                    self.status_var.set,
+                    "Pass 1/2: Collecting all potential matches...",
+                )
+                
+                # Collect all candidate matches: (primary_idx, match_idx, score)
+                all_candidates = []
+                for i, p_row in enumerate(self.primary_data):
+                    if self.cancel_flag.is_set():
+                        break
+
+                    self.app.after(0, self.progress_bar.step, 0.5)
+
+                    p_name = p_row.get(primary_key, "")
+                    if not p_name:
+                        continue
+
+                    matches = process.extract(
+                        p_name,
+                        match_choices,
+                        scorer=scorer_func,
+                        processor=default_process,
+                        limit=None,
+                        score_cutoff=threshold,
+                    )
+
+                    for match_string, score, match_idx in matches:
+                        all_candidates.append((i, match_idx, score))
+
+                if self.cancel_flag.is_set():
+                    pass  # Will be handled after the elif block
+                else:
+                    self.safe_update(
+                        self.status_var.set,
+                        "Pass 2/2: Assigning best matches...",
+                    )
+                    
+                    # Sort by score descending - highest scores get priority
+                    all_candidates.sort(key=lambda x: x[2], reverse=True)
+                    
+                    # Track which matching records and primary records have been assigned
+                    used_match_indices = set()
+                    assigned_primary = {}  # primary_idx -> (match_idx, score)
+                    
+                    for primary_idx, match_idx, score in all_candidates:
+                        if match_idx in used_match_indices:
+                            continue  # This matching record already assigned
+                        if primary_idx in assigned_primary:
+                            continue  # This primary already has a match
+                        
+                        assigned_primary[primary_idx] = (match_idx, score)
+                        used_match_indices.add(match_idx)
+                    
+                    # Build results: all primary records, with matches where assigned
+                    for i, p_row in enumerate(self.primary_data):
+                        if self.cancel_flag.is_set():
+                            break
+                        
+                        self.app.after(0, self.progress_bar.step, 0.5)
+                        
+                        new_row = p_row.copy()
+                        if i in assigned_primary:
+                            match_idx, score = assigned_primary[i]
+                            matched_row = self.matching_data[match_idx]
+                            renamed_matched_row = {
+                                f"{key}_match": val for key, val in matched_row.items()
+                            }
+                            new_row.update(renamed_matched_row)
+                            new_row["match_score"] = round(score, 2)
+                        else:
+                            new_row["match_score"] = 0
                         self.results_data.append(new_row)
 
         if not self.cancel_flag.is_set():
