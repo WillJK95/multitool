@@ -1387,12 +1387,18 @@ class NetworkAnalytics(InvestigationModuleBase):
             text="Upload List...",
             command=self._upload_single_entity_list
         ).pack(side=tk.LEFT, padx=(10, 5))
-        
+        ttk.Label(row1, text="or").pack(side=tk.LEFT, padx=(5, 5))
+        ttk.Button(
+            row1,
+            text="Select from Network...",
+            command=lambda: self._open_network_entity_selector("single_list")
+        ).pack(side=tk.LEFT, padx=(0, 5))
+
         # Info tooltip
         info_label = ttk.Label(row1, text="ℹ️", foreground="blue", cursor="hand2", font=("", 11))
         info_label.pack(side=tk.LEFT, padx=(0, 10))
         Tooltip(info_label, self._get_entity_list_tooltip())
-        
+
         self.single_list_status = ttk.Label(row1, text="No list loaded", foreground="gray")
         self.single_list_status.pack(side=tk.LEFT)
         
@@ -1417,6 +1423,12 @@ class NetworkAnalytics(InvestigationModuleBase):
             text="Upload List A...",
             command=self._upload_list_a
         ).pack(side=tk.LEFT, padx=(10, 5))
+        ttk.Label(row_a, text="or").pack(side=tk.LEFT, padx=(5, 5))
+        ttk.Button(
+            row_a,
+            text="Select from Network...",
+            command=lambda: self._open_network_entity_selector("list_a")
+        ).pack(side=tk.LEFT, padx=(0, 5))
         info_label_a = ttk.Label(row_a, text="ℹ️", foreground="blue", cursor="hand2", font=("", 11))
         info_label_a.pack(side=tk.LEFT, padx=(0, 10))
         Tooltip(info_label_a, self._get_entity_list_tooltip())
@@ -1432,6 +1444,12 @@ class NetworkAnalytics(InvestigationModuleBase):
             text="Upload List B...",
             command=self._upload_list_b
         ).pack(side=tk.LEFT, padx=(10, 5))
+        ttk.Label(row_b, text="or").pack(side=tk.LEFT, padx=(5, 5))
+        ttk.Button(
+            row_b,
+            text="Select from Network...",
+            command=lambda: self._open_network_entity_selector("list_b")
+        ).pack(side=tk.LEFT, padx=(0, 5))
         info_label_b = ttk.Label(row_b, text="ℹ️", foreground="blue", cursor="hand2", font=("", 11))
         info_label_b.pack(side=tk.LEFT, padx=(0, 10))
         Tooltip(info_label_b, self._get_entity_list_tooltip())
@@ -1459,7 +1477,13 @@ class NetworkAnalytics(InvestigationModuleBase):
             text="Upload Suspects...",
             command=self._upload_lynchpin_suspects
         ).pack(side=tk.LEFT, padx=(10, 5))
-        
+        ttk.Label(row1, text="or").pack(side=tk.LEFT, padx=(5, 5))
+        ttk.Button(
+            row1,
+            text="Select from Network...",
+            command=lambda: self._open_network_entity_selector("lynchpin")
+        ).pack(side=tk.LEFT, padx=(0, 5))
+
         # Info tooltip
         info_label = ttk.Label(row1, text="ℹ️", foreground="blue", cursor="hand2", font=("", 11))
         info_label.pack(side=tk.LEFT, padx=(0, 10))
@@ -2784,6 +2808,284 @@ class NetworkAnalytics(InvestigationModuleBase):
                     entity_ids.add(entity_id)
         
         return entity_ids
+
+
+    def _open_network_entity_selector(self, target):
+        """Opens the Network Entity Selector window.
+
+        Provides a twin-pane interface for selecting nodes from the pruned
+        graph instead of uploading a CSV file.
+
+        Args:
+            target: One of "single_list", "list_a", "list_b", "lynchpin"
+                    indicating which state variable to populate on confirm.
+        """
+        pruned_graph = self._get_pruned_graph()
+        if not pruned_graph or pruned_graph.number_of_nodes() == 0:
+            messagebox.showwarning(
+                "No Network Data",
+                "No network data available. Please build the graph first."
+            )
+            return
+
+        # Collect all nodes from the pruned graph
+        all_nodes = {}
+        for node_id, attrs in pruned_graph.nodes(data=True):
+            all_nodes[node_id] = (
+                attrs.get("label", node_id),
+                attrs.get("type", "unknown"),
+            )
+
+        selected_ids = set()
+
+        # --- Create window ---
+        win = tk.Toplevel(self.winfo_toplevel())
+        win.title("Network Entity Selector")
+        win.geometry("950x600")
+        win.minsize(700, 400)
+        win.transient(self.winfo_toplevel())
+        win.grab_set()
+
+        # --- Main grid layout ---
+        main = ttk.Frame(win, padding=10)
+        main.pack(fill=tk.BOTH, expand=True)
+        main.columnconfigure(0, weight=1)
+        main.columnconfigure(1, weight=0)
+        main.columnconfigure(2, weight=1)
+        main.rowconfigure(1, weight=1)
+
+        # --- Left pane: Available Nodes ---
+        ttk.Label(main, text="Available Nodes", font=("", 10, "bold")).grid(
+            row=0, column=0, sticky="w", pady=(0, 2)
+        )
+
+        left_container = ttk.Frame(main)
+        left_container.grid(row=1, column=0, sticky="nsew", padx=(0, 5))
+
+        # Search entry
+        search_frame = ttk.Frame(left_container)
+        search_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(search_frame, text="Search:").pack(side=tk.LEFT, padx=(0, 5))
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=search_var)
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Left treeview with scrollbar
+        left_tree_frame = ttk.Frame(left_container)
+        left_tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        left_tree = ttk.Treeview(
+            left_tree_frame,
+            columns=("node", "type"),
+            show="headings",
+            selectmode="extended",
+        )
+        left_tree.heading("node", text="Node")
+        left_tree.heading("type", text="Type")
+        left_tree.column("node", width=280, minwidth=100)
+        left_tree.column("type", width=80, minwidth=60)
+
+        left_vsb = ttk.Scrollbar(
+            left_tree_frame, orient="vertical", command=left_tree.yview
+        )
+        left_tree.configure(yscrollcommand=left_vsb.set)
+        left_vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        left_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        left_count_var = tk.StringVar(value="0 nodes")
+        ttk.Label(left_container, textvariable=left_count_var, foreground="gray").pack(
+            anchor="w"
+        )
+
+        # --- Centre buttons ---
+        centre = ttk.Frame(main, padding=(10, 0))
+        centre.grid(row=1, column=1, sticky="ns")
+
+        spacer_top = ttk.Frame(centre)
+        spacer_top.pack(expand=True)
+
+        add_btn = ttk.Button(
+            centre,
+            text="Add to List \u00bb",
+            command=lambda: _add_to_selected(),
+        )
+        add_btn.pack(pady=(0, 5), fill=tk.X)
+
+        remove_btn = ttk.Button(
+            centre,
+            text="\u00ab Remove from List",
+            command=lambda: _remove_from_selected(),
+        )
+        remove_btn.pack(pady=(5, 0), fill=tk.X)
+
+        spacer_bottom = ttk.Frame(centre)
+        spacer_bottom.pack(expand=True)
+
+        # --- Right pane: Selected Nodes ---
+        ttk.Label(main, text="Selected Nodes", font=("", 10, "bold")).grid(
+            row=0, column=2, sticky="w", pady=(0, 2)
+        )
+
+        right_container = ttk.Frame(main)
+        right_container.grid(row=1, column=2, sticky="nsew", padx=(5, 0))
+
+        right_tree_frame = ttk.Frame(right_container)
+        right_tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        right_tree = ttk.Treeview(
+            right_tree_frame,
+            columns=("node", "type"),
+            show="headings",
+            selectmode="extended",
+        )
+        right_tree.heading("node", text="Node")
+        right_tree.heading("type", text="Type")
+        right_tree.column("node", width=280, minwidth=100)
+        right_tree.column("type", width=80, minwidth=60)
+
+        right_vsb = ttk.Scrollbar(
+            right_tree_frame, orient="vertical", command=right_tree.yview
+        )
+        right_tree.configure(yscrollcommand=right_vsb.set)
+        right_vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        right_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        right_count_var = tk.StringVar(value="0 selected")
+        ttk.Label(
+            right_container, textvariable=right_count_var, foreground="gray"
+        ).pack(anchor="w")
+
+        # --- Helper functions ---
+        def _populate_left(filter_text=""):
+            left_tree.delete(*left_tree.get_children())
+            count = 0
+            ft = filter_text.lower()
+            for node_id in sorted(
+                all_nodes, key=lambda nid: all_nodes[nid][0].lower()
+            ):
+                if node_id in selected_ids:
+                    continue
+                label, ntype = all_nodes[node_id]
+                if ft and ft not in label.lower() and ft not in node_id.lower():
+                    continue
+                left_tree.insert("", tk.END, iid=node_id, values=(label, ntype))
+                count += 1
+            left_count_var.set(f"{count} node{'s' if count != 1 else ''}")
+
+        def _populate_right():
+            right_tree.delete(*right_tree.get_children())
+            for node_id in sorted(
+                selected_ids, key=lambda nid: all_nodes[nid][0].lower()
+            ):
+                label, ntype = all_nodes[node_id]
+                right_tree.insert("", tk.END, iid=node_id, values=(label, ntype))
+            n = len(selected_ids)
+            right_count_var.set(f"{n} selected")
+
+        def _add_to_selected():
+            for item_id in left_tree.selection():
+                selected_ids.add(item_id)
+            _populate_left(search_var.get())
+            _populate_right()
+
+        def _remove_from_selected():
+            for item_id in right_tree.selection():
+                selected_ids.discard(item_id)
+            _populate_left(search_var.get())
+            _populate_right()
+
+        def _on_search(*_args):
+            _populate_left(search_var.get())
+
+        search_var.trace_add("write", _on_search)
+
+        def _export_csv():
+            if not selected_ids:
+                messagebox.showwarning(
+                    "No Selection", "No nodes to export.", parent=win
+                )
+                return
+            path = filedialog.asksaveasfilename(
+                title="Export Selected Nodes",
+                defaultextension=".csv",
+                filetypes=[("CSV Files", "*.csv")],
+                parent=win,
+            )
+            if not path:
+                return
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["ID", "Label"])
+                for node_id in sorted(
+                    selected_ids, key=lambda nid: all_nodes[nid][0].lower()
+                ):
+                    label, _ = all_nodes[node_id]
+                    writer.writerow([node_id, label])
+            messagebox.showinfo(
+                "Export Complete",
+                f"Exported {len(selected_ids)} nodes to:\n{path}",
+                parent=win,
+            )
+
+        def _confirm():
+            if not selected_ids:
+                messagebox.showwarning(
+                    "No Selection",
+                    "Please select at least one node.",
+                    parent=win,
+                )
+                return
+
+            ids = set(selected_ids)
+
+            if target == "single_list":
+                self.analyse_entity_list = ids
+                self.analyse_entity_list_path = None
+                self.single_list_status.config(
+                    text=f"{len(ids)} entities selected from network",
+                    foreground="green",
+                )
+            elif target == "list_a":
+                self.cohort_a_ids = ids
+                self.list_a_status.config(
+                    text=f"{len(ids)} entities selected from network",
+                    foreground="green",
+                )
+            elif target == "list_b":
+                self.cohort_b_ids = ids
+                self.list_b_status.config(
+                    text=f"{len(ids)} entities selected from network",
+                    foreground="green",
+                )
+            elif target == "lynchpin":
+                self.lynchpin_suspects = ids
+                self.lynchpin_suspects_path = None
+                self.lynchpin_list_status.config(
+                    text=f"{len(ids)} suspects selected from network",
+                    foreground="green",
+                )
+
+            self._update_visualise_checkbox_state()
+            win.destroy()
+
+        # --- Bottom button bar ---
+        bottom = ttk.Frame(win, padding=(10, 5, 10, 10))
+        bottom.pack(fill=tk.X)
+
+        ttk.Button(bottom, text="Export to CSV", command=_export_csv).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(bottom, text="Confirm", command=_confirm).pack(
+            side=tk.RIGHT, padx=(5, 0)
+        )
+        ttk.Button(bottom, text="Cancel", command=win.destroy).pack(side=tk.RIGHT)
+
+        # --- Initial populate ---
+        _populate_left()
+
+        # Maintain focus until closed
+        win.focus_set()
+        win.wait_window()
 
 
     # --- Connection Finding ---
