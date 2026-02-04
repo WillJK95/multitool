@@ -660,6 +660,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.converter_headers = []
         self.linked_attribute_widgets = []
         self.linked_attribute_counter = 0
+        self._on_converter_tab = False  # Track if Data Converter tab is active
         
         # --- Tabbed Interface Setup ---
         self.notebook = ttk.Notebook(self.content_frame)
@@ -677,14 +678,51 @@ class NetworkAnalytics(InvestigationModuleBase):
         
         # Bind tab change event to reset scroll position when switching tabs
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        # Bind scroll region enforcer (will only act when on Data Converter tab)
+        self.scroller.canvas.bind("<Configure>", self._enforce_outer_scroll_limit, add="+")
+        self.scroller.scrollable_frame.bind("<Configure>", self._enforce_outer_scroll_limit, add="+")
         
     def _on_tab_changed(self, event=None):
-        """Handle tab changes - reset scroll position for Data Converter tab."""
+        """Handle tab changes - reset scroll position and manage outer scroll region."""
         selected_tab = self.notebook.select()
-        # Check if Data Converter tab is now selected
+         # Force an immediate geometry flush so the outer frame shrinks
+        # to fit the newly-visible tab before we touch scroll regions
+        self.update_idletasks()
         if selected_tab == str(self.converter_tab):
-            # Reset scroll position to top
-            self.converter_canvas.yview_moveto(0)
+            self._on_converter_tab = True
+ 
+            # Lock the outer scroller completely.  The ScrollableFrame's own
+            # handlers set the frame-item height to winfo_reqheight() which is
+            # polluted by the hidden Network Analytics tab content.  We override
+            # that here (and on every subsequent <Configure>) to pin the frame
+            # item and scroll region to the visible canvas size.
+            # The Data Converter tab has its own converter_canvas for scrolling.
+            self._lock_outer_scroll()
+        else:
+            self._on_converter_tab = False
+            # Network Analytics tab - use normal scroll region calculation
+            self._update_scrollregion()
+ 
+    def _lock_outer_scroll(self):
+        """Pin the outer scroller so it cannot scroll (converter tab is active)."""
+        canvas_w = self.scroller.canvas.winfo_width()
+        canvas_h = self.scroller.canvas.winfo_height()
+        self.scroller.canvas.itemconfig(self.scroller.frame_id, height=canvas_h)
+        self.scroller.canvas.configure(scrollregion=(0, 0, canvas_w, canvas_h))
+        self.scroller.canvas.yview_moveto(0)
+ 
+    def _enforce_outer_scroll_limit(self, event=None):
+        """Re-lock the outer scroller after ScrollableFrame's own handlers run.
+ 
+        Bound with add='+' so it fires *after* the original <Configure>
+        handlers that set the frame-item height to the polluted
+        winfo_reqheight().  We simply re-pin everything to the visible
+        canvas size.
+        """
+        if self._on_converter_tab and self.winfo_exists():
+            self._lock_outer_scroll()
+
+
         
     def _setup_analytics_tab(self):
         """Builds the network analytics UI with collapsible sections."""
