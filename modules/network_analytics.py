@@ -1,7 +1,9 @@
 # module/network_analytics.py
 
 import csv
+import gzip
 import html
+import json
 import math
 import os
 import re
@@ -731,7 +733,32 @@ class NetworkAnalytics(InvestigationModuleBase):
         # Simple frame for sections (no canvas/scrollbar)
         self.sections_frame = ttk.Frame(container)
         self.sections_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
+
+        # --- Save / Load buttons ---
+        save_load_frame = ttk.Frame(self.sections_frame)
+        save_load_frame.pack(fill=tk.X, pady=(0, 5))
+
+        ttk.Button(
+            save_load_frame,
+            text="Save Network...",
+            command=self._save_network_state,
+            bootstyle="outline"
+        ).pack(side=tk.LEFT, padx=(0, 5))
+
+        ttk.Button(
+            save_load_frame,
+            text="Load Network...",
+            command=self._load_network_state,
+            bootstyle="outline"
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        self.save_load_status_label = ttk.Label(
+            save_load_frame,
+            text="",
+            foreground="gray"
+        )
+        self.save_load_status_label.pack(side=tk.LEFT)
+
         # --- Section 1: Data Sources ---
         self.data_sources_section = CollapsibleSection(
             self.sections_frame,
@@ -4207,11 +4234,12 @@ class NetworkAnalytics(InvestigationModuleBase):
     def clear_files(self):
         """Modified: Resets all state and disables sections."""
         for f in self.source_files:
-            if "Seed-" in f and os.path.exists(f):
+            basename = os.path.basename(f)
+            if (basename.startswith("Seed-") or basename.startswith("mtn-")) and os.path.exists(f):
                 try:
                     os.remove(f)
                 except OSError as e:
-                    log_message(f"Could not delete temp seed file {f}: {e}")
+                    log_message(f"Could not delete temp file {f}: {e}")
 
         self.source_files = []
         self.file_listbox.delete(0, tk.END)
@@ -4234,6 +4262,392 @@ class NetworkAnalytics(InvestigationModuleBase):
         # Reset exclusion labels
         self.hc_status_label.config(text="No exclusions", foreground="gray")
         self.pn_status_label.config(text="No exclusions", foreground="gray")
+
+
+    # ------------------------------------------------------------------
+    #  Save / Load network state
+    # ------------------------------------------------------------------
+
+    def _save_network_state(self):
+        """Save the current network state to a .mtn file."""
+        if not self.graph_built:
+            messagebox.showwarning(
+                "Nothing to Save",
+                "There is no network to save. Please load data and build the graph first."
+            )
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            title="Save Network",
+            defaultextension=".mtn",
+            filetypes=[("Multitool Network", "*.mtn")]
+        )
+        if not filepath:
+            return
+
+        try:
+            save_data = {
+                "version": 1,
+                "saved_at": datetime.datetime.now().isoformat(),
+
+                # Source files - embed the actual CSV data
+                "source_files": self._serialize_source_files(),
+
+                # Graph data
+                "graph": self._serialize_graph(),
+                "graph_built": self.graph_built,
+
+                # Exclusions
+                "exclusions": {
+                    "highly_connected": list(self.highly_connected_exclusions),
+                    "peripheral": list(self.peripheral_exclusions),
+                    "manual": list(self.manual_exclusions),
+                },
+
+                # Analyse state
+                "analyse_mode": self.analyse_mode_var.get(),
+                "analyse_state": {
+                    "entity_list": list(self.analyse_entity_list) if self.analyse_entity_list else None,
+                    "entity_list_path": self.analyse_entity_list_path,
+                    "cohort_a_ids": list(self.cohort_a_ids),
+                    "cohort_b_ids": list(self.cohort_b_ids),
+                    "lynchpin_suspects": list(self.lynchpin_suspects),
+                    "lynchpin_suspects_path": self.lynchpin_suspects_path,
+                    "lynchpin_results": self.lynchpin_results,
+                    "lynchpin_suspects_in_graph": list(self.lynchpin_suspects_in_graph),
+                },
+
+                # Hidden links
+                "hidden_links": self.discovered_hidden_links,
+
+                # Visualisation settings
+                "visualisation_settings": {
+                    "distinguish": self.distinguish_var.get(),
+                    "hide_isolated": self.hide_isolated_var.get(),
+                    "show_highlighted_only": self.show_highlighted_only_var.get(),
+                    "show_inferred": self.show_inferred_var.get(),
+                    "scale_by_connections": self.scale_by_connections_var.get(),
+                    "isolated_companies": self.isolated_companies_var.get(),
+                    "isolated_persons": self.isolated_persons_var.get(),
+                    "isolated_addresses": self.isolated_addresses_var.get(),
+                },
+
+                # Analysis options
+                "analysis_options": {
+                    "max_hops": self.max_hops_var.get(),
+                    "shortest_only": self.shortest_only_var.get(),
+                    "enforce_direction": self.enforce_direction_var.get(),
+                    "lynchpin_type": self.lynchpin_type_var.get(),
+                    "lynchpin_min_connections": self.lynchpin_min_connections_var.get(),
+                },
+
+                # Refine settings
+                "refine_settings": {
+                    "highly_connected_threshold": self.highly_connected_threshold_var.get(),
+                    "peripheral_threshold": self.peripheral_threshold_var.get(),
+                    "proximity_radius": self.proximity_radius_var.get(),
+                },
+            }
+
+            # Write with gzip compression
+            with gzip.open(filepath, "wt", encoding="utf-8") as f:
+                json.dump(save_data, f)
+
+            filename = os.path.basename(filepath)
+            self.save_load_status_label.config(text=f"Saved: {filename}")
+            messagebox.showinfo("Save Complete", f"Network saved to {filename}")
+
+        except Exception as e:
+            log_message(f"Error saving network state: {e}")
+            messagebox.showerror("Save Error", f"Could not save network: {e}")
+
+    def _serialize_source_files(self):
+        """Read and serialize all source file data for embedding in save file."""
+        source_data = {}
+        source_names = []
+
+        for filepath in self.source_files:
+            basename = os.path.basename(filepath)
+            source_names.append(basename)
+
+            try:
+                rows = []
+                with open(filepath, "r", encoding="utf-8-sig") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        rows.append(dict(row))
+                source_data[basename] = rows
+            except Exception as e:
+                log_message(f"Warning: Could not read source file {basename} for save: {e}")
+                source_data[basename] = []
+
+        return {"names": source_names, "data": source_data}
+
+    def _serialize_graph(self):
+        """Serialize the NetworkX graph to a JSON-compatible dict."""
+        graph_data = nx.node_link_data(self.full_graph)
+
+        # Convert sets in node attributes to lists for JSON serialization
+        for node in graph_data.get("nodes", []):
+            if "source_files" in node and isinstance(node["source_files"], set):
+                node["source_files"] = list(node["source_files"])
+
+        return graph_data
+
+    def _load_network_state(self):
+        """Load a previously saved network state from a .mtn file."""
+        filepath = filedialog.askopenfilename(
+            title="Load Network",
+            filetypes=[("Multitool Network", "*.mtn")]
+        )
+        if not filepath:
+            return
+
+        # Warn if there's existing work
+        if self.graph_built or self.source_files:
+            if not messagebox.askyesno(
+                "Load Network",
+                "Loading a saved network will replace your current work.\n\n"
+                "Are you sure you want to continue?"
+            ):
+                return
+
+        try:
+            # Try gzip first, fall back to plain JSON
+            try:
+                with gzip.open(filepath, "rt", encoding="utf-8") as f:
+                    save_data = json.load(f)
+            except gzip.BadGzipFile:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    save_data = json.load(f)
+
+            # Validate version
+            version = save_data.get("version", 0)
+            if version < 1:
+                messagebox.showerror(
+                    "Invalid File",
+                    "This file does not appear to be a valid Multitool Network save file."
+                )
+                return
+
+            # Clear existing state
+            self.clear_files()
+
+            # Reset analyse state that clear_files doesn't cover
+            self.analyse_entity_list = None
+            self.analyse_entity_list_path = None
+            self.cohort_a_ids = set()
+            self.cohort_b_ids = set()
+            self.lynchpin_suspects = set()
+            self.lynchpin_suspects_path = None
+            self.lynchpin_results = []
+            self.lynchpin_suspects_in_graph = set()
+            self.discovered_hidden_links = []
+
+            # Reset analyse UI labels
+            self.single_list_status.config(text="No list loaded", foreground="gray")
+            self.list_a_status.config(text="No list loaded", foreground="gray")
+            self.list_b_status.config(text="No list loaded", foreground="gray")
+            self.lynchpin_list_status.config(text="No list loaded", foreground="gray")
+            self.hidden_links_status.config(
+                text="No hidden links discovered yet.", foreground="gray"
+            )
+            self.view_hidden_results_btn.config(state="disabled")
+            self.show_inferred_check.config(state="disabled")
+
+            # --- Restore state from save data ---
+
+            # Source files
+            self._restore_source_files(save_data.get("source_files", {}))
+
+            # Graph
+            self._restore_graph(save_data.get("graph", {}))
+            self.graph_built = save_data.get("graph_built", False)
+            self.files_changed_since_build = False
+
+            # Exclusions
+            exclusions = save_data.get("exclusions", {})
+            self.highly_connected_exclusions = set(exclusions.get("highly_connected", []))
+            self.peripheral_exclusions = set(exclusions.get("peripheral", []))
+            self.manual_exclusions = set(exclusions.get("manual", []))
+
+            # Analyse state
+            analyse_state = save_data.get("analyse_state", {})
+            entity_list = analyse_state.get("entity_list")
+            self.analyse_entity_list = set(entity_list) if entity_list else None
+            self.analyse_entity_list_path = analyse_state.get("entity_list_path")
+            self.cohort_a_ids = set(analyse_state.get("cohort_a_ids", []))
+            self.cohort_b_ids = set(analyse_state.get("cohort_b_ids", []))
+            self.lynchpin_suspects = set(analyse_state.get("lynchpin_suspects", []))
+            self.lynchpin_suspects_path = analyse_state.get("lynchpin_suspects_path")
+            self.lynchpin_results = analyse_state.get("lynchpin_results", [])
+            self.lynchpin_suspects_in_graph = set(
+                analyse_state.get("lynchpin_suspects_in_graph", [])
+            )
+
+            # Hidden links
+            self.discovered_hidden_links = save_data.get("hidden_links", [])
+
+            # Visualisation settings
+            vis = save_data.get("visualisation_settings", {})
+            self.distinguish_var.set(vis.get("distinguish", False))
+            self.hide_isolated_var.set(vis.get("hide_isolated", False))
+            self.show_highlighted_only_var.set(vis.get("show_highlighted_only", False))
+            self.show_inferred_var.set(vis.get("show_inferred", False))
+            self.scale_by_connections_var.set(vis.get("scale_by_connections", False))
+            self.isolated_companies_var.set(vis.get("isolated_companies", True))
+            self.isolated_persons_var.set(vis.get("isolated_persons", False))
+            self.isolated_addresses_var.set(vis.get("isolated_addresses", False))
+
+            # Analysis options
+            opts = save_data.get("analysis_options", {})
+            self.max_hops_var.set(opts.get("max_hops", 10))
+            self.shortest_only_var.set(opts.get("shortest_only", True))
+            self.enforce_direction_var.set(opts.get("enforce_direction", False))
+            self.lynchpin_type_var.set(opts.get("lynchpin_type", "all"))
+            self.lynchpin_min_connections_var.set(opts.get("lynchpin_min_connections", 2))
+
+            # Refine settings
+            refine = save_data.get("refine_settings", {})
+            self.highly_connected_threshold_var.set(
+                refine.get("highly_connected_threshold", "50")
+            )
+            self.peripheral_threshold_var.set(refine.get("peripheral_threshold", "2"))
+            self.proximity_radius_var.set(refine.get("proximity_radius", "1.0"))
+
+            # Analyse mode
+            self.analyse_mode_var.set(save_data.get("analyse_mode", "two_entities"))
+
+            # --- Update UI to reflect loaded state ---
+            self._restore_ui_state(save_data, filepath)
+
+            filename = os.path.basename(filepath)
+            self.save_load_status_label.config(text=f"Loaded: {filename}")
+            messagebox.showinfo("Load Complete", f"Network loaded from {filename}")
+
+        except json.JSONDecodeError:
+            messagebox.showerror(
+                "Invalid File",
+                "This file does not appear to be a valid Multitool Network save file."
+            )
+        except Exception as e:
+            log_message(f"Error loading network state: {e}")
+            messagebox.showerror("Load Error", f"Could not load network: {e}")
+
+    def _restore_source_files(self, source_files_data):
+        """Restore source files from embedded data in save file."""
+        names = source_files_data.get("names", [])
+        data = source_files_data.get("data", {})
+
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+
+        for name in names:
+            rows = data.get(name, [])
+            if not rows:
+                continue
+
+            # Write to temp file in CONFIG_DIR with mtn- prefix
+            temp_path = os.path.join(CONFIG_DIR, f"mtn-{name}")
+            try:
+                headers = list(rows[0].keys())
+                with open(temp_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=headers)
+                    writer.writeheader()
+                    writer.writerows(rows)
+
+                self.source_files.append(temp_path)
+
+                # Determine prefix for listbox display
+                if name.startswith("Seed-"):
+                    self.file_listbox.insert(tk.END, f"SEED: {name}")
+                else:
+                    self.file_listbox.insert(tk.END, f"FILE: {name}")
+
+            except Exception as e:
+                log_message(f"Warning: Could not restore source file {name}: {e}")
+
+    def _restore_graph(self, graph_data):
+        """Restore the NetworkX graph from saved data."""
+        if not graph_data:
+            return
+
+        # Convert source_files lists back to sets in node attributes
+        for node in graph_data.get("nodes", []):
+            if "source_files" in node and isinstance(node["source_files"], list):
+                node["source_files"] = set(node["source_files"])
+
+        self.full_graph = nx.node_link_graph(graph_data)
+
+    def _restore_ui_state(self, save_data, filepath):
+        """Update all UI elements to reflect the loaded network state."""
+        filename = os.path.basename(filepath)
+
+        if self.source_files:
+            self.refine_section.set_enabled(True)
+
+        if self.graph_built:
+            # Enable downstream sections
+            self.refine_section.set_enabled(True)
+            self.analyse_section.set_enabled(True)
+            self.visualise_section.set_enabled(True)
+
+            # Update Build & Refine status
+            self._update_section_header_status()
+
+            # Populate node dropdowns
+            self._populate_node_dropdowns()
+
+            # Update exclusion labels
+            self._update_exclusion_status_labels()
+
+        # Show loaded-from indicator in data sources section
+        self.data_sources_section.set_status(f"Loaded from: {filename}")
+
+        # Update analyse mode UI (shows/hides the correct sub-frame)
+        self._update_analyse_mode_ui()
+
+        # Update analyse status labels
+        if self.analyse_entity_list:
+            count = len(self.analyse_entity_list)
+            path_display = self.analyse_entity_list_path or "(from save file)"
+            self.single_list_status.config(
+                text=f"{count} entities loaded ({path_display})",
+                foreground="green"
+            )
+
+        if self.cohort_a_ids:
+            self.list_a_status.config(
+                text=f"{len(self.cohort_a_ids)} entities loaded",
+                foreground="green"
+            )
+
+        if self.cohort_b_ids:
+            self.list_b_status.config(
+                text=f"{len(self.cohort_b_ids)} entities loaded",
+                foreground="green"
+            )
+
+        if self.lynchpin_suspects:
+            self.lynchpin_list_status.config(
+                text=f"{len(self.lynchpin_suspects)} suspects loaded",
+                foreground="green"
+            )
+
+        # Update hidden links status
+        if self.discovered_hidden_links:
+            count = len(self.discovered_hidden_links)
+            self.hidden_links_status.config(
+                text=f"{count} inferred link(s) found.",
+                foreground="green"
+            )
+            self.view_hidden_results_btn.config(state="normal")
+            self.show_inferred_check.config(state="normal")
+
+        # Update isolated network checkbox UI
+        self._toggle_isolated_options()
+
+        # Update visualise checkbox state
+        self._update_visualise_checkbox_state()
 
 
     def _get_pruned_graph(self):
