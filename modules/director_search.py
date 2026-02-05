@@ -345,7 +345,7 @@ class DirectorSearch(InvestigationModuleBase):
         threading.Thread(target=self._run_search, daemon=True).start()
 
     def _run_search(self):
-
+        """Phase 1: Find matching officers, then hand off to main thread."""
         try:
             officers, error = self._find_matching_officers(
                 self.full_name_var.get(), self.year_var.get(), self.month_var.get()
@@ -353,28 +353,39 @@ class DirectorSearch(InvestigationModuleBase):
             if error:
                 raise ValueError(error)
 
-            # --- NEW: Add a warning for large result sets ---
-            if len(officers) > 200: # Set a reasonable threshold
-                confirm = messagebox.askyesno(
-                    "Large Search Warning",
-                    f"This search returned {len(officers)} potential officers.\n\n"
-                    "Fetching all appointments will be slow and may take several minutes.\n\n"
-                    "Do you wish to continue?",
-                    icon="warning"
-                )
-                if not confirm:
-                    # User chose to cancel, so we abort the operation gracefully.
-                    self.after(100, self._finish_search)
-                    self.app.after(0, lambda: self.status_var.set("Search aborted by user. Please refine your search criteria."))
-                    return # Stop the function here
+            # Hand off to main thread for possible confirmation dialog
+            self.app.after(0, lambda: self._on_officers_found(officers))
 
-            MAX_WORKERS = 2  # Respect API rate limits
-            self.app.after(
-                0,
-                lambda: self.status_var.set(
-                    f"Found {len(officers)} potential officers. Fetching appointments..."
-                ),
+        except Exception as e:
+            self.app.after(0, lambda: messagebox.showerror("Error", str(e)))
+            self.after(100, self._finish_search)
+
+    def _on_officers_found(self, officers):
+        """Main-thread callback: confirm large result sets, then start phase 2."""
+        if len(officers) > 200:
+            confirm = messagebox.askyesno(
+                "Large Search Warning",
+                f"This search returned {len(officers)} potential officers.\n\n"
+                "Fetching all appointments will be slow and may take several minutes.\n\n"
+                "Do you wish to continue?",
+                icon="warning"
             )
+            if not confirm:
+                self.status_var.set("Search aborted by user. Please refine your search criteria.")
+                self._finish_search()
+                return
+
+        self.status_var.set(
+            f"Found {len(officers)} potential officers. Fetching appointments..."
+        )
+        threading.Thread(
+            target=self._fetch_appointments, args=(officers,), daemon=True
+        ).start()
+
+    def _fetch_appointments(self, officers):
+        """Phase 2 (threaded): Fetch appointments for all matched officers."""
+        try:
+            MAX_WORKERS = 2  # Respect API rate limits
 
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 futures = {
@@ -406,7 +417,7 @@ class DirectorSearch(InvestigationModuleBase):
             self.after(100, self._populate_results)
 
         except Exception as e:
-            messagebox.showerror("Error", str(e))
+            self.app.after(0, lambda: messagebox.showerror("Error", str(e)))
         finally:
             self.after(100, self._finish_search)
 
@@ -648,8 +659,10 @@ class DirectorSearch(InvestigationModuleBase):
                 self.after(100, self._generate_and_open_graph, graph_object)
         except Exception as e:
             log_message(f"Visual graph generation failed: {e}")
-            messagebox.showerror(
-                "Error", f"An error occurred during graph generation: {e}"
+            self.app.after(
+                0, lambda: messagebox.showerror(
+                    "Error", f"An error occurred during graph generation: {e}"
+                )
             )
         finally:
             self.after(200, self._finish_graph_generation)
@@ -662,8 +675,10 @@ class DirectorSearch(InvestigationModuleBase):
                 self.after(100, self._export_graph_to_csv, graph_object)
         except Exception as e:
             log_message(f"Graph data export failed: {e}")
-            messagebox.showerror(
-                "Error", f"An error occurred during graph data export: {e}"
+            self.app.after(
+                0, lambda: messagebox.showerror(
+                    "Error", f"An error occurred during graph data export: {e}"
+                )
             )
         finally:
             self.after(200, self._finish_graph_generation)
