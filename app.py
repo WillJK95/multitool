@@ -54,7 +54,8 @@ class App(tk.Tk):
         super().__init__()
         
         self.title("Multi-Tool")
-        self.geometry("750x875")
+        self.geometry("1100x650")
+        self.minsize(1100, 650)
         
         # Initialize ttkbootstrap style
         self.style = tb.Style(theme="superhero")
@@ -393,13 +394,13 @@ class App(tk.Tk):
         # Companies House
         ch_frame = ttk.LabelFrame(frame, text="Companies House API Key", padding=10)
         ch_frame.pack(fill=tk.X, pady=5)
-        ch_entry = ttk.Entry(ch_frame, width=50)
+        ch_entry = ttk.Entry(ch_frame, width=50, show="*")
         ch_entry.pack(pady=5)
         
         # Charity Commission
         cc_frame = ttk.LabelFrame(frame, text="Charity Commission API Key", padding=10)
         cc_frame.pack(fill=tk.X, pady=5)
-        cc_entry = ttk.Entry(cc_frame, width=50)
+        cc_entry = ttk.Entry(cc_frame, width=50, show="*")
         cc_entry.pack(pady=5)
         
         def save_and_continue():
@@ -440,7 +441,6 @@ class App(tk.Tk):
         self.unbind("<Return>")
         self.clear_container()
         self.title("Multi-Tool - Dashboard")
-        self.geometry("1100x650")
 
         # Define Button States
         ch_enabled = tk.NORMAL if self.api_key else tk.DISABLED
@@ -855,7 +855,6 @@ class App(tk.Tk):
     
     def show_director_investigation(self) -> None:
         """Show the Director Search module."""
-        self.geometry("1200x600")
         self.clear_container()
         # Import here to avoid circular imports and speed up startup
         from .modules.director_search import DirectorSearch
@@ -863,28 +862,24 @@ class App(tk.Tk):
     
     def show_ubo_investigation(self) -> None:
         """Show the UBO Tracer module."""
-        self.geometry("800x600")
         self.clear_container()
         from .modules.ubo_tracer import UltimateBeneficialOwnershipTracer
         UltimateBeneficialOwnershipTracer(self, self.api_key, self.show_main_menu, self.ch_token_bucket)
     
     def show_grants_investigation(self) -> None:
         """Show the Grants Search module."""
-        self.geometry("800x600")
         self.clear_container()
         from .modules.grants_search import GrantsSearch
         GrantsSearch(self, self.api_key, self.show_main_menu)
     
     def show_data_match_investigation(self) -> None:
         """Show the Data Match module."""
-        self.geometry("800x600")
         self.clear_container()
         from .modules.data_match import DataMatch
         DataMatch(self, self.show_main_menu, self.api_key)
     
     def show_network_graph_creator(self) -> None:
         """Show the Network Analytics module."""
-        self.geometry("900x800")
         self.clear_container()
         from .modules.network_analytics import NetworkAnalytics
         NetworkAnalytics(
@@ -897,14 +892,12 @@ class App(tk.Tk):
     
     def show_enhanced_dd(self) -> None:
         """Show the Enhanced Due Diligence module."""
-        self.geometry("900x850")
         self.clear_container()
         from .modules.enhanced_dd import EnhancedDueDiligence
         EnhancedDueDiligence(self, self.api_key, self.show_main_menu, self.ch_token_bucket)
     
     def show_unified_search(self) -> None:
         """Show the Unified Search module."""
-        self.geometry("1100x700")
         self.clear_container()
         from .modules.unified_search import CompanyCharitySearch
         CompanyCharitySearch(
@@ -918,7 +911,6 @@ class App(tk.Tk):
     def show_contracts_finder(self):
         """Show the Contracts Finder module."""
         from .modules.contracts_finder import ContractsFinderInvestigation
-        self.geometry("800x600")
         self.clear_container()
         ContractsFinderInvestigation(
             self,

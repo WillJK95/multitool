@@ -259,44 +259,81 @@ class InvestigationModuleBase(ttk.Frame):
     def generic_export_csv(self, headers: List[str]) -> None:
         """
         Export results data to a CSV file.
-        
+
+        The file dialog runs on the main thread (Tk requirement). The actual
+        CSV writing is offloaded to a background thread so the GUI stays
+        responsive. A transient "Exporting..." label is shown while the
+        thread is alive; ``after()`` polls for completion and displays the
+        result messagebox back on the main thread (Tk is not thread-safe).
+
         Args:
             headers: List of column headers to include in export
         """
         if not self.results_data:
             messagebox.showinfo("No Data", "There is no data to export.")
             return
-        
+
         filepath = filedialog.asksaveasfilename(
             defaultextension=".csv",
             filetypes=[("CSV files", "*.csv")]
         )
-        
+
         if not filepath:
             return
-        
-        try:
-            with open(filepath, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(
-                    f,
-                    fieldnames=headers,
-                    extrasaction="ignore"
+
+        # Snapshot data so the background thread never touches Tk state
+        rows_snapshot = list(self.results_data)
+        row_count = len(rows_snapshot)
+        basename = os.path.basename(filepath)
+
+        # Mutable container for the worker to report its outcome
+        result: Dict[str, Any] = {}
+
+        def _write_csv():
+            try:
+                with open(filepath, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(
+                        f,
+                        fieldnames=headers,
+                        extrasaction="ignore"
+                    )
+                    writer.writeheader()
+                    writer.writerows(rows_snapshot)
+                result["success"] = True
+            except IOError as e:
+                result["error"] = str(e)
+
+        # Show a transient status label
+        status_label = ttk.Label(
+            self, text="Exporting\u2026", font=("Helvetica", 10, "italic")
+        )
+        status_label.pack(pady=2)
+
+        worker = threading.Thread(target=_write_csv, daemon=True)
+        worker.start()
+
+        def _poll_worker():
+            if worker.is_alive():
+                self.after(100, _poll_worker)
+                return
+            # Worker finished — safe to touch Tk again
+            status_label.destroy()
+            if result.get("success"):
+                log_message(
+                    f"Successfully exported {row_count} rows to {basename}."
                 )
-                writer.writeheader()
-                writer.writerows(self.results_data)
-            
-            log_message(
-                f"Successfully exported {len(self.results_data)} rows "
-                f"to {os.path.basename(filepath)}."
-            )
-            messagebox.showinfo(
-                "Success",
-                f"Data exported successfully to {os.path.basename(filepath)}"
-            )
-            
-        except IOError as e:
-            log_message(f"Export failed: {e}")
-            messagebox.showerror("Export Error", f"Could not write to file: {e}")
+                messagebox.showinfo(
+                    "Success",
+                    f"Data exported successfully to {basename}"
+                )
+            else:
+                err = result.get("error", "Unknown error")
+                log_message(f"Export failed: {err}")
+                messagebox.showerror(
+                    "Export Error", f"Could not write to file: {err}"
+                )
+
+        self.after(100, _poll_worker)
     
     def _update_scrollregion(self) -> None:
         def update():
