@@ -120,17 +120,51 @@ class InvestigationModuleBase(ttk.Frame):
             )
             help_btn.grid(row=0, column=2, sticky="e")
     
+    def _tracked_after(self, ms: int, func: Callable, *args, **kwargs) -> Optional[str]:
+        """
+        Schedule a callback via after() and track its ID for cancellation.
+
+        The wrapper automatically removes the ID from ``_after_ids`` once the
+        callback has executed, preventing the list from growing indefinitely.
+
+        Args:
+            ms: Delay in milliseconds before executing the callback
+            func: Function to schedule
+            *args: Positional arguments forwarded to *func*
+            **kwargs: Keyword arguments forwarded to *func*
+
+        Returns:
+            The after-ID string, or None if the widget no longer exists.
+        """
+        if not self.winfo_exists():
+            return None
+
+        after_id_holder: List[str] = []
+
+        def _wrapper():
+            try:
+                func(*args, **kwargs)
+            finally:
+                # Remove our own ID so the list stays bounded
+                try:
+                    self._after_ids.remove(after_id_holder[0])
+                except ValueError:
+                    pass  # Already removed (e.g. via safe_go_back)
+
+        after_id = self.after(ms, _wrapper)
+        after_id_holder.append(after_id)
+        self._after_ids.append(after_id)
+        return after_id
+
     def _schedule_update(self, func: Callable, *args) -> None:
         """
         Schedule a function to run and track its ID for cancellation.
-        
+
         Args:
             func: Function to schedule
             *args: Arguments to pass to the function
         """
-        if self.winfo_exists():
-            after_id = self.after(0, func, *args)
-            self._after_ids.append(after_id)
+        self._tracked_after(0, func, *args)
     
     def show_module_help(self) -> None:
         """Display the help window for this module."""
@@ -164,21 +198,20 @@ class InvestigationModuleBase(ttk.Frame):
             *args: Positional arguments to pass to the function
             **kwargs: Keyword arguments to pass to the function
         """
-        if self.winfo_exists():
-            after_id = self.after(0, lambda: func(*args, **kwargs))
-            self._after_ids.append(after_id)
+        self._tracked_after(0, func, *args, **kwargs)
     
     def safe_go_back(self) -> None:
         """Safely navigate back to main menu, cancelling pending operations."""
         self.cancel_flag.set()
-        
+
         # Cancel any pending UI updates
         for after_id in self._after_ids:
             try:
                 self.after_cancel(after_id)
             except tk.TclError:
                 pass  # Already cancelled
-        
+        self._after_ids.clear()
+
         self.after(50, self.back_callback)
     
     def load_file_logic(self, path: str) -> bool:

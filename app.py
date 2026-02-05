@@ -644,7 +644,7 @@ class App(tk.Tk):
                     timeout=3
                 )
                 statuses['companies_house'] = 'ok' if response.status_code == 200 else 'error'
-            except:
+            except requests.RequestException:
                 statuses['companies_house'] = 'error'
         else:
             statuses['companies_house'] = 'no_key'
@@ -659,7 +659,7 @@ class App(tk.Tk):
                     timeout=3
                 )
                 statuses['charity_commission'] = 'ok' if response.status_code == 200 else 'error'
-            except:
+            except requests.RequestException:
                 statuses['charity_commission'] = 'error'
         else:
             statuses['charity_commission'] = 'no_key'
@@ -672,7 +672,7 @@ class App(tk.Tk):
                 timeout=3
             )
             statuses['grantnav'] = 'ok' if response.status_code == 200 else 'error'
-        except:
+        except requests.RequestException:
             statuses['grantnav'] = 'error'
 
         # --- NEW: Test Contracts Finder (no key required) ---
