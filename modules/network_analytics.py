@@ -1571,7 +1571,29 @@ class NetworkAnalytics(InvestigationModuleBase):
         )
         threshold_spin.pack(side=tk.LEFT, padx=(10, 0))
         Tooltip(threshold_spin, "Only show entities connected to at least this many suspects")
-        
+
+        # Maximum hop distance
+        hop_row = ttk.Frame(self.lynchpin_frame)
+        hop_row.pack(fill=tk.X, pady=(5, 5))
+
+        ttk.Label(hop_row, text="Maximum hop distance:").pack(side=tk.LEFT)
+        self.lynchpin_hop_limit_var = tk.IntVar(value=1)
+        hop_spin = ttk.Spinbox(
+            hop_row,
+            from_=1,
+            to=3,
+            width=5,
+            textvariable=self.lynchpin_hop_limit_var
+        )
+        hop_spin.pack(side=tk.LEFT, padx=(10, 0))
+        Tooltip(
+            hop_spin,
+            "How many hops away a suspect can be and still count as connected:\n"
+            "  1 = direct connections only\n"
+            "  2 = connected via one intermediary\n"
+            "  3 = connected via up to two intermediaries"
+        )
+
         ttk.Label(
             self.lynchpin_frame,
             text="Identifies entities (people, addresses, companies) that connect to multiple suspects.\n"
@@ -3289,6 +3311,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         try:
             pruned_graph = self._get_pruned_graph()
             min_connections = self.lynchpin_min_connections_var.get()
+            hop_limit = self.lynchpin_hop_limit_var.get()
             type_filter = self.lynchpin_type_var.get()
             
             # Find which suspects are actually in the graph
@@ -3311,42 +3334,42 @@ class NetworkAnalytics(InvestigationModuleBase):
                 f"Found {len(suspects_in_graph)}/{len(self.lynchpin_suspects)} suspects in graph. Analysing..."
             ))
             
-            # Build a map of entity -> set of connected suspects
-            # For each non-suspect node, find which suspects it connects to (directly or via 1 hop)
+            # Build a map of entity -> dict of {suspect_id: shortest_hop_distance}
             entity_to_suspects = {}
-            
+
             # Use undirected view for connectivity
             undirected_graph = pruned_graph.to_undirected()
-            
+
             # Get all non-suspect nodes
             all_nodes = set(pruned_graph.nodes())
             non_suspect_nodes = all_nodes - suspects_in_graph
-            
+
             total_nodes = len(non_suspect_nodes)
             processed = 0
-            
+
             for node_id in non_suspect_nodes:
                 processed += 1
                 if processed % 500 == 0:
                     progress = int((processed / total_nodes) * 100)
                     self.app.after(0, lambda p=progress: self.analyse_status_var.set(f"Analysing... {p}%"))
-                
+
                 # Apply type filter
                 node_type = pruned_graph.nodes[node_id].get("type", "unknown")
                 if type_filter != "all" and node_type != type_filter:
                     continue
-                
-                # Find all suspects this node is directly connected to
-                connected_suspects = set()
-                
-                # Check direct neighbors
-                for neighbor in undirected_graph.neighbors(node_id):
-                    if neighbor in suspects_in_graph:
-                        connected_suspects.add(neighbor)
-                
+
+                # Find all nodes reachable within hop_limit and filter to suspects
+                reachable = nx.single_source_shortest_path_length(
+                    undirected_graph, node_id, cutoff=hop_limit
+                )
+                suspect_distances = {
+                    nid: dist for nid, dist in reachable.items()
+                    if nid in suspects_in_graph and dist > 0
+                }
+
                 # Only include if meets minimum threshold
-                if len(connected_suspects) >= min_connections:
-                    entity_to_suspects[node_id] = connected_suspects
+                if len(suspect_distances) >= min_connections:
+                    entity_to_suspects[node_id] = suspect_distances
             
             # Sort by number of connections (descending)
             sorted_lynchpins = sorted(
@@ -3357,24 +3380,28 @@ class NetworkAnalytics(InvestigationModuleBase):
             
             # Prepare results for display
             results = []
-            for node_id, connected_suspects in sorted_lynchpins:
+            for node_id, suspect_distances in sorted_lynchpins:
                 node_attrs = pruned_graph.nodes[node_id]
                 node_label = node_attrs.get("label", node_id)
                 node_type = node_attrs.get("type", "unknown")
-                
-                # Get labels for connected suspects
+
+                # Get labels and distances for connected suspects
+                connected_suspect_ids = set(suspect_distances.keys())
                 suspect_labels = []
-                for suspect_id in connected_suspects:
+                suspect_hop_distances = {}
+                for suspect_id, dist in suspect_distances.items():
                     suspect_label = pruned_graph.nodes[suspect_id].get("label", suspect_id)
                     suspect_labels.append(suspect_label)
-                
+                    suspect_hop_distances[suspect_id] = dist
+
                 results.append({
                     "id": node_id,
                     "label": node_label,
                     "type": node_type,
-                    "connection_count": len(connected_suspects),
-                    "connected_suspect_ids": connected_suspects,
-                    "connected_suspect_labels": suspect_labels
+                    "connection_count": len(connected_suspect_ids),
+                    "connected_suspect_ids": connected_suspect_ids,
+                    "connected_suspect_labels": suspect_labels,
+                    "suspect_hop_distances": suspect_hop_distances,
                 })
             
             # Store results and show dialog
@@ -3517,10 +3544,17 @@ class NetworkAnalytics(InvestigationModuleBase):
                     writer = csv.writer(f)
                     writer.writerow([
                         "Rank", "Entity Label", "Entity Type", "Entity ID",
-                        "Suspect Connections", "% of Suspects", "Connected Suspect IDs", "Connected Suspect Labels"
+                        "Suspect Connections", "% of Suspects",
+                        "Connected Suspect IDs", "Connected Suspect Labels",
+                        "Hop Distances"
                     ])
                     for idx, result in enumerate(results):
                         pct = (result["connection_count"] / total_suspects) * 100
+                        hop_distances = result.get("suspect_hop_distances", {})
+                        hop_strs = []
+                        for sid in result["connected_suspect_ids"]:
+                            dist = hop_distances.get(sid)
+                            hop_strs.append(str(dist) if dist is not None else "?")
                         writer.writerow([
                             idx + 1,
                             result["label"],
@@ -3529,7 +3563,8 @@ class NetworkAnalytics(InvestigationModuleBase):
                             result["connection_count"],
                             f"{pct:.1f}%",
                             "; ".join(result["connected_suspect_ids"]),
-                            "; ".join(result["connected_suspect_labels"])
+                            "; ".join(result["connected_suspect_labels"]),
+                            "; ".join(hop_strs),
                         ])
                 messagebox.showinfo("Export Complete", f"Results exported to:\n{filepath}")
             except Exception as e:
@@ -3596,8 +3631,14 @@ class NetworkAnalytics(InvestigationModuleBase):
         listbox.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=listbox.yview)
         
+        hop_distances = result.get("suspect_hop_distances", {})
         for suspect_id, suspect_label in zip(result["connected_suspect_ids"], result["connected_suspect_labels"]):
-            listbox.insert(tk.END, f"{suspect_label}  ({suspect_id})")
+            dist = hop_distances.get(suspect_id)
+            if dist is not None:
+                hop_text = f"{dist} hop" if dist == 1 else f"{dist} hops"
+                listbox.insert(tk.END, f"{suspect_label}  ({suspect_id})  [{hop_text}]")
+            else:
+                listbox.insert(tk.END, f"{suspect_label}  ({suspect_id})")
         
         ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=10)
 
@@ -4352,6 +4393,7 @@ class NetworkAnalytics(InvestigationModuleBase):
                     "enforce_direction": self.enforce_direction_var.get(),
                     "lynchpin_type": self.lynchpin_type_var.get(),
                     "lynchpin_min_connections": self.lynchpin_min_connections_var.get(),
+                    "lynchpin_hop_limit": self.lynchpin_hop_limit_var.get(),
                 },
 
                 # Refine settings
@@ -4519,6 +4561,7 @@ class NetworkAnalytics(InvestigationModuleBase):
             self.enforce_direction_var.set(opts.get("enforce_direction", False))
             self.lynchpin_type_var.set(opts.get("lynchpin_type", "all"))
             self.lynchpin_min_connections_var.set(opts.get("lynchpin_min_connections", 2))
+            self.lynchpin_hop_limit_var.set(opts.get("lynchpin_hop_limit", 1))
 
             # Refine settings
             refine = save_data.get("refine_settings", {})
