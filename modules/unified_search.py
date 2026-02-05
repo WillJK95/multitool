@@ -384,7 +384,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
         self.name_col_var = tk.StringVar()
 
         # Create options list with a "None" option at the start
-        options = ["___NONE___"] + self.original_headers
+        options = ["\u2014 Not Selected \u2014"] + self.original_headers
 
         # Container to hold the three columns side-by-side
         columns_container = ttk.Frame(self.column_selection_frame)
@@ -403,7 +403,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
             state="readonly"
         )
         cnum_combo.pack(fill="x", pady=5)
-        cnum_combo.set("___NONE___")  # Default value
+        cnum_combo.set("\u2014 Not Selected \u2014")  # Default value
 
         # --- Column 2: Charity Number ---
         ccnum_frame = ttk.LabelFrame(
@@ -418,7 +418,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
             state="readonly"
         )
         ccnum_combo.pack(fill="x", pady=5)
-        ccnum_combo.set("___NONE___")
+        ccnum_combo.set("\u2014 Not Selected \u2014")
 
         # --- Column 3: Name (Fuzzy) ---
         name_frame = ttk.LabelFrame(
@@ -433,7 +433,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
             state="readonly"
         )
         name_combo.pack(fill="x", pady=5)
-        name_combo.set("___NONE___")
+        name_combo.set("\u2014 Not Selected \u2014")
 
         # --- Confirm Button ---
         ttk.Button(
@@ -449,11 +449,11 @@ class CompanyCharitySearch(InvestigationModuleBase):
         self.company_col = self.company_num_col_var.get()
         self.charity_col = self.charity_num_col_var.get()
         self.name_col = self.name_col_var.get()
-        if self.company_col == "___NONE___":
+        if self.company_col == "\u2014 Not Selected \u2014":
             self.company_col = None
-        if self.charity_col == "___NONE___":
+        if self.charity_col == "\u2014 Not Selected \u2014":
             self.charity_col = None
-        if self.name_col == "___NONE___":
+        if self.name_col == "\u2014 Not Selected \u2014":
             self.name_col = None
 
         if not self.company_col and not self.charity_col and not self.name_col:
@@ -469,9 +469,9 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
     def start_investigation(self):
         # --- NEW: Check for fuzzy match logic error ---
-        company_col_selected = self.company_col and self.company_col != "___NONE___"
-        charity_col_selected = self.charity_col and self.charity_col != "___NONE___"
-        name_col_selected = self.name_col and self.name_col != "___NONE___"
+        company_col_selected = self.company_col and self.company_col != "\u2014 Not Selected \u2014"
+        charity_col_selected = self.charity_col and self.charity_col != "\u2014 Not Selected \u2014"
+        name_col_selected = self.name_col and self.name_col != "\u2014 Not Selected \u2014"
 
         # If only a name column is selected but fuzzy match is off, ask the user
         if (

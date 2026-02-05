@@ -188,7 +188,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         )
         name_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
         
-        name_options = ["___NONE___"] + headers
+        name_options = ["\u2014 Not Selected \u2014"] + headers
         name_combo = ttk.Combobox(
             name_frame,
             textvariable=self.name_col_var,
@@ -196,7 +196,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             state="readonly"
         )
         name_combo.pack(fill="x", pady=5)
-        name_combo.set("___NONE___")
+        name_combo.set("\u2014 Not Selected \u2014")
 
         # Confirm Button
         ttk.Button(
@@ -226,7 +226,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
     def _confirm_columns(self):
         self.number_col = self.number_col_var.get()
         self.name_col = self.name_col_var.get()
-        if self.name_col == "___NONE___":
+        if self.name_col == "\u2014 Not Selected \u2014":
             self.name_col = None
         if not self.number_col:
             messagebox.showerror(
