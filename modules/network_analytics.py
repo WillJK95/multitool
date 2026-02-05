@@ -2865,6 +2865,18 @@ class NetworkAnalytics(InvestigationModuleBase):
 
         selected_ids = set()
 
+        # Pre-populate with previously-selected IDs that still exist in the
+        # current graph so that selections persist across dialog reopens.
+        previous_ids = {
+            "single_list": self.analyse_entity_list,
+            "list_a": self.cohort_a_ids,
+            "list_b": self.cohort_b_ids,
+            "lynchpin": self.lynchpin_suspects,
+        }.get(target) or set()
+        for pid in previous_ids:
+            if pid in all_nodes:
+                selected_ids.add(pid)
+
         # --- Create window ---
         win = tk.Toplevel(self.winfo_toplevel())
         win.title("Network Entity Selector")
@@ -3109,6 +3121,7 @@ class NetworkAnalytics(InvestigationModuleBase):
 
         # --- Initial populate ---
         _populate_left()
+        _populate_right()
 
         # Maintain focus until closed
         win.focus_set()
