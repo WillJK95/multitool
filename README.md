@@ -13,8 +13,11 @@ Batch lookup companies and charities from a CSV file. Automatically enriches rec
 ### 👤 Ultimate Beneficial Ownership (UBO) Tracer
 Trace ownership chains through corporate structures to identify ultimate beneficial owners. Handles complex multi-level ownership with configurable depth limits and generates hierarchical visualisation graphs.
 
+### 📜 Contracts Finder
+Search for contracts awarded to public bodies, enrich with Companies House data and export results for analysis.
+
 ### 🕸️ Network Analytics
-Build and analyse corporate networks starting from seed companies. Combine multiple network files, identify key nodes, remove supernodes (e.g., formation agents), and find paths between entities.
+Build and analyse corporate networks starting from seed companies or exported files from other modules. Combine multiple network files, identify key nodes, customise networks, and find paths between entities.
 
 ### 💰 Grants Search
 Search the 360Giving database for grants awarded to organisations. Supports lookup by company number, charity number, or organisation name with full pagination support.
@@ -99,6 +102,8 @@ This tool aggregates data from the following public sources:
 | [Companies House](https://www.gov.uk/government/organisations/companies-house) | Company profiles, officers, PSCs, filing history | Open Government Licence |
 | [Charity Commission](https://www.gov.uk/government/organisations/charity-commission) | Charity details, trustees, financial history | Open Government Licence v3.0 |
 | [360Giving](https://www.threesixtygiving.org/) | Grant funding data | CC BY 4.0 |
+| [Contracts Finder](https://www.contractsfinder.service.gov.uk/Search) | Contracts data | Open Government Licence v3.0 |
+
 
 ## Project Structure
 
@@ -110,17 +115,29 @@ multitool/
 ├── api/                 # API client modules
 │   ├── companies_house.py
 │   ├── charity_commission.py
+│   ├── contracts_finder.py
 │   └── grantnav.py
 ├── modules/             # Investigation modules
 │   ├── director_search.py
 │   ├── unified_search.py
 │   ├── ubo_tracer.py
 │   ├── network_analytics.py
+│   ├── contracts_finder.py
 │   ├── grants_search.py
 │   ├── data_match.py
 │   └── enhanced_dd.py
 ├── ui/                  # Reusable UI components
-└── utils/               # Shared utilities
+│   ├── help_window.py
+│   ├── licenses_window.py
+│   ├── scrollable_frame.py
+│   ├── searchable_entry.py
+│   └── tooltip.py
+├── utils/		 # Shared utilities
+│   ├── enrichment.py
+│   ├── financial_analyzer.py 
+│   ├── fuzzy_match.py
+│   ├── helpers.py
+│   └── token_bucket.py             
 ```
 
 ## Building an Executable

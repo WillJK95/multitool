@@ -522,12 +522,12 @@ class App(tk.Tk):
             parent=left_col,
             title="Network Compatible Modules",
             modules=[
-                ("UBO Tracer", self.show_ubo_investigation, ch_enabled,
-                 "Trace parent companies and ownership structures", "primary"),
-                ("Director Search", self.show_director_investigation, ch_enabled,
-                 "Locate all appointments for a specific director", "primary"),
                 ("Bulk Entity Search", self.show_unified_search, unified_enabled,
                  "Search companies & charities via mixed ID file", "primary"),
+                ("Director Search", self.show_director_investigation, ch_enabled,
+                 "Locate all appointments for a specific director", "primary"),
+                ("UBO Tracer", self.show_ubo_investigation, ch_enabled,
+                 "Trace parent companies and ownership structures", "primary"),
                 ("Contracts Finder", self.show_contracts_finder, ch_enabled,
                  "Find government contracts & enrich with CH data", "primary"),
             ],
@@ -835,7 +835,7 @@ class App(tk.Tk):
         timestamp_label = ttk.Label(
             footer_frame,
             text=f"Checked: {self._get_time_since_check()}",
-            font=('Segoe UI', 6),
+            font=('Segoe UI', 7),
             foreground='gray'
         )
         timestamp_label.pack(side=tk.LEFT)
