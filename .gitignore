@@ -25,7 +25,8 @@ Thumbs.db
 # PyInstaller
 *.spec
 
-# te
+# tests
+tests/
 
 # Git
 .git/
