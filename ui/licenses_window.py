@@ -29,8 +29,8 @@ class LicensesWindow(tk.Toplevel):
         sources = [
             {
                 "name": "Software License",
-                "attribution": "The Data Investigation Multi-Tool was created by William Kenny in 2025. This software is made available to you under the terms of the Apache License 2.0.",
-                "url": "http://www.apache.org/licenses/LICENSE-2.0",
+                "attribution": "The Data Investigation Multi-Tool was created by William Kenny in 2025. Copyright (c) 2025 Crown Copyright. This software is made available to you under the terms of the MIT License.",
+                "url": "https://opensource.org/licenses/MIT",
             },
             {
                 "name": "Companies House",
