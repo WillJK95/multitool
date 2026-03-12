@@ -9,11 +9,11 @@ GRANTNAV_API_BASE_URL = "https://api.threesixtygiving.org/api/v1"
 CHARITY_API_BASE_URL = "https://api.charitycommission.gov.uk/register/api"
 
 # --- File Paths ---
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".DataInvestigatorTool")
+CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".multitool")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.ini")
 
 # --- Keyring Configuration ---
-SERVICE_NAME = "DataInvestigatorTool"
+SERVICE_NAME = "multitool"
 CH_ACCOUNT_NAME = "CompaniesHouseAPI"
 CC_ACCOUNT_NAME = "CharityCommissionAPI"
 

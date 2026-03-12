@@ -682,7 +682,7 @@ class App(tk.Tk):
             is_online = check_cf()
             statuses['contracts_finder'] = 'ok' if is_online else 'error'
         except Exception as e:
-            # log_message(f"Contracts Finder check failed: {e}") 
+            log_message(f"Contracts Finder check failed: {e}")
             statuses['contracts_finder'] = 'error'
         
         # Cache results

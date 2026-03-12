@@ -2,5 +2,5 @@
 # Author: William Kenny
 # Version: 0.56 (Modularised)
 
-__version__ = "0.56"
+__version__ = "1.0.0"
 __author__ = "William Kenny"
