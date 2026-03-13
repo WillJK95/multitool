@@ -66,6 +66,15 @@ def _parse_date(date_str: str) -> Optional[datetime]:
     return None
 
 
+def _strftime_day(d: datetime) -> str:
+    """Format a datetime as 'd Month YYYY', e.g. '5 March 2021'.
+
+    Avoids platform-specific format codes (%-d on Unix, %#d on Windows)
+    by stripping the leading zero manually.
+    """
+    return f"{d.day} {d.strftime('%B %Y')}"
+
+
 def format_display_date(date_str: str) -> str:
     """Format a date string to 'd Month YYYY' (e.g. '16 March 2021') for display.
 
@@ -73,7 +82,7 @@ def format_display_date(date_str: str) -> str:
     """
     d = _parse_date(date_str)
     if d:
-        return d.strftime('%-d %B %Y')
+        return _strftime_day(d)
     return date_str or 'N/A'
 
 
@@ -481,7 +490,7 @@ def generate_grants_report_html(grants_data: list) -> str:
     date_range = ""
     if dates:
         dates.sort()
-        date_range = f"{dates[0].strftime('%-d %B %Y')} to {dates[-1].strftime('%-d %B %Y')}"
+        date_range = f"{_strftime_day(dates[0])} to {_strftime_day(dates[-1])}"
 
     currency_symbol = '£' if 'GBP' in currencies or not currencies else list(currencies)[0] + ' '
 
@@ -799,10 +808,10 @@ def generate_static_ownership_graph(
 
     # Legend
     legend_items = [
-        mpatches.Patch(color='#B9D9EB', edgecolor='#333', label='Investigated Company'),
-        mpatches.Patch(color='#C5D9F1', edgecolor='#333', label='Corporate PSC'),
-        mpatches.Patch(color='#D9E8B9', edgecolor='#333', label='Individual PSC'),
-        mpatches.Patch(color='#E0E0E0', edgecolor='#333', label='Ceased'),
+        mpatches.Patch(facecolor='#B9D9EB', edgecolor='#333', label='Investigated Company'),
+        mpatches.Patch(facecolor='#C5D9F1', edgecolor='#333', label='Corporate PSC'),
+        mpatches.Patch(facecolor='#D9E8B9', edgecolor='#333', label='Individual PSC'),
+        mpatches.Patch(facecolor='#E0E0E0', edgecolor='#333', label='Ceased'),
     ]
     ax.legend(handles=legend_items, loc='lower right', fontsize=7, framealpha=0.9)
 
