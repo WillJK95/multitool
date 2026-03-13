@@ -29,7 +29,7 @@ class LicensesWindow(tk.Toplevel):
         sources = [
             {
                 "name": "Software License",
-                "attribution": "The Data Investigation Multi-Tool was created by William Kenny in 2025. Copyright (c) 2025 Crown Copyright. This software is made available to you under the terms of the MIT License.",
+                "attribution": "Copyright (c) 2025 Crown Copyright. Created by William Kenny. This software is made available under the MIT License. Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files, to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.",
                 "url": "https://opensource.org/licenses/MIT",
             },
             {
@@ -41,6 +41,11 @@ class LicensesWindow(tk.Toplevel):
                 "name": "Charity Commission",
                 "attribution": "The API calls, API responses, and all other material on the Developer Hub website are subject to Crown Copyright and are made available to you subject to these Terms and the terms of the Open Government Licence v3.0.",
                 "url": "https://api-portal.charitycommission.gov.uk/terms",
+            },
+            {
+                "name": "Contracts Finder",
+                "attribution": "Contracts Finder data is published by Crown Commercial Service and is made available under the Open Government Licence v3.0.",
+                "url": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
             },
             {
                 "name": "360Giving",
@@ -88,105 +93,106 @@ class LicensesWindow(tk.Toplevel):
         THIRD_PARTY_LICENSES = """
 --- THIRD-PARTY SOFTWARE LICENSES ---
 
-This application incorporates open-source software. The following list shows each package and its licence.
+This application incorporates open-source software. The following lists each
+runtime dependency and its licence. All licences are permissive and compatible
+with the MIT licence under which this application is distributed.
 
 ------------------------------------------------------------
 
-Jinja2 3.1.6 (BSD License)
-https://github.com/pallets/jinja/
-
-MarkupSafe 3.0.2 (BSD License)
-https://github.com/pallets/markupsafe/
-
-Pygments 2.19.2 (BSD License)
-https://pygments.org
-
-RapidFuzz 3.13.0
-https://github.com/rapidfuzz/RapidFuzz
-
-asttokens 3.0.0 (Apache 2.0)
-https://github.com/gristlabs/asttokens
-
-certifi 2025.7.14 (Mozilla Public License 2.0)
+certifi (Mozilla Public License 2.0)
 https://github.com/certifi/python-certifi
 
-charset-normalizer 3.4.2 (MIT License)
+charset-normalizer (MIT License)
 https://github.com/jawah/charset_normalizer
 
-colorama 0.4.6 (BSD License)
+colorama (BSD License)
 https://github.com/tartley/colorama
 
-decorator 5.2.1 (BSD License)
+contourpy (BSD License)
+https://github.com/contourpy/contourpy
 
-executing 2.2.0 (MIT License)
-https://github.com/alexmojaki/executing
+cycler (BSD License)
+https://github.com/matplotlib/cycler
 
-idna 3.10 (BSD License)
+fonttools (MIT License)
+https://github.com/fonttools/fonttools
+
+idna (BSD-3-Clause)
 https://github.com/kjd/idna
 
-ipython 9.4.0 (BSD License)
-https://ipython.org
+iniconfig (MIT License)
+https://github.com/pytest-dev/iniconfig
 
-ipython_pygments_lexers 1.1.1 (BSD License)
-https://github.com/ipython/ipython-pygments-lexers
-
-jaraco.classes 3.4.0 (MIT License)
+jaraco.classes (MIT License)
 https://github.com/jaraco/jaraco.classes
 
-jaraco.context 6.0.1 (MIT License)
+jaraco.context (MIT License)
 https://github.com/jaraco/jaraco.context
 
-jaraco.functools 4.2.1
+jaraco.functools (MIT License)
 https://github.com/jaraco/jaraco.functools
 
-jedi 0.19.2 (MIT License)
-https://github.com/davidhalter/jedi
-
-jsonpickle 4.1.1 (BSD-3-Clause)
-https://jsonpickle.readthedocs.io/
-
-keyring 25.6.0 (MIT License)
+keyring (MIT License)
 https://github.com/jaraco/keyring
 
-matplotlib-inline 0.1.7 (BSD License)
-https://github.com/ipython/matplotlib-inline
+kiwisolver (BSD License)
+https://github.com/nucleic/kiwi
 
-more-itertools 10.7.0 (MIT License)
-https://github.com/more-itertools/more-itertools
+lxml (BSD-3-Clause)
+https://github.com/lxml/lxml
 
-networkx 3.5 (BSD License)
+matplotlib (Python Software Foundation License)
+https://matplotlib.org
+
+networkx (BSD-3-Clause)
 https://networkx.org/
 
-parso 0.8.4 (MIT License)
-https://github.com/davidhalter/parso
+numpy (BSD-3-Clause)
+https://numpy.org
 
-pillow 10.4.0 (Historical Permission Notice and Disclaimer)
+packaging (Apache Software License / BSD License)
+https://github.com/pypa/packaging
+
+pandas (BSD License)
+https://pandas.pydata.org
+
+pgeocode (BSD License)
+https://github.com/symerio/pgeocode
+
+pillow (MIT-CMU / Historical Permission Notice and Disclaimer)
 https://python-pillow.org
 
-prompt_toolkit 3.0.51 (BSD License)
+pyparsing (MIT License)
+https://github.com/pyparsing/pyparsing
 
-pure_eval 0.2.3 (MIT License)
-http://github.com/alexmojaki/pure_eval
+python-dateutil (Apache Software License / BSD License)
+https://github.com/dateutil/dateutil
 
-pyvis 0.3.2 (BSD)
+pytz (MIT License)
+https://github.com/stub42/pytz
+
+pyvis (BSD License)
 https://github.com/WestHealth/pyvis
 
-pywin32-ctypes 0.2.3 (BSD-3-Clause)
+pywin32-ctypes (BSD-3-Clause) [Windows only]
 https://github.com/enthought/pywin32-ctypes
 
-requests 2.32.4 (Apache Software License)
+RapidFuzz (MIT License)
+https://github.com/rapidfuzz/RapidFuzz
+
+requests (Apache Software License)
 https://requests.readthedocs.io
 
-stack-data 0.6.3 (MIT License)
-http://github.com/alexmojaki/stack_data
+six (MIT License)
+https://github.com/benjaminp/six
 
-traitlets 5.14.3 (BSD License)
-https://github.com/ipython/traitlets
-
-ttkbootstrap 1.14.1 (MIT License)
+ttkbootstrap (MIT License)
 https://github.com/israel-dryer/ttkbootstrap
 
-urllib3 2.5.0
+tzdata (Apache-2.0)
+https://github.com/python/tzdata
+
+urllib3 (MIT License)
 https://github.com/urllib3/urllib3
 """
         HelpWindow(self, "Third-Party Software Licenses", THIRD_PARTY_LICENSES)

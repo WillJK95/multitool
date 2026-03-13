@@ -69,6 +69,8 @@ API keys can be configured in File → Manage API Keys within the application.
 
 The 360Giving GrantNav API does not require authentication.
 
+> **Note:** The postcode geolocation feature (used in Network Analytics) relies on the [pgeocode](https://github.com/symerio/pgeocode) library, which downloads approximately 2 MB of postal code reference data from [GeoNames](https://www.geonames.org/) on first use and caches it locally. An internet connection is required the first time this feature is used. Subsequent runs use the cached data.
+
 ## Usage
 
 ### Quick Start

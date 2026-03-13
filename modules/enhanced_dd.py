@@ -1796,15 +1796,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         return html_output
     
     def _generate_chart_html(self):
-        
         """Generate embedded charts from financial data."""
         if not self.financial_analyzer or self.financial_analyzer.data.empty:
-            print("DEBUG: No financial analyzer or empty data")
             return ""
-        
-        print(f"DEBUG: Financial data shape: {self.financial_analyzer.data.shape}")
-        print(f"DEBUG: Columns: {self.financial_analyzer.data.columns.tolist()}")
-        print(f"DEBUG: Data preview:\n{self.financial_analyzer.data.head()}")
         
         html_output = '<div class="section"><h2>Financial Analysis Charts</h2>'
 

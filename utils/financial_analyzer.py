@@ -9,9 +9,10 @@ from typing import List, Dict, Optional
 import pandas as pd
 import matplotlib.pyplot as plt
 from ..constants import (
-    IXBRL_NAMESPACES, 
+    IXBRL_NAMESPACES,
     TAXONOMY_MAP
 )
+from .helpers import log_message
 
 
 def create_secure_xml_parser():
@@ -210,16 +211,16 @@ class FinancialAnalyzer:
                     all_data.append(record)
                 
                 self.files_processed.append(file_path)
-                print(f"✓ Processed: {Path(file_path).name} (Filing year: {file_year})")
-                
+                log_message(f"✓ Processed: {Path(file_path).name} (Filing year: {file_year})")
+
             except Exception as e:
-                print(f"✗ Error processing {Path(file_path).name}: {e}")
+                log_message(f"✗ Error processing {Path(file_path).name}: {e}")
         
         if all_data:
             df = pd.DataFrame(all_data)
             
             # Deduplicate: Keep the record from the most recent filing with most complete data
-            print(f"\n→ Found {len(df)} total year records before deduplication")
+            log_message(f"→ Found {len(df)} total year records before deduplication")
             
             # Sort by Filing_Year (desc) and Data_Completeness (desc) to prioritize recent, complete data
             df = df.sort_values(['Year', 'Filing_Year', 'Data_Completeness'], 
@@ -230,8 +231,8 @@ class FinancialAnalyzer:
             
             duplicates_removed = len(df) - len(df_deduped)
             if duplicates_removed > 0:
-                print(f"→ Removed {duplicates_removed} duplicate year record(s)")
-                print(f"→ Retained {len(df_deduped)} unique year(s)\n")
+                log_message(f"→ Removed {duplicates_removed} duplicate year record(s)")
+                log_message(f"→ Retained {len(df_deduped)} unique year(s)")
             
             # Clean up and sort
             self.data = df_deduped.sort_values('Year').reset_index(drop=True)
@@ -262,16 +263,16 @@ class FinancialAnalyzer:
         files = list(dir_path.glob(pattern))
         
         if not files:
-            print(f"No files found matching pattern '{pattern}' in {directory_path}")
+            log_message(f"No files found matching pattern '{pattern}' in {directory_path}")
             return pd.DataFrame()
-        
-        print(f"Found {len(files)} files to process...\n")
+
+        log_message(f"Found {len(files)} files to process...")
         return self.load_files([str(f) for f in files])
     
     def summary(self) -> pd.DataFrame:
         """Get a summary view of the financial data."""
         if self.data.empty:
-            print("No data loaded yet.")
+            log_message("No data loaded yet.")
             return pd.DataFrame()
         
         # Drop metadata columns for cleaner view
@@ -281,7 +282,7 @@ class FinancialAnalyzer:
     def data_provenance(self) -> pd.DataFrame:
         """Show which file each year's data came from (after deduplication)."""
         if self.data.empty:
-            print("No data loaded yet.")
+            log_message("No data loaded yet.")
             return pd.DataFrame()
         
         cols = ['Year', 'Source_File', 'Filing_Year', 'Data_Completeness']
@@ -344,7 +345,7 @@ class FinancialAnalyzer:
     def year_over_year_growth(self) -> pd.DataFrame:
         """Calculate year-over-year growth rates."""
         if self.data.empty or len(self.data) < 2:
-            print("Need at least 2 years of data for growth calculation.")
+            log_message("Need at least 2 years of data for growth calculation.")
             return pd.DataFrame()
         
         df = self.data.copy()
@@ -371,16 +372,16 @@ class FinancialAnalyzer:
     def plot_trends(self, metrics: Optional[List[str]] = None, figsize=(12, 6)):
         """Plot time series trends for specified metrics."""
         if self.data.empty:
-            print("No data to plot.")
+            log_message("No data to plot.")
             return
-        
+
         if metrics is None:
             # Default to common metrics that are likely present
             available = ['Revenue', 'ProfitLoss', 'NetAssets', 'CurrentAssets']
             metrics = [m for m in available if m in self.data.columns]
-        
+
         if not metrics:
-            print("No valid metrics to plot.")
+            log_message("No valid metrics to plot.")
             return
         
         fig, axes = plt.subplots(len(metrics), 1, figsize=figsize)
@@ -411,7 +412,7 @@ class FinancialAnalyzer:
         ratio_cols = [col for col in ratio_cols if col in df_ratios.columns]
         
         if not ratio_cols:
-            print("No ratios available to plot.")
+            log_message("No ratios available to plot.")
             return
         
         fig, axes = plt.subplots((len(ratio_cols) + 1) // 2, 2, figsize=figsize)
@@ -437,7 +438,7 @@ class FinancialAnalyzer:
     def export_to_excel(self, output_file: str):
         """Export all analysis to an Excel file with multiple sheets."""
         if self.data.empty:
-            print("No data to export.")
+            log_message("No data to export.")
             return
         
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
@@ -457,7 +458,7 @@ class FinancialAnalyzer:
             summary = self.data.describe()
             summary.to_excel(writer, sheet_name='Summary_Stats')
         
-        print(f"✓ Data exported to {output_file}")
+        log_message(f"✓ Data exported to {output_file}")
     
     def predict_next_year(self, metric: str, method: str = 'linear') -> Dict:
         """Simple prediction for next year using linear regression or average growth."""
