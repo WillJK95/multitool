@@ -80,6 +80,26 @@ CHARITY_DATA_FIELDS = {
     "governance_status": "Governance & Insolvency Status",
 }
 
+# --- Filing History Type Categories ---
+FILING_TYPE_CATEGORIES = {
+    'AA': 'Accounts Filed',
+    'CS01': 'Confirmation Statement',
+    'GAZ1': 'First Gazette (Strike-off)',
+    'GAZ2': 'Second Gazette (Strike-off)',
+    'CH01': 'Change of Name',
+    'CH02': 'Change of Name',
+    'LIQEN': 'Liquidation',
+    'LIQEO': 'Liquidation',
+    'AD01': 'Administration',
+    'AD02': 'Administration',
+    'NEWINC': 'Incorporation',
+    'MR01': 'Charge Registered',
+    'MR04': 'Charge Satisfied',
+    'MR05': 'Charge Satisfied',
+    'SH01': 'Allotment of Shares',
+    'RES': 'Special Resolution',
+}
+
 # --- Accounts Constants and Taxonomies ---
 TAXONOMY_MAP = {
     'NetAssets': [

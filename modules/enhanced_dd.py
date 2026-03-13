@@ -25,9 +25,17 @@ from ..ui.tooltip import Tooltip
 from ..api.companies_house import ch_get_data
 from ..constants import (
     CONFIG_DIR,
+    FILING_TYPE_CATEGORIES,
 )
 from .base import InvestigationModuleBase
 from ..utils.helpers import log_message, clean_company_number
+from ..utils.edd_visualizations import (
+    generate_company_timeline,
+    fetch_grants_for_company,
+    generate_grants_report_html,
+    trace_ownership_chain,
+    generate_static_ownership_graph,
+)
 
 class EnhancedDueDiligence(InvestigationModuleBase):
     def __init__(self, parent_app, api_key, back_callback, ch_token_bucket):
@@ -156,7 +164,24 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             widget = ttk.Checkbutton(tier3_frame, text=label, variable=var)
             widget.pack(anchor='w')
             self.check_widgets[key] = widget
-        
+
+        # Additional Data Sources
+        extra_frame = ttk.LabelFrame(config_frame, text="Additional Data Sources", padding=5)
+        extra_frame.pack(fill=tk.X, pady=2)
+
+        extra_checks = [
+            ('filing_patterns', 'Filing history pattern analysis', True),
+            ('grants_lookup', 'Include grants received (360Giving GrantNav)', False),
+            ('ownership_graph', 'Corporate ownership structure graph (API calls per corporate PSC)', False),
+        ]
+
+        for key, label, default in extra_checks:
+            var = tk.BooleanVar(value=default)
+            self.check_vars[key] = var
+            widget = ttk.Checkbutton(extra_frame, text=label, variable=var)
+            widget.pack(anchor='w')
+            self.check_widgets[key] = widget
+
         # Advanced settings (collapsible)
         self.show_advanced = tk.BooleanVar(value=False)
         advanced_toggle = ttk.Checkbutton(
@@ -535,7 +560,55 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             
             if self.check_vars['phoenix_check'].get():
                 findings.extend(self._check_phoenix_companies())
-            
+
+            # Filing pattern analysis
+            if self.check_vars.get('filing_patterns', tk.BooleanVar(value=False)).get():
+                findings.extend(self._check_filing_patterns())
+
+            # Fetch grants data if enabled
+            self._grants_data = None
+            if self.check_vars.get('grants_lookup', tk.BooleanVar(value=False)).get():
+                self.safe_update(self.status_var.set, "Fetching grants data from GrantNav...")
+                cnum = self.company_data['profile']['company_number']
+                try:
+                    self._grants_data = fetch_grants_for_company(cnum)
+                except Exception as e:
+                    log_message(f"Error fetching grants data: {e}")
+
+            # Generate company timeline
+            self.safe_update(self.status_var.set, "Generating company timeline...")
+            try:
+                self._timeline_b64 = generate_company_timeline(
+                    self.company_data['profile'],
+                    self.company_data.get('officers', {}),
+                    self.company_data.get('pscs', {}),
+                    self.company_data.get('filing_history', {}),
+                    grants_data=self._grants_data,
+                )
+            except Exception as e:
+                log_message(f"Error generating timeline: {e}")
+                self._timeline_b64 = None
+
+            # Trace ownership structure if enabled
+            self._ownership_data = None
+            self._ownership_b64 = None
+            if self.check_vars.get('ownership_graph', tk.BooleanVar(value=False)).get():
+                self.safe_update(self.status_var.set, "Tracing corporate ownership structure...")
+                cnum = self.company_data['profile']['company_number']
+                try:
+                    self._ownership_data = trace_ownership_chain(
+                        self.api_key, self.ch_token_bucket, cnum, self.cancel_flag,
+                        status_callback=lambda msg: self.safe_update(self.status_var.set, msg),
+                    )
+                    if self._ownership_data:
+                        self._ownership_b64 = generate_static_ownership_graph(
+                            self.company_data['profile'].get('company_name', 'Unknown'),
+                            cnum,
+                            self._ownership_data,
+                        )
+                except Exception as e:
+                    log_message(f"Error generating ownership graph: {e}")
+
             # Generate report HTML
             self.safe_update(self.status_var.set, "Generating report...")
             html_content = self._build_report_html(findings)
@@ -623,6 +696,110 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     'recommendation': 'Request additional due diligence on the directors and any parent/sister companies. Consider tighter credit terms or guarantees.'
                 })
         
+        return findings
+
+    def _check_filing_patterns(self):
+        """Analyze filing history for concerning patterns."""
+        findings = []
+        filing_history = self.company_data.get('filing_history', {})
+        items = filing_history.get('items', [])
+        if not items:
+            return findings
+
+        # Late filing detection: compare date vs action_date for accounts filings
+        late_filings = []
+        accounts_years = []
+        charge_filings = []
+        resolution_count = 0
+
+        for filing in items:
+            f_type = filing.get('type', '')
+            f_date_str = filing.get('date', '')
+            f_action_date_str = filing.get('action_date', '')
+
+            f_date = None
+            f_action_date = None
+            if f_date_str:
+                try:
+                    f_date = datetime.strptime(f_date_str, '%Y-%m-%d')
+                except ValueError:
+                    pass
+            if f_action_date_str:
+                try:
+                    f_action_date = datetime.strptime(f_action_date_str, '%Y-%m-%d')
+                except ValueError:
+                    pass
+
+            # Check accounts filings
+            if f_type.startswith('AA'):
+                if f_date:
+                    accounts_years.append(f_date.year)
+                if f_date and f_action_date and f_date > f_action_date:
+                    days_late = (f_date - f_action_date).days
+                    late_filings.append({
+                        'date': f_date_str,
+                        'days_late': days_late,
+                        'description': filing.get('description', ''),
+                    })
+
+            # Track charges
+            if f_type.startswith('MR01'):
+                charge_filings.append(filing)
+
+            # Track resolutions
+            if f_type.startswith('RES') or 'resolution' in filing.get('description', '').lower():
+                resolution_count += 1
+
+        # Report late filings
+        if late_filings:
+            severity = 'Elevated' if len(late_filings) >= 3 else 'Moderate'
+            late_details = '; '.join(
+                [f"{lf['date']} ({lf['days_late']} days late)" for lf in late_filings[:5]]
+            )
+            findings.append({
+                'category': 'Governance',
+                'severity': severity,
+                'title': f'Late Accounts Filings Detected ({len(late_filings)})',
+                'narrative': f"Analysis of filing history shows {len(late_filings)} instance(s) where accounts were filed after their due date: {late_details}. A pattern of late filing may indicate poor financial management or administrative difficulties.",
+                'recommendation': 'Investigate reasons for late filing and assess current financial management capabilities.',
+            })
+
+        # Accounts filing gaps
+        if len(accounts_years) >= 2:
+            accounts_years_sorted = sorted(set(accounts_years))
+            gaps = []
+            for i in range(1, len(accounts_years_sorted)):
+                if accounts_years_sorted[i] - accounts_years_sorted[i - 1] > 1:
+                    gaps.append(f"{accounts_years_sorted[i - 1]}-{accounts_years_sorted[i]}")
+            if gaps:
+                findings.append({
+                    'category': 'Governance',
+                    'severity': 'Moderate',
+                    'title': 'Gaps in Accounts Filing History',
+                    'narrative': f"There appear to be gaps in the accounts filing history for the following periods: {', '.join(gaps)}. Missing accounts filings may indicate periods of non-compliance or dormancy.",
+                    'recommendation': 'Request clarification on any periods where accounts were not filed.',
+                })
+
+        # Charge registrations
+        if charge_filings:
+            findings.append({
+                'category': 'Financial',
+                'severity': 'Moderate',
+                'title': f'Secured Charges Registered ({len(charge_filings)})',
+                'narrative': f"The company has {len(charge_filings)} charge registration(s) in its filing history, indicating secured borrowing. Charges grant creditors priority over company assets.",
+                'recommendation': 'Review the nature and extent of secured borrowing and assess whether existing charges might affect the company\'s ability to meet new obligations.',
+            })
+
+        # High resolution activity
+        if resolution_count >= 5:
+            findings.append({
+                'category': 'Governance',
+                'severity': 'Moderate',
+                'title': f'Frequent Special Resolutions ({resolution_count})',
+                'narrative': f"The company has filed {resolution_count} special resolutions, which may indicate significant corporate changes such as share restructuring, articles amendments, or changes to company objects.",
+                'recommendation': 'Review the nature of resolutions filed to understand the corporate changes that have occurred.',
+            })
+
         return findings
 
     def _fetch_all_appointments(self, appointments_link):
@@ -1549,6 +1726,61 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             border: 1px solid #ddd;
             border-radius: 5px;
         }}
+        .grants-summary {{
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin: 20px 0;
+        }}
+        .grants-stat {{
+            padding: 15px;
+            background: #f0f4ff;
+            border-radius: 5px;
+            text-align: center;
+            font-size: 18px;
+        }}
+        .grants-stat strong {{
+            display: block;
+            color: #667eea;
+            font-size: 12px;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+        }}
+        .grants-table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+            font-size: 13px;
+        }}
+        .grants-table th {{
+            background: #667eea;
+            color: white;
+            padding: 10px;
+            text-align: left;
+        }}
+        .grants-table td {{
+            padding: 8px 10px;
+            border-bottom: 1px solid #eee;
+        }}
+        .grants-table tr:hover td {{
+            background: #f5f7ff;
+        }}
+        .grant-detail {{
+            margin: 15px 0;
+            padding: 15px;
+            background: #f9f9f9;
+            border-left: 3px solid #667eea;
+            border-radius: 0 5px 5px 0;
+        }}
+        .grant-detail h4 {{
+            margin: 0 0 5px 0;
+            color: #333;
+        }}
+        .grant-meta {{
+            font-size: 12px;
+            color: #666;
+            margin: 0 0 10px 0;
+        }}
         @media print {{
             body {{ background: white; }}
             .section {{ box-shadow: none; border: 1px solid #ddd; }}
@@ -1574,15 +1806,21 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         <h2>2. Company Profile</h2>
         {self._generate_company_profile_html()}
     </div>
-    
+
+    {self._generate_timeline_section()}
+
+    {self._generate_ownership_section()}
+
     {self._generate_findings_section('Critical Risk Indicators', critical)}
     {self._generate_findings_section('Elevated Risk Indicators', elevated)}
     {self._generate_findings_section('Moderate Risk Indicators', moderate)}
-    
+
     {chart_html}
-    
+
+    {self._generate_grants_section()}
+
     {self._generate_positive_indicators_html(positive)}
-    
+
     <div class="section">
         <h2>Data Limitations & Disclaimers</h2>
         {self._generate_limitations_html()}
@@ -1992,6 +2230,44 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         html_output += '</div>'
         return html_output
     
+    def _generate_timeline_section(self):
+        """Generate the company timeline section HTML."""
+        if not getattr(self, '_timeline_b64', None):
+            return ''
+        return f'''
+        <div class="section">
+            <h2>3. Company Timeline</h2>
+            <p>This chart shows key events and periods in the company's history, including director and PSC
+            tenure periods, filing events, notices, and (if enabled) grants received.</p>
+            <div class="chart-container">
+                <img src="data:image/png;base64,{self._timeline_b64}" alt="Company Timeline Chart">
+            </div>
+        </div>
+        '''
+
+    def _generate_ownership_section(self):
+        """Generate the corporate ownership structure section HTML."""
+        if not getattr(self, '_ownership_b64', None):
+            return ''
+        return f'''
+        <div class="section">
+            <h2>Corporate Ownership Structure</h2>
+            <p>This diagram shows the corporate ownership chain traced through Persons with Significant
+            Control (PSC) data. Arrows indicate control relationships. The investigated company is shown
+            at the base of the tree.</p>
+            <div class="chart-container">
+                <img src="data:image/png;base64,{self._ownership_b64}" alt="Corporate Ownership Structure">
+            </div>
+        </div>
+        '''
+
+    def _generate_grants_section(self):
+        """Generate the grants data section HTML."""
+        grants_data = getattr(self, '_grants_data', None)
+        if grants_data is None:
+            return ''
+        return generate_grants_report_html(grants_data)
+
     def _generate_limitations_html(self):
         """Generate data limitations section."""
         html_output = '<p>This report is based on the following data sources and is subject to these limitations:</p><ul>'
@@ -2015,6 +2291,14 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         else:
             html_output += '<li><strong>No Financial Accounts:</strong> No iXBRL accounts were uploaded. Financial analysis is therefore not available and the assessment is based solely on Companies House registry data.</li>'
         
+        if getattr(self, '_grants_data', None) is not None:
+            grant_count = len(self._grants_data) if self._grants_data else 0
+            html_output += f'<li><strong>Grants Data (360Giving GrantNav):</strong> {grant_count} grant(s) found. GrantNav coverage depends on funders reporting to the 360Giving standard; not all UK grants are captured.</li>'
+
+        if getattr(self, '_ownership_data', None) is not None:
+            depth = max((r['level'] for r in self._ownership_data), default=0) if self._ownership_data else 0
+            html_output += f'<li><strong>Ownership Structure:</strong> Traced up to {depth} level(s) of corporate ownership via PSC data. Ownership chains involving non-UK entities or unregistered entities may be incomplete.</li>'
+
         html_output += '<li><strong>Scope Limitations:</strong> This report does not include: site visits, management interviews, verification of trading activity, credit reference checks, industry benchmarking, assessment of directors\' personal financial positions, or review of legal proceedings beyond what appears in the public registry.</li>'
         
         if self.industry_context_var.get():
