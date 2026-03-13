@@ -11,6 +11,7 @@ import tkinter as tk
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 from tkinter import ttk, filedialog, messagebox
 
 import pandas as pd
@@ -706,11 +707,30 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         if not items:
             return findings
 
-        # Late filing detection: compare date vs action_date for accounts filings
+        # Parse incorporation date for first-year accounts deadline calculation
+        inc_date_str = self.company_data.get('profile', {}).get('date_of_creation', '')
+        inc_date = None
+        if inc_date_str:
+            try:
+                inc_date = datetime.strptime(inc_date_str, '%Y-%m-%d')
+            except ValueError:
+                pass
+
         late_filings = []
         accounts_years = []
+        late_cs_filings = []
         charge_filings = []
         resolution_count = 0
+
+        # Collect all AA filing action_dates to identify the earliest (first-year filing)
+        aa_action_dates = []
+        for filing in items:
+            if filing.get('type', '').startswith('AA') and filing.get('action_date'):
+                try:
+                    aa_action_dates.append(datetime.strptime(filing['action_date'], '%Y-%m-%d'))
+                except ValueError:
+                    pass
+        earliest_aa_action_date = min(aa_action_dates) if aa_action_dates else None
 
         for filing in items:
             f_type = filing.get('type', '')
@@ -730,17 +750,46 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 except ValueError:
                     pass
 
-            # Check accounts filings
+            # Check accounts filings (AA type)
             if f_type.startswith('AA'):
-                if f_date:
+                # Use made-up-to year (action_date) for gap detection, with fallback
+                if f_action_date:
+                    accounts_years.append(f_action_date.year)
+                elif f_date:
                     accounts_years.append(f_date.year)
-                if f_date and f_action_date and f_date > f_action_date:
-                    days_late = (f_date - f_action_date).days
-                    late_filings.append({
-                        'date': f_date_str,
-                        'days_late': days_late,
-                        'description': filing.get('description', ''),
-                    })
+
+                # Late filing: deadline is 9 months after made-up-to date,
+                # or 21 months after incorporation for first-year accounts
+                if f_date and f_action_date:
+                    is_first_year = (
+                        inc_date is not None
+                        and earliest_aa_action_date is not None
+                        and f_action_date == earliest_aa_action_date
+                    )
+                    if is_first_year and inc_date:
+                        deadline = inc_date + relativedelta(months=21)
+                    else:
+                        deadline = f_action_date + relativedelta(months=9)
+
+                    if f_date > deadline:
+                        days_late = (f_date - deadline).days
+                        late_filings.append({
+                            'date': f_date_str,
+                            'days_late': days_late,
+                            'description': filing.get('description', ''),
+                        })
+
+            # Check confirmation statement filings (CS01 type)
+            # Deadline: 14 days after the review period end date (action_date)
+            if f_type.startswith('CS01'):
+                if f_date and f_action_date:
+                    cs_deadline = f_action_date + timedelta(days=14)
+                    if f_date > cs_deadline:
+                        days_late = (f_date - cs_deadline).days
+                        late_cs_filings.append({
+                            'date': f_date_str,
+                            'days_late': days_late,
+                        })
 
             # Track charges
             if f_type.startswith('MR01'):
@@ -750,7 +799,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             if f_type.startswith('RES') or 'resolution' in filing.get('description', '').lower():
                 resolution_count += 1
 
-        # Report late filings
+        # Report late accounts filings
         if late_filings:
             severity = 'Elevated' if len(late_filings) >= 3 else 'Moderate'
             late_details = '; '.join(
@@ -760,11 +809,25 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 'category': 'Governance',
                 'severity': severity,
                 'title': f'Late Accounts Filings Detected ({len(late_filings)})',
-                'narrative': f"Analysis of filing history shows {len(late_filings)} instance(s) where accounts were filed after their due date: {late_details}. A pattern of late filing may indicate poor financial management or administrative difficulties.",
+                'narrative': f"Analysis of filing history shows {len(late_filings)} instance(s) where accounts were filed after their statutory deadline (9 months from the accounting period end, or 21 months from incorporation for first-year accounts): {late_details}. A pattern of late filing may indicate poor financial management or administrative difficulties.",
                 'recommendation': 'Investigate reasons for late filing and assess current financial management capabilities.',
             })
 
-        # Accounts filing gaps
+        # Report late confirmation statement filings
+        if late_cs_filings:
+            severity = 'Elevated' if len(late_cs_filings) >= 3 else 'Moderate'
+            cs_details = '; '.join(
+                [f"{lf['date']} ({lf['days_late']} days late)" for lf in late_cs_filings[:5]]
+            )
+            findings.append({
+                'category': 'Governance',
+                'severity': severity,
+                'title': f'Late Confirmation Statements Detected ({len(late_cs_filings)})',
+                'narrative': f"Analysis of filing history shows {len(late_cs_filings)} instance(s) where confirmation statements were filed after their statutory deadline (14 days after the review period end): {cs_details}. Late confirmation statements may indicate administrative neglect.",
+                'recommendation': 'Verify that the company maintains timely corporate governance filings.',
+            })
+
+        # Accounts filing gaps (using made-up-to year)
         if len(accounts_years) >= 2:
             accounts_years_sorted = sorted(set(accounts_years))
             gaps = []
