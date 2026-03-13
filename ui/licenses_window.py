@@ -29,7 +29,7 @@ class LicensesWindow(tk.Toplevel):
         sources = [
             {
                 "name": "Software License",
-                "attribution": "The Data Investigation Multi-Tool was created by William Kenny in 2025. Copyright (c) 2025 William Kenny. This software is made available to you under the terms of the MIT License.",
+                "attribution": "Copyright (c) 2025 Crown Copyright. Created by William Kenny. This software is made available under the MIT License. Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files, to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.",
                 "url": "https://opensource.org/licenses/MIT",
             },
             {
