@@ -7,6 +7,7 @@ import threading
 from io import BytesIO
 from datetime import datetime, timedelta
 from typing import Optional
+from dateutil.relativedelta import relativedelta
 
 import matplotlib
 matplotlib.use('Agg')
@@ -17,8 +18,8 @@ import networkx as nx
 from networkx.drawing.nx_agraph import graphviz_layout
 
 from ..api.companies_house import ch_get_data
-from ..api.grantnav import get_all_grants_for_org
-from ..constants import FILING_TYPE_CATEGORIES, GRANT_DATA_FIELDS
+from ..api.grantnav import grantnav_get_data
+from ..constants import FILING_TYPE_CATEGORIES, GRANT_DATA_FIELDS, GRANTNAV_API_BASE_URL
 from ..utils.helpers import log_message, clean_company_number
 
 
@@ -123,7 +124,18 @@ def generate_company_timeline(
     # Filing events categorised
     filing_events = {'Accounts Filed': [], 'Confirmation Statement': [],
                      'Notices & Events': [], 'Other Filings': []}
-    for filing in (filing_history or {}).get('items', []):
+
+    # Find earliest AA action_date for first-year detection
+    all_items = (filing_history or {}).get('items', [])
+    aa_action_dates = []
+    for filing in all_items:
+        if filing.get('type', '').startswith('AA') and filing.get('action_date'):
+            ad = _parse_date(filing['action_date'])
+            if ad:
+                aa_action_dates.append(ad)
+    earliest_aa_action_date = min(aa_action_dates) if aa_action_dates else None
+
+    for filing in all_items:
         f_date = _parse_date(filing.get('date', ''))
         f_type = filing.get('type', '')
         f_action_date = _parse_date(filing.get('action_date', ''))
@@ -137,9 +149,20 @@ def generate_company_timeline(
                 break
 
         if category in ('Accounts Filed',):
+            # Determine if filing was late using statutory deadlines:
+            # First-year: 21 months from incorporation; subsequent: 9 months from made-up-to date
             is_late = False
-            if f_action_date and f_date > f_action_date:
-                is_late = True
+            if f_action_date and f_date:
+                is_first_year = (
+                    inc_date is not None
+                    and earliest_aa_action_date is not None
+                    and f_action_date == earliest_aa_action_date
+                )
+                if is_first_year and inc_date:
+                    deadline = inc_date + relativedelta(months=21)
+                else:
+                    deadline = f_action_date + relativedelta(months=9)
+                is_late = f_date > deadline
             filing_events['Accounts Filed'].append({
                 'date': f_date, 'type': f_type, 'late': is_late,
                 'description': filing.get('description', ''),
@@ -149,7 +172,9 @@ def generate_company_timeline(
                 'date': f_date, 'type': f_type,
             })
         elif category in ('First Gazette (Strike-off)', 'Second Gazette (Strike-off)',
-                          'Liquidation', 'Administration', 'Change of Name'):
+                          'Liquidation', 'Administration', 'Change of Name',
+                          'Striking Off Application', 'Restoration to Register',
+                          'Voluntary Arrangement', 'Receiver/Manager Appointed'):
             filing_events['Notices & Events'].append({
                 'date': f_date, 'type': f_type, 'category': category,
                 'description': filing.get('description', ''),
@@ -257,12 +282,26 @@ def generate_company_timeline(
                 'Liquidation': '#DC3545',
                 'Administration': '#FD7E14',
                 'Change of Name': '#6C757D',
+                'Striking Off Application': '#DC3545',
+                'Restoration to Register': '#28A745',
+                'Voluntary Arrangement': '#FD7E14',
+                'Receiver/Manager Appointed': '#DC3545',
             }
+            # Only annotate if not too cluttered
+            annotate = len(events) <= 15
             for evt in events:
                 c = color_map.get(evt.get('category', ''), '#DC3545')
                 ax.scatter(mdates.date2num(evt['date']), row_idx,
                            c=c, marker='^', s=50, zorder=5, edgecolors='black',
                            linewidths=0.5)
+                if annotate:
+                    label_text = evt.get('category', evt.get('type', ''))
+                    if label_text:
+                        ax.annotate(
+                            label_text, (mdates.date2num(evt['date']), row_idx),
+                            textcoords="offset points", xytext=(0, 8),
+                            fontsize=5, ha='center', color=c, rotation=45,
+                        )
         elif cat_name == 'Other Filings':
             for evt in events:
                 ax.scatter(mdates.date2num(evt['date']), row_idx,
@@ -343,9 +382,33 @@ def generate_company_timeline(
 # ---------------------------------------------------------------------------
 
 def fetch_grants_for_company(company_number: str) -> list:
-    """Fetch all grants for a company from GrantNav API."""
-    org_id = f"GB-COH-{clean_company_number(company_number)}"
-    return get_all_grants_for_org(org_id)
+    """Fetch all grants for a company from GrantNav API.
+
+    Uses the /org/{id}/grants_received endpoint (same as Director Search)
+    which is the reliable endpoint for fetching grants by organisation.
+    """
+    import urllib.parse
+
+    cleaned = clean_company_number(company_number)
+    if not cleaned:
+        return []
+
+    org_id = f"GB-COH-{cleaned}"
+    encoded_id = urllib.parse.quote(org_id)
+    url = f"{GRANTNAV_API_BASE_URL}/org/{encoded_id}/grants_received?limit=1000"
+
+    all_grants = []
+    while url:
+        data, error = grantnav_get_data(url)
+        if error or not data:
+            break
+        results = data.get("results", [])
+        if not results:
+            break
+        all_grants.extend(item.get("data", {}) for item in results if isinstance(item, dict))
+        url = data.get("next")
+
+    return all_grants
 
 
 def generate_grants_report_html(grants_data: list) -> str:
@@ -638,33 +701,34 @@ def generate_static_ownership_graph(
         ax.axis('off')
         return _fig_to_base64(fig)
 
-    # Layout
+    # Layout - compress spacing to reduce long edges
+    G.graph['graph'] = {'rankdir': 'TB', 'ranksep': '0.5', 'nodesep': '0.3'}
     try:
         pos = graphviz_layout(G, prog='dot')
     except Exception:
         # Fallback to manual hierarchical layout
         pos = _hierarchical_layout(G, root_id)
 
-    # Node colours and sizes
+    # Node colours and sizes (smaller nodes since labels are offset)
     node_colors = []
     node_sizes = []
     for node in G.nodes():
         ntype = G.nodes[node].get('node_type', '')
         if ntype == 'company':
             node_colors.append('#B9D9EB')
-            node_sizes.append(2000)
+            node_sizes.append(1400)
         elif ntype == 'corporate_psc':
             node_colors.append('#C5D9F1')
-            node_sizes.append(1800)
+            node_sizes.append(1200)
         elif ntype == 'individual_psc':
             node_colors.append('#D9E8B9')
-            node_sizes.append(1500)
+            node_sizes.append(1000)
         elif ntype == 'ceased':
             node_colors.append('#E0E0E0')
-            node_sizes.append(1200)
+            node_sizes.append(800)
         else:
             node_colors.append('#FFFFFF')
-            node_sizes.append(1200)
+            node_sizes.append(800)
 
     # Draw
     fig_height = max(figsize[1], 3 + len(G.nodes) * 0.5)
@@ -672,10 +736,16 @@ def generate_static_ownership_graph(
 
     labels = {n: G.nodes[n].get('label', n) for n in G.nodes()}
 
+    # Offset label positions above nodes to avoid text overlapping the node
+    y_vals = [p[1] for p in pos.values()]
+    y_range = max(y_vals) - min(y_vals) if len(y_vals) > 1 else 100
+    label_offset = y_range * 0.06
+    label_pos = {node: (x, y + label_offset) for node, (x, y) in pos.items()}
+
     nx.draw_networkx_nodes(G, pos, ax=ax, node_color=node_colors,
                            node_size=node_sizes, edgecolors='#333333',
                            linewidths=1)
-    nx.draw_networkx_labels(G, pos, labels=labels, ax=ax, font_size=7,
+    nx.draw_networkx_labels(G, label_pos, labels=labels, ax=ax, font_size=7,
                             font_family='sans-serif')
     nx.draw_networkx_edges(G, pos, ax=ax, edge_color='#666666',
                            arrows=True, arrowsize=15, arrowstyle='-|>',
