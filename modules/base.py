@@ -148,8 +148,8 @@ class InvestigationModuleBase(ttk.Frame):
                 # Remove our own ID so the list stays bounded
                 try:
                     self._after_ids.remove(after_id_holder[0])
-                except ValueError:
-                    pass  # Already removed (e.g. via safe_go_back)
+                except (ValueError, IndexError):
+                    pass  # Already removed or holder not yet populated
 
         after_id = self.after(ms, _wrapper)
         after_id_holder.append(after_id)
