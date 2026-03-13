@@ -33,14 +33,48 @@ def _fig_to_base64(fig) -> str:
     return image_base64
 
 
+def _fig_to_svg(fig) -> str:
+    """Convert a matplotlib figure to an inline SVG string.
+
+    SVG output scales without quality loss, allowing the user to zoom
+    in on detail (e.g. small text on a timeline) without pixelation.
+    """
+    buffer = BytesIO()
+    fig.savefig(buffer, format='svg', bbox_inches='tight')
+    buffer.seek(0)
+    svg_str = buffer.getvalue().decode('utf-8')
+    plt.close(fig)
+    return svg_str
+
+
 def _parse_date(date_str: str) -> Optional[datetime]:
-    """Parse a YYYY-MM-DD date string, returning None on failure."""
+    """Parse a date string, handling YYYY-MM-DD and ISO 8601 formats."""
     if not date_str or not date_str.strip():
         return None
+    s = date_str.strip()
+    # Try plain YYYY-MM-DD first (most common from Companies House)
     try:
-        return datetime.strptime(date_str.strip(), '%Y-%m-%d')
+        return datetime.strptime(s[:10], '%Y-%m-%d')
     except (ValueError, TypeError):
-        return None
+        pass
+    # Try common display formats (e.g. "16 Mar 2021", "16 March 2021")
+    for fmt in ('%d %b %Y', '%d %B %Y'):
+        try:
+            return datetime.strptime(s, fmt)
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def format_display_date(date_str: str) -> str:
+    """Format a date string to 'd Month YYYY' (e.g. '16 March 2021') for display.
+
+    Returns the original string if parsing fails.
+    """
+    d = _parse_date(date_str)
+    if d:
+        return d.strftime('%-d %B %Y')
+    return date_str or 'N/A'
 
 
 def _get_nested_value(data: dict, key_path: str):
@@ -244,7 +278,7 @@ def generate_company_timeline(
         ax.text(0.5, 0.5, 'Insufficient data for timeline', ha='center', va='center',
                 transform=ax.transAxes, fontsize=12, color='grey')
         ax.axis('off')
-        return _fig_to_base64(fig)
+        return _fig_to_svg(fig)
 
     n_rows = len(rows)
     fig_height = max(4, min(figsize[1], 2 + n_rows * 0.55))
@@ -374,7 +408,7 @@ def generate_company_timeline(
                  framealpha=0.9)
 
     plt.tight_layout()
-    return _fig_to_base64(fig)
+    return _fig_to_svg(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +481,7 @@ def generate_grants_report_html(grants_data: list) -> str:
     date_range = ""
     if dates:
         dates.sort()
-        date_range = f"{dates[0].strftime('%d %b %Y')} to {dates[-1].strftime('%d %b %Y')}"
+        date_range = f"{dates[0].strftime('%-d %B %Y')} to {dates[-1].strftime('%-d %B %Y')}"
 
     currency_symbol = '£' if 'GBP' in currencies or not currencies else list(currencies)[0] + ' '
 
@@ -484,11 +518,7 @@ def generate_grants_report_html(grants_data: list) -> str:
                            reverse=True)
 
     for grant in sorted_grants:
-        award_date = grant.get('awardDate', 'N/A')
-        if award_date and award_date != 'N/A':
-            d = _parse_date(award_date)
-            if d:
-                award_date = d.strftime('%d %b %Y')
+        award_date = format_display_date(grant.get('awardDate', ''))
 
         title = html.escape(str(grant.get('title', 'N/A')))
         funder = html.escape(str(_get_nested_value(grant, 'fundingOrganization_name') or 'N/A'))
@@ -522,9 +552,7 @@ def generate_grants_report_html(grants_data: list) -> str:
             title = html.escape(str(grant.get('title', 'Untitled')))
             desc = html.escape(str(grant.get('description', '')))
             funder = html.escape(str(_get_nested_value(grant, 'fundingOrganization_name') or 'Unknown'))
-            award_date = grant.get('awardDate', '')
-            d = _parse_date(award_date)
-            date_str = d.strftime('%d %b %Y') if d else 'N/A'
+            date_str = format_display_date(grant.get('awardDate', ''))
             try:
                 amount = float(grant.get('amountAwarded', 0))
                 amount_str = f"{currency_symbol}{amount:,.2f}"
@@ -656,7 +684,7 @@ def generate_static_ownership_graph(
         ax.text(0.5, 0.5, 'No corporate ownership chain found', ha='center', va='center',
                 transform=ax.transAxes, fontsize=12, color='grey')
         ax.axis('off')
-        return _fig_to_base64(fig)
+        return _fig_to_svg(fig)
 
     G = nx.DiGraph()
 
@@ -666,6 +694,8 @@ def generate_static_ownership_graph(
     G.add_node(root_id, label=root_label, node_type='company')
 
     # Build graph from ownership data
+    # Track which nodes have an active (non-ceased) entry so that when the
+    # same person appears both as active and ceased we keep the active state.
     company_names = {company_number: company_name}
     for rel in ownership_data:
         parent = rel['parent_company_number']
@@ -688,7 +718,14 @@ def generate_static_ownership_graph(
         if ceased:
             node_type = 'ceased'
 
-        G.add_node(node_id, label=node_label, node_type=node_type)
+        # If this node already exists with an active (non-ceased) type, do not
+        # overwrite it with 'ceased' — the active relationship takes precedence.
+        existing_type = G.nodes[node_id].get('node_type') if node_id in G else None
+        if existing_type and existing_type != 'ceased' and node_type == 'ceased':
+            # Keep the existing active node; still add the edge below
+            pass
+        else:
+            G.add_node(node_id, label=node_label, node_type=node_type)
 
         # Edge: PSC controls parent company
         edge_label = _abbreviate_natures(natures)
@@ -699,7 +736,7 @@ def generate_static_ownership_graph(
         ax.text(0.5, 0.5, 'No ownership data to display', ha='center', va='center',
                 transform=ax.transAxes, fontsize=12, color='grey')
         ax.axis('off')
-        return _fig_to_base64(fig)
+        return _fig_to_svg(fig)
 
     # Layout - compress spacing to reduce long edges
     G.graph['graph'] = {'rankdir': 'TB', 'ranksep': '0.5', 'nodesep': '0.3'}
@@ -770,7 +807,7 @@ def generate_static_ownership_graph(
     ax.legend(handles=legend_items, loc='lower right', fontsize=7, framealpha=0.9)
 
     plt.tight_layout()
-    return _fig_to_base64(fig)
+    return _fig_to_svg(fig)
 
 
 def _wrap_label(text: str, max_width: int = 25) -> str:

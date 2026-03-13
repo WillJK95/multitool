@@ -36,6 +36,7 @@ from ..utils.edd_visualizations import (
     generate_grants_report_html,
     trace_ownership_chain,
     generate_static_ownership_graph,
+    format_display_date,
 )
 
 class EnhancedDueDiligence(InvestigationModuleBase):
@@ -420,7 +421,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         summary = f"Company Name: {profile.get('company_name', 'N/A')}\n"
         summary += f"Company Number: {profile.get('company_number', 'N/A')}\n"
         summary += f"Status: {profile.get('company_status', 'N/A')}\n"
-        summary += f"Incorporated: {profile.get('date_of_creation', 'N/A')}\n"
+        summary += f"Incorporated: {format_display_date(profile.get('date_of_creation', ''))}\n"
         
         addr = profile.get('registered_office_address', {})
         addr_str = ", ".join(filter(None, [
@@ -677,7 +678,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     'category': 'Governance',
                     'severity': 'Elevated',
                     'title': 'Notice to Strike Off Filed',
-                    'narrative': f"A notice regarding strike-off action was filed on {filing.get('date', 'unknown date')}. This may indicate the company is being dissolved.",
+                    'narrative': f"A notice regarding strike-off action was filed on {format_display_date(filing.get('date', ''))}. This may indicate the company is being dissolved.",
                     'recommendation': 'Verify current company status directly with Companies House and assess whether the company is actively trading.'
                 })
                 break
@@ -693,7 +694,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     'category': 'Governance',
                     'severity': 'Moderate',
                     'title': 'Recently Incorporated Company',
-                    'narrative': f"The company was incorporated on {profile['date_of_creation']}, approximately {int(age_months)} months ago. Recently incorporated companies have limited trading history.",
+                    'narrative': f"The company was incorporated on {format_display_date(profile['date_of_creation'])}, approximately {int(age_months)} months ago. Recently incorporated companies have limited trading history.",
                     'recommendation': 'Request additional due diligence on the directors and any parent/sister companies. Consider tighter credit terms or guarantees.'
                 })
         
@@ -774,7 +775,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     if f_date > deadline:
                         days_late = (f_date - deadline).days
                         late_filings.append({
-                            'date': f_date_str,
+                            'date': format_display_date(f_date_str),
                             'days_late': days_late,
                             'description': filing.get('description', ''),
                         })
@@ -787,7 +788,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     if f_date > cs_deadline:
                         days_late = (f_date - cs_deadline).days
                         late_cs_filings.append({
-                            'date': f_date_str,
+                            'date': format_display_date(f_date_str),
                             'days_late': days_late,
                         })
 
@@ -907,7 +908,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 'category': 'Governance',
                 'severity': 'Elevated',
                 'title': 'Accounts Currently Overdue',
-                'narrative': f"The company's accounts are currently overdue. The next accounts were due on {accounts.get('next_due', 'unknown date')}.",
+                'narrative': f"The company's accounts are currently overdue. The next accounts were due on {format_display_date(accounts.get('next_due', ''))}.",
                 'recommendation': 'Late filing may indicate administrative difficulties or financial stress. Request current management accounts.'
             })
         
@@ -1950,7 +1951,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             ('Company Number', html.escape(profile.get('company_number', 'N/A'))),
             ('Status', html.escape(profile.get('company_status', 'N/A'))),
             ('Type', html.escape(profile.get('type', 'N/A'))),
-            ('Incorporated', html.escape(profile.get('date_of_creation', 'N/A'))),
+            ('Incorporated', html.escape(format_display_date(profile.get('date_of_creation', '')))),
             ('Jurisdiction', html.escape(profile.get('jurisdiction', 'N/A'))),
             ('Registered Address', html.escape(address)),
             ('Active Officers', str(active_officers)),
@@ -2301,9 +2302,10 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         <div class="section">
             <h2>3. Company Timeline</h2>
             <p>This chart shows key events and periods in the company's history, including director and PSC
-            tenure periods, filing events, notices, and (if enabled) grants received.</p>
-            <div class="chart-container">
-                <img src="data:image/png;base64,{self._timeline_b64}" alt="Company Timeline Chart">
+            tenure periods, filing events, notices, and (if enabled) grants received.
+            The chart is rendered as a vector graphic &mdash; zoom in via your browser (Ctrl/Cmd +) for detail.</p>
+            <div class="chart-container" style="overflow:auto; max-width:100%;">
+                {self._timeline_b64}
             </div>
         </div>
         '''
@@ -2318,8 +2320,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             <p>This diagram shows the corporate ownership chain traced through Persons with Significant
             Control (PSC) data. Arrows indicate control relationships. The investigated company is shown
             at the base of the tree.</p>
-            <div class="chart-container">
-                <img src="data:image/png;base64,{self._ownership_b64}" alt="Corporate Ownership Structure">
+            <div class="chart-container" style="overflow:auto; max-width:100%;">
+                {self._ownership_b64}
             </div>
         </div>
         '''
