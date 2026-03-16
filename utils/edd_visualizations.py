@@ -747,38 +747,61 @@ def generate_static_ownership_graph(
         ax.axis('off')
         return _fig_to_svg(fig)
 
+    # Determine maximum ownership depth
+    max_depth = max((rel.get('level', 1) for rel in ownership_data), default=1)
+    is_shallow = max_depth <= 1
+
     # Layout - compress spacing to reduce long edges
-    G.graph['graph'] = {'rankdir': 'TB', 'ranksep': '0.5', 'nodesep': '0.3'}
+    if is_shallow:
+        G.graph['graph'] = {'rankdir': 'TB', 'ranksep': '0.3', 'nodesep': '0.25'}
+    else:
+        G.graph['graph'] = {'rankdir': 'TB', 'ranksep': '0.5', 'nodesep': '0.3'}
     try:
         pos = graphviz_layout(G, prog='dot')
     except Exception:
         # Fallback to manual hierarchical layout
         pos = _hierarchical_layout(G, root_id)
 
+    # For shallow graphs, compress the vertical spacing after layout
+    if is_shallow and pos:
+        y_vals = [p[1] for p in pos.values()]
+        y_min, y_max = min(y_vals), max(y_vals)
+        y_range = y_max - y_min
+        if y_range > 0:
+            # Compress vertical range to ~40% of original
+            y_mid = (y_max + y_min) / 2
+            pos = {n: (x, y_mid + (y - y_mid) * 0.4) for n, (x, y) in pos.items()}
+
     # Node colours and sizes (smaller nodes since labels are offset)
     node_colors = []
     node_sizes = []
+    node_size_scale = 0.7 if is_shallow else 1.0
     for node in G.nodes():
         ntype = G.nodes[node].get('node_type', '')
         if ntype == 'company':
             node_colors.append('#B9D9EB')
-            node_sizes.append(1400)
+            node_sizes.append(int(1400 * node_size_scale))
         elif ntype == 'corporate_psc':
             node_colors.append('#C5D9F1')
-            node_sizes.append(1200)
+            node_sizes.append(int(1200 * node_size_scale))
         elif ntype == 'individual_psc':
             node_colors.append('#D9E8B9')
-            node_sizes.append(1000)
+            node_sizes.append(int(1000 * node_size_scale))
         elif ntype == 'ceased':
             node_colors.append('#E0E0E0')
-            node_sizes.append(800)
+            node_sizes.append(int(800 * node_size_scale))
         else:
             node_colors.append('#FFFFFF')
-            node_sizes.append(800)
+            node_sizes.append(int(800 * node_size_scale))
 
-    # Draw
-    fig_height = max(figsize[1], 3 + len(G.nodes) * 0.5)
-    fig, ax = plt.subplots(figsize=(figsize[0], min(fig_height, 20)))
+    # Draw — use a compact figure for shallow structures
+    if is_shallow:
+        fig_width = min(figsize[0], max(8, len(G.nodes) * 2.5))
+        fig_height = max(4, 2 + len(G.nodes) * 0.4)
+    else:
+        fig_width = figsize[0]
+        fig_height = max(figsize[1], 3 + len(G.nodes) * 0.5)
+    fig, ax = plt.subplots(figsize=(fig_width, min(fig_height, 20)))
 
     labels = {n: G.nodes[n].get('label', n) for n in G.nodes()}
 
@@ -805,6 +828,14 @@ def generate_static_ownership_graph(
 
     ax.set_title('Corporate Ownership Structure', fontsize=13, fontweight='bold', pad=10)
     ax.axis('off')
+
+    # Add horizontal margins so node labels are not clipped at edges
+    x_vals = [p[0] for p in pos.values()]
+    if x_vals:
+        x_min, x_max = min(x_vals), max(x_vals)
+        x_range = x_max - x_min if x_max != x_min else 100
+        x_pad = x_range * 0.15  # 15% padding on each side
+        ax.set_xlim(x_min - x_pad, x_max + x_pad)
 
     # Legend
     legend_items = [

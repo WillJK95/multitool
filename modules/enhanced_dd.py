@@ -27,6 +27,9 @@ from ..api.companies_house import ch_get_data
 from ..constants import (
     CONFIG_DIR,
     FILING_TYPE_CATEGORIES,
+    MANUAL_INPUT_FIELDS_TIER1,
+    MANUAL_INPUT_FIELDS_TIER2,
+    PAYMENT_MECHANISMS,
 )
 from .base import InvestigationModuleBase
 from ..utils.helpers import log_message, clean_company_number
@@ -37,6 +40,10 @@ from ..utils.edd_visualizations import (
     trace_ownership_chain,
     generate_static_ownership_graph,
     format_display_date,
+)
+from ..utils.edd_cross_analysis import (
+    UnifiedFinancialData,
+    run_cross_analysis,
 )
 
 class EnhancedDueDiligence(InvestigationModuleBase):
@@ -103,7 +110,10 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         
         self.accounts_status_label = ttk.Label(upload_frame, text="No accounts loaded.")
         self.accounts_status_label.pack(side=tk.LEFT, padx=10)
-        
+
+        # Step 2b: Manual Input Form (collapsible)
+        self._build_manual_input_form()
+
         # Step 3: Configure Analysis
         config_frame = ttk.LabelFrame(
             self.content_frame, text="Step 3: Configure Analysis", padding=10
@@ -174,6 +184,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         extra_checks = [
             ('filing_patterns', 'Filing history pattern analysis', True),
             ('grants_lookup', 'Include grants received (360Giving GrantNav)', False),
+            ('cross_analysis', 'Financial & grant cross-analysis', False),
             ('ownership_graph', 'Corporate ownership structure graph (API calls per corporate PSC)', False),
         ]
 
@@ -183,6 +194,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             widget = ttk.Checkbutton(extra_frame, text=label, variable=var)
             widget.pack(anchor='w')
             self.check_widgets[key] = widget
+
+        # Auto-enable grants when cross-analysis is toggled on
+        def _on_cross_analysis_toggle(*_args):
+            if self.check_vars['cross_analysis'].get():
+                self.check_vars['grants_lookup'].set(True)
+        self.check_vars['cross_analysis'].trace_add('write', _on_cross_analysis_toggle)
 
         # Advanced settings (collapsible)
         self.show_advanced = tk.BooleanVar(value=False)
@@ -342,6 +359,245 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             self.threshold_vars[key] = var
             ttk.Entry(frame, textvariable=var, width=10).pack(side=tk.LEFT)
     
+    def _build_manual_input_form(self):
+        """Build the manual input form for grant details and supplementary accounts data."""
+        self.show_manual_input = tk.BooleanVar(value=False)
+        manual_toggle = ttk.Checkbutton(
+            self.content_frame,
+            text="\u25B6 Grant Details & Supplementary Accounts Data (Optional)",
+            variable=self.show_manual_input,
+            command=self._toggle_manual_input,
+        )
+        manual_toggle.pack(anchor='w', padx=10, pady=(5, 0))
+        self._manual_toggle_widget = manual_toggle
+
+        self.manual_input_frame = ttk.Frame(self.content_frame)
+        # Will be packed/unpacked by toggle
+
+        # --- Proposed Grant Details ---
+        grant_frame = ttk.LabelFrame(
+            self.manual_input_frame, text="Proposed Grant Details", padding=5
+        )
+        grant_frame.pack(fill=tk.X, pady=2, padx=5)
+
+        row = ttk.Frame(grant_frame)
+        row.pack(fill=tk.X, pady=2)
+        ttk.Label(row, text="Proposed Award Amount (\u00a3):", width=30).pack(side=tk.LEFT)
+        self.proposed_award_var = tk.StringVar()
+        ttk.Entry(row, textvariable=self.proposed_award_var, width=15).pack(side=tk.LEFT)
+
+        row = ttk.Frame(grant_frame)
+        row.pack(fill=tk.X, pady=2)
+        ttk.Label(row, text="Payment Mechanism:", width=30).pack(side=tk.LEFT)
+        self.payment_mechanism_var = tk.StringVar(value='Unknown')
+        ttk.Combobox(
+            row, textvariable=self.payment_mechanism_var,
+            values=PAYMENT_MECHANISMS, state='readonly', width=18
+        ).pack(side=tk.LEFT)
+
+        # --- Supplementary Accounts Data (multi-year) ---
+        supp_frame = ttk.LabelFrame(
+            self.manual_input_frame, text="Supplementary Accounts Data", padding=5
+        )
+        supp_frame.pack(fill=tk.X, pady=2, padx=5)
+
+        ttk.Label(
+            supp_frame,
+            text="Enter figures for up to 5 accounting periods. Use the same period end dates as "
+                 "the filed accounts so that manual data merges correctly with uploaded iXBRL data. "
+                 "Enter losses and negative values with a minus sign (e.g. -15000).",
+            foreground='grey', wraplength=600, justify=tk.LEFT,
+        ).pack(anchor='w', pady=(0, 5))
+
+        # Buttons row
+        btn_row = ttk.Frame(supp_frame)
+        btn_row.pack(fill=tk.X, pady=(0, 5))
+        ttk.Button(btn_row, text="Add Year", command=self._add_manual_year).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(btn_row, text="Clear All", command=self._clear_all_manual_input).pack(side=tk.LEFT)
+
+        # Container for year panels
+        self._manual_years_container = ttk.Frame(supp_frame)
+        self._manual_years_container.pack(fill=tk.X)
+
+        # List of year panel data: each entry is a dict of StringVars + the frame widget
+        self._manual_year_panels = []
+
+        # Start with one year panel
+        self._add_manual_year()
+
+    def _add_manual_year(self):
+        """Add a new year panel to the supplementary accounts section."""
+        if len(self._manual_year_panels) >= 5:
+            return  # Max 5 years
+
+        idx = len(self._manual_year_panels) + 1
+        panel_frame = ttk.LabelFrame(
+            self._manual_years_container,
+            text=f"Year {idx}",
+            padding=5,
+        )
+        panel_frame.pack(fill=tk.X, pady=2)
+
+        vars_dict = {}
+
+        # Use a grid for consistent alignment
+        grid_frame = ttk.Frame(panel_frame)
+        grid_frame.pack(fill=tk.X, pady=1)
+        grid_frame.columnconfigure(0, weight=1)  # Label column stretches
+        grid_frame.columnconfigure(1, weight=0)  # Entry column fixed
+        grid_row = 0
+
+        # Period end date
+        ttk.Label(grid_frame, text="Accounting Period End Date:").grid(
+            row=grid_row, column=0, sticky='w', pady=1)
+        period_box = ttk.Frame(grid_frame)
+        period_box.grid(row=grid_row, column=1, sticky='e', pady=1)
+        period_var = tk.StringVar()
+        vars_dict['_period_end'] = period_var
+        ttk.Entry(period_box, textvariable=period_var, width=15).pack(side=tk.LEFT)
+        ttk.Label(period_box, text=" YYYY-MM-DD", foreground='grey').pack(side=tk.LEFT)
+        grid_row += 1
+
+        # Tier 1 fields (always visible)
+        for field_key, _, label in MANUAL_INPUT_FIELDS_TIER1:
+            display = label
+            hint = ""
+            if 'Profit' in label or 'Loss' in label:
+                hint = "  (negative for loss)"
+            ttk.Label(grid_frame, text=f"{display} (\u00a3):{hint}").grid(
+                row=grid_row, column=0, sticky='w', pady=1)
+            var = tk.StringVar()
+            vars_dict[field_key] = var
+            ttk.Entry(grid_frame, textvariable=var, width=15).grid(
+                row=grid_row, column=1, sticky='e', pady=1)
+            grid_row += 1
+
+        # Tier 2 toggle
+        show_t2 = tk.BooleanVar(value=False)
+        vars_dict['_show_tier2'] = show_t2
+        t2_toggle = ttk.Checkbutton(
+            panel_frame,
+            text="\u25B6 Additional fields",
+            variable=show_t2,
+        )
+        t2_toggle.pack(anchor='w', pady=(3, 0))
+
+        t2_frame = ttk.Frame(panel_frame)
+
+        def _toggle_t2(_show=show_t2, _frame=t2_frame, _btn=t2_toggle):
+            if _show.get():
+                _frame.pack(fill=tk.X, pady=1)
+                _btn.config(text="\u25BC Additional fields")
+            else:
+                _frame.pack_forget()
+                _btn.config(text="\u25B6 Additional fields")
+
+        show_t2.trace_add('write', lambda *_a, cb=_toggle_t2: cb())
+
+        t2_grid = ttk.Frame(t2_frame)
+        t2_grid.pack(fill=tk.X)
+        t2_grid.columnconfigure(0, weight=1)
+        t2_grid.columnconfigure(1, weight=0)
+        t2_row = 0
+        for field_key, _, label in MANUAL_INPUT_FIELDS_TIER2:
+            ttk.Label(t2_grid, text=f"{label} (\u00a3):").grid(
+                row=t2_row, column=0, sticky='w', pady=1)
+            var = tk.StringVar()
+            vars_dict[field_key] = var
+            ttk.Entry(t2_grid, textvariable=var, width=15).grid(
+                row=t2_row, column=1, sticky='e', pady=1)
+            t2_row += 1
+
+        # Remove button
+        ttk.Button(
+            panel_frame, text="Remove",
+            command=lambda f=panel_frame: self._remove_manual_year(f),
+        ).pack(anchor='e', pady=(3, 0))
+
+        self._manual_year_panels.append({
+            'frame': panel_frame,
+            'vars': vars_dict,
+        })
+
+    def _remove_manual_year(self, frame_widget):
+        """Remove a specific year panel."""
+        self._manual_year_panels = [
+            p for p in self._manual_year_panels if p['frame'] is not frame_widget
+        ]
+        frame_widget.destroy()
+        # Re-number remaining panels
+        for i, panel in enumerate(self._manual_year_panels, 1):
+            panel['frame'].config(text=f"Year {i}")
+
+    def _clear_all_manual_input(self):
+        """Clear all manual input fields including grant details."""
+        self.proposed_award_var.set('')
+        self.payment_mechanism_var.set('Unknown')
+        # Remove all year panels and add a fresh one
+        for panel in self._manual_year_panels:
+            panel['frame'].destroy()
+        self._manual_year_panels.clear()
+        self._add_manual_year()
+
+    def _toggle_manual_input(self):
+        """Show/hide the manual input form."""
+        if self.show_manual_input.get():
+            self.manual_input_frame.pack(fill=tk.X, pady=5, padx=10,
+                                         before=self._get_config_frame())
+            self._manual_toggle_widget.config(
+                text="\u25BC Grant Details & Supplementary Accounts Data (Optional)"
+            )
+        else:
+            self.manual_input_frame.pack_forget()
+            self._manual_toggle_widget.config(
+                text="\u25B6 Grant Details & Supplementary Accounts Data (Optional)"
+            )
+
+    def _get_config_frame(self):
+        """Return the Step 3 config frame widget for insertion ordering."""
+        for widget in self.content_frame.winfo_children():
+            if isinstance(widget, ttk.LabelFrame) and "Configure Analysis" in str(widget.cget('text')):
+                return widget
+        return None
+
+    def _collect_manual_input(self):
+        """Collect multi-year manual input into a list of year dicts. Call on main thread.
+
+        Returns a list of dicts, each with 'year' (int extracted from period end)
+        and metric keys with float values.  Empty panels are skipped.
+        """
+        years_data = []
+        for panel in self._manual_year_panels:
+            vars_dict = panel['vars']
+            period_raw = vars_dict['_period_end'].get().strip()
+
+            # Extract year from period end date
+            year = None
+            if period_raw:
+                try:
+                    year = datetime.strptime(period_raw[:10], '%Y-%m-%d').year
+                except ValueError:
+                    # Try plain year
+                    if period_raw.isdigit() and len(period_raw) == 4:
+                        year = int(period_raw)
+
+            year_data = {}
+            for key, var in vars_dict.items():
+                if key.startswith('_'):
+                    continue
+                raw = var.get().strip().replace(',', '').replace('\u00a3', '')
+                if raw:
+                    try:
+                        year_data[key] = float(raw)
+                    except ValueError:
+                        log_message(f"Invalid manual input for {key}: {raw}")
+
+            if year_data and year is not None:
+                year_data['_year'] = year
+                years_data.append(year_data)
+
+        return years_data
+
     def _toggle_advanced_settings(self):
         """Show/hide advanced settings panel."""
         if self.show_advanced.get():
@@ -508,12 +764,24 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         """Kick off report generation in background thread."""
         self.generate_btn.config(state='disabled')
         self.cancel_flag.clear()
-        
+
         # Update thresholds from UI
         if self.show_advanced.get():
             for key, var in self.threshold_vars.items():
                 self.thresholds[key] = var.get()
-        
+
+        # Collect manual input on main thread (thread-safe)
+        self._manual_data = self._collect_manual_input()
+        self._proposed_award = 0.0
+        self._payment_mechanism = 'Unknown'
+        raw_award = self.proposed_award_var.get().strip().replace(',', '').replace('£', '')
+        if raw_award:
+            try:
+                self._proposed_award = float(raw_award)
+            except ValueError:
+                log_message(f"Invalid proposed award amount: {raw_award}")
+        self._payment_mechanism = self.payment_mechanism_var.get() or 'Unknown'
+
         threading.Thread(target=self._generate_report_thread, daemon=True).start()
     
     def _generate_report_thread(self):
@@ -576,6 +844,44 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     self._grants_data = fetch_grants_for_company(cnum)
                 except Exception as e:
                     log_message(f"Error fetching grants data: {e}")
+
+            # Cross-analysis rules
+            self._cross_analysis_report = None
+            if self.check_vars.get('cross_analysis', tk.BooleanVar(value=False)).get():
+                self.safe_update(self.status_var.set, "Running cross-analysis rules...")
+                try:
+                    unified = UnifiedFinancialData(
+                        auto_analyzer=self.financial_analyzer,
+                        manual_data=self._manual_data,
+                    )
+                    # Detect late filing for quality gate
+                    late_filing_detected = any(
+                        f.get('severity') in ('Critical', 'Elevated') and 'late' in f.get('title', '').lower()
+                        for f in findings
+                    )
+                    # Company age
+                    company_age_months = None
+                    inc_date_str = self.company_data.get('profile', {}).get('date_of_creation', '')
+                    if inc_date_str:
+                        try:
+                            inc_date = datetime.strptime(inc_date_str, '%Y-%m-%d')
+                            company_age_months = (datetime.now() - inc_date).days / 30.0
+                        except ValueError:
+                            pass
+                    # Accounts type from profile
+                    accounts_type = self.company_data.get('profile', {}).get('accounts', {}).get('type')
+
+                    self._cross_analysis_report = run_cross_analysis(
+                        unified=unified,
+                        grants_data=self._grants_data,
+                        proposed_award=self._proposed_award,
+                        payment_mechanism=self._payment_mechanism,
+                        late_filing_detected=late_filing_detected,
+                        company_age_months=company_age_months,
+                        accounts_type=accounts_type,
+                    )
+                except Exception as e:
+                    log_message(f"Error running cross-analysis: {e}")
 
             # Generate company timeline
             self.safe_update(self.status_var.set, "Generating company timeline...")
@@ -1829,6 +2135,94 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         .grants-table tr:hover td {{
             background: #f5f7ff;
         }}
+        .cross-analysis-summary {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }}
+        .cross-analysis-summary th {{
+            background: #667eea;
+            color: white;
+            padding: 10px;
+            text-align: left;
+            font-size: 13px;
+        }}
+        .cross-analysis-summary td {{
+            padding: 8px 10px;
+            border-bottom: 1px solid #eee;
+            font-size: 13px;
+        }}
+        .risk-high {{ background: #dc3545; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
+        .risk-medium {{ background: #ffc107; color: #333; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
+        .risk-low {{ background: #28a745; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
+        .risk-not-assessed {{ background: #6c757d; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
+        .confidence-auto {{ background: #667eea; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
+        .confidence-enriched {{ background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
+        .confidence-limited {{ background: #fd7e14; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
+        .confidence-skipped {{ background: #6c757d; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
+        .composite-warning {{
+            background: #fff5f5;
+            border: 2px solid #dc3545;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            font-weight: bold;
+            color: #dc3545;
+        }}
+        .pattern-warning {{
+            background: #fff9f5;
+            border: 2px solid #fd7e14;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            font-weight: bold;
+            color: #856404;
+        }}
+        .trend-table {{
+            width: auto;
+            border-collapse: collapse;
+            margin: 10px 0;
+            font-size: 12px;
+        }}
+        .trend-table th {{
+            background: #f0f4ff;
+            padding: 6px 12px;
+            text-align: right;
+            border: 1px solid #ddd;
+        }}
+        .trend-table td {{
+            padding: 6px 12px;
+            text-align: right;
+            border: 1px solid #eee;
+        }}
+        .cross-rule-card {{
+            margin: 20px 0;
+            padding: 15px;
+            border-left: 4px solid #ccc;
+            background: #f9f9f9;
+        }}
+        .cross-rule-card.high {{ border-left-color: #dc3545; background: #fff5f5; }}
+        .cross-rule-card.medium {{ border-left-color: #ffc107; background: #fffef5; }}
+        .cross-rule-card.low {{ border-left-color: #28a745; background: #f5fff5; }}
+        .cross-rule-card.not-assessed {{ border-left-color: #6c757d; background: #f9f9f9; }}
+        .rule-id-badge {{
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-right: 8px;
+        }}
+        .quality-caveat {{
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 5px;
+            padding: 10px;
+            margin: 10px 0;
+            font-size: 13px;
+        }}
         .grant-detail {{
             margin: 15px 0;
             padding: 15px;
@@ -1883,6 +2277,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
     {self._generate_grants_section()}
 
+    {self._generate_cross_analysis_section()}
+
     {self._generate_positive_indicators_html(positive)}
 
     <div class="section">
@@ -1904,27 +2300,43 @@ class EnhancedDueDiligence(InvestigationModuleBase):
     def _generate_executive_summary(self, critical, elevated, moderate, company_name):
         """Generate plain English executive summary."""
         total_concerns = len(critical) + len(elevated) + len(moderate)
-        
+
         if total_concerns == 0:
-            return f"Based on the analysis performed, {html.escape(company_name)} shows no significant risk indicators in the areas examined. However, this assessment is based on available public information and should be supplemented with additional due diligence as appropriate for your specific requirements."
-        
-        summary = f"Based on available data, {company_name} shows <strong>{total_concerns} concerning indicator(s)</strong> that warrant further investigation"
-        
-        if critical:
-            key_issues = [f['title'] for f in critical[:2]]
-            summary += f", particularly around: <strong>{', '.join(key_issues)}</strong>"
-        
-        summary += ".<br><br>"
-        
-        if critical:
-            summary += f"<strong>Critical findings ({len(critical)}):</strong> These are severe red flags that require immediate attention and may indicate the company is unsuitable for the intended transaction or relationship.<br><br>"
-        
-        if elevated:
-            summary += f"<strong>Elevated risk findings ({len(elevated)}):</strong> These indicators suggest heightened risk that should be investigated further before proceeding.<br><br>"
-        
-        if moderate:
-            summary += f"<strong>Moderate concerns ({len(moderate)}):</strong> These factors should be considered and may require additional information or monitoring."
-        
+            summary = f"Based on the analysis performed, {html.escape(company_name)} shows no significant risk indicators in the areas examined. However, this assessment is based on available public information and should be supplemented with additional due diligence as appropriate for your specific requirements."
+        else:
+            summary = f"Based on available data, {company_name} shows <strong>{total_concerns} concerning indicator(s)</strong> that warrant further investigation"
+
+            if critical:
+                key_issues = [f['title'] for f in critical[:2]]
+                summary += f", particularly around: <strong>{', '.join(key_issues)}</strong>"
+
+            summary += ".<br><br>"
+
+            if critical:
+                summary += f"<strong>Critical findings ({len(critical)}):</strong> These are severe red flags that require immediate attention and may indicate the company is unsuitable for the intended transaction or relationship.<br><br>"
+
+            if elevated:
+                summary += f"<strong>Elevated risk findings ({len(elevated)}):</strong> These indicators suggest heightened risk that should be investigated further before proceeding.<br><br>"
+
+            if moderate:
+                summary += f"<strong>Moderate concerns ({len(moderate)}):</strong> These factors should be considered and may require additional information or monitoring."
+
+        # Cross-analysis summary
+        report = getattr(self, '_cross_analysis_report', None)
+        if report:
+            high_count = sum(1 for r in report.results if r.risk_flag == 'HIGH')
+            medium_count = sum(1 for r in report.results if r.risk_flag == 'MEDIUM')
+            assessed = sum(1 for r in report.results if r.risk_flag != 'NOT_ASSESSED' and r.confidence != 'SKIPPED')
+            if assessed > 0:
+                summary += f"<br><br><strong>Cross-analysis ({assessed} rules assessed):</strong> "
+                if high_count > 0:
+                    summary += f"{high_count} high-risk and {medium_count} medium-risk indicator(s) identified. "
+                elif medium_count > 0:
+                    summary += f"{medium_count} medium-risk indicator(s) identified. "
+                else:
+                    summary += "No high or medium-risk indicators identified. "
+                summary += "See the Financial &amp; Grant Cross-Analysis section for details."
+
         return summary
     
     def _generate_company_profile_html(self):
@@ -2333,6 +2745,98 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             return ''
         return generate_grants_report_html(grants_data)
 
+    def _generate_cross_analysis_section(self):
+        """Generate the cross-analysis report section HTML."""
+        report = getattr(self, '_cross_analysis_report', None)
+        if report is None:
+            return ''
+
+        risk_emoji = {
+            'HIGH': '\U0001F534',      # Red circle
+            'MEDIUM': '\U0001F7E1',    # Yellow circle
+            'LOW': '\U0001F7E2',       # Green circle
+            'NOT_ASSESSED': '\u26AA',  # White circle
+        }
+
+        html_out = '<div class="section"><h2>Financial &amp; Grant Cross-Analysis</h2>'
+
+        # Accounts type
+        if report.accounts_type:
+            html_out += f'<p><strong>Detected accounts type:</strong> {html.escape(str(report.accounts_type))}</p>'
+
+        # Company age note
+        if report.company_age_note:
+            html_out += f'<div class="quality-caveat">{html.escape(report.company_age_note)}</div>'
+
+        # Filing quality caveat
+        if report.filing_quality_caveat:
+            html_out += f'<div class="quality-caveat">{html.escape(report.filing_quality_caveat)}</div>'
+
+        # Composite warning
+        if report.composite_warning:
+            html_out += f'<div class="composite-warning">{html.escape(report.composite_warning)}</div>'
+
+        # Pattern warnings
+        for pw in report.pattern_warnings:
+            html_out += f'<div class="pattern-warning">{html.escape(pw)}</div>'
+
+        # Summary table
+        html_out += '''
+        <table class="cross-analysis-summary">
+            <tr><th>Rule</th><th>Check</th><th>Risk</th><th>Confidence</th></tr>
+        '''
+        for r in report.results:
+            risk_class = r.risk_flag.lower().replace('_', '-')
+            conf_class = r.confidence.lower()
+            emoji = risk_emoji.get(r.risk_flag, '')
+            html_out += f'''
+            <tr>
+                <td><span class="rule-id-badge">{html.escape(r.rule_id)}</span></td>
+                <td>{html.escape(r.title)}</td>
+                <td><span class="risk-{risk_class}">{emoji} {html.escape(r.risk_flag)}</span></td>
+                <td><span class="confidence-{conf_class}">{html.escape(r.confidence)}</span></td>
+            </tr>
+            '''
+        html_out += '</table>'
+
+        # Individual rule cards
+        for r in report.results:
+            if r.confidence == 'SKIPPED':
+                continue
+
+            risk_class = r.risk_flag.lower().replace('_', '-')
+            conf_class = r.confidence.lower()
+            emoji = risk_emoji.get(r.risk_flag, '')
+
+            html_out += f'''
+            <div class="cross-rule-card {risk_class}">
+                <h3>
+                    <span class="rule-id-badge">{html.escape(r.rule_id)}</span>
+                    {html.escape(r.title)}
+                    <span class="risk-{risk_class}">{emoji} {html.escape(r.risk_flag)}</span>
+                    <span class="confidence-{conf_class}">{html.escape(r.confidence)}</span>
+                </h3>
+                <p>{html.escape(r.narrative)}</p>
+            '''
+
+            # Trend data table
+            if r.trend_data:
+                html_out += '<table class="trend-table"><tr><th>Year</th><th>Value (£)</th><th>YoY Change</th></tr>'
+                for td in r.trend_data:
+                    change_str = f"{td['change_pct']:+.1f}%" if td.get('change_pct') is not None else '—'
+                    html_out += f"<tr><td>{td['year']}</td><td>£{td['value']:,.0f}</td><td>{change_str}</td></tr>"
+                html_out += '</table>'
+
+            html_out += f'''
+                <div class="recommendation">
+                    <strong>Recommendation:</strong> {html.escape(r.recommendation)}
+                </div>
+            </div>
+            '''
+
+        html_out += '</div>'
+        return html_out
+
     def _generate_limitations_html(self):
         """Generate data limitations section."""
         html_output = '<p>This report is based on the following data sources and is subject to these limitations:</p><ul>'
@@ -2363,6 +2867,28 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         if getattr(self, '_ownership_data', None) is not None:
             depth = max((r['level'] for r in self._ownership_data), default=0) if self._ownership_data else 0
             html_output += f'<li><strong>Ownership Structure:</strong> Traced up to {depth} level(s) of corporate ownership via PSC data. Ownership chains involving non-UK entities or unregistered entities may be incomplete.</li>'
+
+        # Cross-analysis provenance
+        report = getattr(self, '_cross_analysis_report', None)
+        if report:
+            assessed_rules = [r for r in report.results if r.confidence != 'SKIPPED']
+            skipped_rules = [r for r in report.results if r.confidence == 'SKIPPED']
+            auto_rules = [r for r in report.results if r.confidence == 'AUTO']
+            enriched_rules = [r for r in report.results if r.confidence == 'ENRICHED']
+            limited_rules = [r for r in report.results if r.confidence == 'LIMITED']
+
+            html_output += '<li><strong>Cross-Analysis:</strong> '
+            html_output += f'{len(assessed_rules)} of 6 rules were assessed. '
+            if auto_rules:
+                html_output += f'{len(auto_rules)} based entirely on auto-parsed data. '
+            if enriched_rules:
+                html_output += f'{len(enriched_rules)} enhanced by user-provided data. '
+            if limited_rules:
+                html_output += f'{len(limited_rules)} ran with limited data. '
+            if skipped_rules:
+                rule_ids = ', '.join(r.rule_id for r in skipped_rules)
+                html_output += f'{len(skipped_rules)} skipped due to insufficient data ({rule_ids}). '
+            html_output += '</li>'
 
         html_output += '<li><strong>Scope Limitations:</strong> This report does not include: site visits, management interviews, verification of trading activity, credit reference checks, industry benchmarking, assessment of directors\' personal financial positions, or review of legal proceedings beyond what appears in the public registry.</li>'
         

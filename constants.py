@@ -145,8 +145,39 @@ TAXONOMY_MAP = {
     ],
     'RetainedEarnings': [
         'RetainedEarningsAccumulatedLosses'
-    ]
+    ],
+    'IntangibleAssets': [
+        'IntangibleAssets'
+    ],
+    'TangibleAssets': [
+        'TangibleFixedAssets',
+        'PropertyPlantEquipment'
+    ],
+    'CreditorsAfterOneYear': [
+        'CreditorsAmountsFallingDueAfterOneYear'
+    ],
+    'NetCurrentAssets': [
+        'NetCurrentAssetsLiabilities'
+    ],
 }
+
+# --- Manual Input Field Definitions for EDD Cross-Analysis ---
+# Tuples: (manual_field_key, auto_field_key_or_None, display_label)
+MANUAL_INPUT_FIELDS_TIER1 = [
+    ('Turnover', 'Revenue', 'Turnover / Revenue'),
+    ('PreTaxProfitLoss', 'ProfitLoss', 'Pre-tax Profit/Loss'),
+    ('CashAtBank', 'CashBankInHand', 'Cash at Bank'),
+    ('DirectorLoans', None, 'Director Loans (amount owed)'),
+]
+
+MANUAL_INPUT_FIELDS_TIER2 = [
+    ('ManualDebtors', 'Debtors', 'Debtors'),
+    ('StockInventory', None, 'Stock / Inventory'),
+    ('DeferredIncome', None, 'Deferred Income'),
+    ('CapitalisedDevCosts', None, 'Capitalised Development Costs'),
+]
+
+PAYMENT_MECHANISMS = ['Unknown', 'Advance', 'Arrears', 'Milestone-based']
 
 IXBRL_NAMESPACES = {
     'ix': 'http://www.xbrl.org/2013/inlineXBRL',
