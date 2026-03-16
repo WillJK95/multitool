@@ -23,14 +23,19 @@ from .constants import (
     SERVICE_NAME,
     CH_ACCOUNT_NAME,
     CC_ACCOUNT_NAME,
-    CH_API_RATE_LIMIT,
     API_BASE_URL,
     CHARITY_API_BASE_URL,
-    GRANTNAV_API_BASE_URL
+    GRANTNAV_API_BASE_URL,
+    DEFAULT_CH_RATE_LIMIT,
+    DEFAULT_CH_BURST_CAPACITY,
+    DEFAULT_CH_MAX_WORKERS,
+    MAX_CH_MAX_WORKERS,
+    MIN_CH_MAX_WORKERS,
 )
 from .help_content import HELP_CONTENT
 from .utils.helpers import log_message
 from .utils.token_bucket import TokenBucket
+from .utils.settings import load_settings, save_settings, derive_rate_params
 from .ui.tooltip import Tooltip
 from .ui.help_window import HelpWindow
 
@@ -57,18 +62,28 @@ class App(tk.Tk):
         self.geometry("1100x650")
         self.minsize(1100, 650)
         
-        # Initialize ttkbootstrap style
-        self.style = tb.Style(theme="superhero")
+        # Load persisted settings
+        self._settings = load_settings()
+
+        # Initialize ttkbootstrap style with persisted theme
+        initial_theme = "superhero" if self._settings["dark_theme"] else "litera"
+        self.style = tb.Style(theme=initial_theme)
         self.themed_window = self.style.master
-        
-        # Settings
-        self.dark_theme_enabled = tk.BooleanVar(value=True)
-        self.font_size = tk.IntVar(value=10)
-        
-        # Rate limiter for Companies House API
-        # 600 requests per 5 mins = 2 requests/sec
-        # Capacity of 50 allows for bursts
-        self.ch_token_bucket = TokenBucket(capacity=50, refill_rate=2)
+
+        # Appearance settings
+        self.dark_theme_enabled = tk.BooleanVar(value=self._settings["dark_theme"])
+        self.font_size = tk.IntVar(value=self._settings["font_size"])
+
+        # Apply persisted font size if non-default
+        if self._settings["font_size"] != 10:
+            self.after(100, self._update_font_size)
+
+        # Rate limiter for Companies House API (configurable via Settings)
+        rate_params = derive_rate_params(self._settings["ch_rate_limit"])
+        bucket_capacity = self._settings["ch_burst_capacity"]
+        bucket_refill = rate_params["refill_rate"]
+        self.ch_token_bucket = TokenBucket(capacity=bucket_capacity, refill_rate=bucket_refill)
+        self.ch_max_workers = self._settings["ch_max_workers"]
         
         # API keys
         self.api_key = ""
@@ -188,11 +203,11 @@ class App(tk.Tk):
         settings_win.title("Settings")
         settings_win.transient(self)
         settings_win.grab_set()
-        
-        # Theme toggle
+
+        # ── Appearance ──────────────────────────────────────────
         theme_frame = ttk.LabelFrame(settings_win, text="Appearance", padding=10)
         theme_frame.pack(fill="x", expand=True)
-        
+
         theme_toggle = ttk.Checkbutton(
             theme_frame,
             text="Colour Theme",
@@ -201,37 +216,216 @@ class App(tk.Tk):
             bootstyle="round-toggle",
         )
         theme_toggle.pack(side="left", padx=5)
-        
-        # Font size slider
+
         font_slider_frame = ttk.Frame(theme_frame)
         font_slider_frame.pack(side="left", padx=20)
         ttk.Label(font_slider_frame, text="Text Size:").pack(side="left", padx=(0, 5))
-        font_slider = ttk.Scale(
+        ttk.Scale(
             font_slider_frame,
             from_=8,
             to=16,
             variable=self.font_size,
             command=lambda val: self.font_size.set(round(float(val))),
+        ).pack(side="left")
+
+        # ── Companies House API ─────────────────────────────────
+        api_frame = ttk.LabelFrame(
+            settings_win, text="Companies House API", padding=10
         )
-        font_slider.pack(side="left")
-        
-        # Buttons
+        api_frame.pack(fill="x", expand=True, pady=(10, 0))
+
+        # Rate limit input
+        rate_row = ttk.Frame(api_frame)
+        rate_row.pack(fill="x", pady=5)
+        ttk.Label(rate_row, text="My rate limit:").pack(side="left", padx=(0, 5))
+
+        rate_limit_var = tk.IntVar(value=self._settings["ch_rate_limit"])
+        rate_spin = ttk.Spinbox(
+            rate_row, from_=100, to=6000, increment=10,
+            textvariable=rate_limit_var, width=8
+        )
+        rate_spin.pack(side="left", padx=(0, 5))
+        ttk.Label(rate_row, text="requests per 5 minutes").pack(side="left")
+
+        # Advanced toggle
+        show_advanced = tk.BooleanVar(value=False)
+        advanced_frame = ttk.Frame(api_frame, padding=(15, 5, 0, 0))
+
+        burst_var = tk.IntVar(value=self._settings["ch_burst_capacity"])
+        workers_var = tk.IntVar(value=self._settings["ch_max_workers"])
+
+        def toggle_advanced():
+            if show_advanced.get():
+                advanced_frame.pack(fill="x", after=adv_toggle)
+            else:
+                advanced_frame.pack_forget()
+
+        adv_toggle = ttk.Checkbutton(
+            api_frame, text="Show advanced settings",
+            variable=show_advanced, command=toggle_advanced,
+            bootstyle="round-toggle",
+        )
+        adv_toggle.pack(anchor="w", pady=(5, 0))
+
+        # Advanced fields
+        burst_row = ttk.Frame(advanced_frame)
+        burst_row.pack(fill="x", pady=2)
+        ttk.Label(burst_row, text="Burst capacity:").pack(side="left", padx=(0, 5))
+        ttk.Spinbox(
+            burst_row, from_=5, to=500, increment=5,
+            textvariable=burst_var, width=6
+        ).pack(side="left", padx=(0, 5))
+        ttk.Label(
+            burst_row, text="(max requests before throttling)",
+            foreground="gray", font=("Segoe UI", 8)
+        ).pack(side="left")
+
+        workers_row = ttk.Frame(advanced_frame)
+        workers_row.pack(fill="x", pady=2)
+        ttk.Label(workers_row, text="Parallel workers:").pack(side="left", padx=(0, 5))
+        ttk.Spinbox(
+            workers_row, from_=MIN_CH_MAX_WORKERS, to=MAX_CH_MAX_WORKERS,
+            increment=1, textvariable=workers_var, width=6
+        ).pack(side="left", padx=(0, 5))
+        ttk.Label(
+            workers_row, text="(concurrent API threads)",
+            foreground="gray", font=("Segoe UI", 8)
+        ).pack(side="left")
+
+        # Effect summary
+        summary_frame = ttk.LabelFrame(api_frame, text="Effect Summary", padding=8)
+        summary_frame.pack(fill="x", pady=(10, 0))
+        summary_label = ttk.Label(
+            summary_frame, text="", wraplength=450, font=("Segoe UI", 9)
+        )
+        summary_label.pack(anchor="w")
+
+        def update_summary(*_args):
+            try:
+                rl = rate_limit_var.get()
+            except (tk.TclError, ValueError):
+                return
+            params = derive_rate_params(rl)
+
+            # Use advanced overrides if advanced section is visible
+            if show_advanced.get():
+                try:
+                    burst = burst_var.get()
+                    workers = workers_var.get()
+                except (tk.TclError, ValueError):
+                    burst = params["capacity"]
+                    workers = params["max_workers"]
+            else:
+                burst = params["capacity"]
+                workers = params["max_workers"]
+                burst_var.set(burst)
+                workers_var.set(workers)
+
+            sustained = params["refill_rate"]
+            summary_label.config(
+                text=(
+                    f"Sustained rate: ~{sustained:.1f} requests/second  |  "
+                    f"Burst: up to {burst} requests  |  "
+                    f"Parallel threads: {workers}\n"
+                    f"A 10% safety margin is applied automatically to stay within your limit."
+                )
+            )
+
+        rate_limit_var.trace_add("write", update_summary)
+        burst_var.trace_add("write", update_summary)
+        workers_var.trace_add("write", update_summary)
+        show_advanced.trace_add("write", update_summary)
+        update_summary()  # initial render
+
+        # ── Buttons ─────────────────────────────────────────────
         button_frame = ttk.Frame(settings_win)
         button_frame.pack(pady=20)
-        
+
+        def apply_all():
+            self._apply_settings(
+                settings_win, rate_limit_var, burst_var, workers_var
+            )
+
+        def reset_defaults():
+            rate_limit_var.set(DEFAULT_CH_RATE_LIMIT)
+            burst_var.set(DEFAULT_CH_BURST_CAPACITY)
+            workers_var.set(DEFAULT_CH_MAX_WORKERS)
+
         ttk.Button(
-            button_frame,
-            text="Apply",
-            command=self._update_font_size,
-            bootstyle="success",
+            button_frame, text="Apply",
+            command=apply_all, bootstyle="success",
         ).pack(side="left", padx=5)
-        
+
         ttk.Button(
-            button_frame,
-            text="Close",
-            command=settings_win.destroy,
-            bootstyle="primary",
+            button_frame, text="Reset to Defaults",
+            command=reset_defaults, bootstyle="warning-outline",
         ).pack(side="left", padx=5)
+
+        ttk.Button(
+            button_frame, text="Close",
+            command=settings_win.destroy, bootstyle="primary",
+        ).pack(side="left", padx=5)
+
+    def _apply_settings(self, settings_win, rate_limit_var, burst_var, workers_var):
+        """Validate and apply all settings from the dialog."""
+        # Read values
+        try:
+            rate_limit = rate_limit_var.get()
+            burst = burst_var.get()
+            workers = workers_var.get()
+        except (tk.TclError, ValueError):
+            messagebox.showerror("Error", "Please enter valid numbers.", parent=settings_win)
+            return
+
+        # Validate
+        if rate_limit < 100 or rate_limit > 6000:
+            messagebox.showerror(
+                "Error", "Rate limit must be between 100 and 6,000.", parent=settings_win
+            )
+            return
+        if burst < 5 or burst > 500:
+            messagebox.showerror(
+                "Error", "Burst capacity must be between 5 and 500.", parent=settings_win
+            )
+            return
+        if workers < MIN_CH_MAX_WORKERS or workers > MAX_CH_MAX_WORKERS:
+            messagebox.showerror(
+                "Error",
+                f"Workers must be between {MIN_CH_MAX_WORKERS} and {MAX_CH_MAX_WORKERS}.",
+                parent=settings_win,
+            )
+            return
+
+        # Derive refill rate from rate limit
+        params = derive_rate_params(rate_limit)
+
+        # Apply rate limiting changes
+        self.ch_token_bucket.update_params(burst, params["refill_rate"])
+        self.ch_max_workers = workers
+
+        # Apply appearance
+        self._update_font_size()
+
+        # Persist everything
+        self._settings = {
+            "dark_theme": self.dark_theme_enabled.get(),
+            "font_size": self.font_size.get(),
+            "ch_rate_limit": rate_limit,
+            "ch_max_workers": workers,
+            "ch_burst_capacity": burst,
+        }
+        save_settings(self._settings)
+
+        log_message(
+            f"Settings applied: rate_limit={rate_limit}/5min, "
+            f"burst={burst}, workers={workers}, "
+            f"refill_rate={params['refill_rate']:.2f}/s"
+        )
+        messagebox.showinfo(
+            "Settings Applied",
+            "Your settings have been saved and will take effect immediately.",
+            parent=settings_win,
+        )
     
     def _toggle_theme(self) -> None:
         """Toggle between dark and light themes."""
@@ -590,16 +784,18 @@ class App(tk.Tk):
         HelpWindow(self, "User Guide", HELP_CONTENT["main"])
     
     def clear_cache_and_logs(self) -> None:
-        """Clear temporary files and logs."""
+        """Clear temporary files and logs, preserving user settings."""
         if not os.path.exists(CONFIG_DIR):
             messagebox.showinfo("Info", "No cache directory found.")
             return
-        
-        if messagebox.askyesno("Confirm", "Delete all cached files and logs?"):
+
+        if messagebox.askyesno("Confirm", "Delete all cached files and logs?\n(Your settings will be preserved.)"):
             import shutil
             try:
                 shutil.rmtree(CONFIG_DIR)
                 os.makedirs(CONFIG_DIR)
+                # Re-save current settings so they survive the clear
+                save_settings(self._settings)
                 messagebox.showinfo("Success", "Cache and logs cleared.")
             except Exception as e:
                 messagebox.showerror("Error", f"Could not clear cache: {e}")

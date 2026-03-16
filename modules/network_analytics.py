@@ -5294,7 +5294,7 @@ class NetworkAnalytics(InvestigationModuleBase):
             if fetch_associated:
                 self.app.after(0, lambda: self.seed_status_var.set(f"Found {len(officers['items'])} officers. Fetching appointments..."))
                 all_appointments = []
-                with ThreadPoolExecutor(max_workers=2) as executor:
+                with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
                     future_to_officer = {
                         executor.submit(self._fetch_officer_appointments, o.get("links", {})): o
                         for o in officers["items"]
@@ -5316,7 +5316,7 @@ class NetworkAnalytics(InvestigationModuleBase):
 
             self.app.after(0, lambda: self.seed_status_var.set(f"Found {len(unique_company_numbers)} companies. Building network..."))
             temp_graph = nx.DiGraph()
-            with ThreadPoolExecutor(max_workers=2) as executor:
+            with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
                 future_to_cnum = {
                     executor.submit(self._fetch_company_network_data, cnum, fetch_pscs): cnum
                     for cnum in unique_company_numbers if cnum

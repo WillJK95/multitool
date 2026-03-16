@@ -17,9 +17,12 @@ SERVICE_NAME = "multitool"
 CH_ACCOUNT_NAME = "CompaniesHouseAPI"
 CC_ACCOUNT_NAME = "CharityCommissionAPI"
 
-# --- API Rate Limiting ---
-CH_API_RATE_LIMIT = 590  # requests per 5 minutes
-CH_API_REFILL_RATE = CH_API_RATE_LIMIT / 300  # tokens per second
+# --- API Rate Limiting Defaults ---
+DEFAULT_CH_RATE_LIMIT = 590       # requests per 5 minutes (standard tier)
+DEFAULT_CH_BURST_CAPACITY = 50    # max tokens for burst requests
+DEFAULT_CH_MAX_WORKERS = 2        # concurrent API threads
+MAX_CH_MAX_WORKERS = 8            # hard ceiling for workers
+MIN_CH_MAX_WORKERS = 1            # floor for workers
 
 # --- Default Values ---
 DEFAULT_ITEMS_PER_PAGE = 100

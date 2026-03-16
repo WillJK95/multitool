@@ -518,8 +518,8 @@ class CompanyCharitySearch(InvestigationModuleBase):
             # If Charity Commission is being searched, use the slower, safer limit
             MAX_WORKERS = 2
         else:
-            # If ONLY Companies House is searched, use the faster limit
-            MAX_WORKERS = 2
+            # If ONLY Companies House is searched, use the configurable limit
+            MAX_WORKERS = self.app.ch_max_workers
 
         self.app.after(
             0,
@@ -951,7 +951,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
         # --- Process Companies ---
         if company_numbers:
-            with ThreadPoolExecutor(max_workers=2) as executor:
+            with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
                 future_to_cnum = {
                     executor.submit(self._fetch_company_network_data, cnum): cnum
                     for cnum in company_numbers

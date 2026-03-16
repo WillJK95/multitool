@@ -385,9 +385,7 @@ class DirectorSearch(InvestigationModuleBase):
     def _fetch_appointments(self, officers):
         """Phase 2 (threaded): Fetch appointments for all matched officers."""
         try:
-            MAX_WORKERS = 2  # Respect API rate limits
-
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
                 futures = {
                     executor.submit(self._process_officer, officer): officer
                     for officer in officers
@@ -704,7 +702,7 @@ class DirectorSearch(InvestigationModuleBase):
             )
             return None
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
             future_to_cnum = {
                 executor.submit(self._fetch_company_network_data, cnum): cnum
                 for cnum in unique_company_numbers

@@ -323,7 +323,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                 and level_num <= 20
             ):
                 companies_next_level = []
-                with ThreadPoolExecutor(max_workers=2) as executor:
+                with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
                     tasks_to_run = [
                         (cnum, level_num, root_cnum, current_root_name, snapshot_date)
                         for cnum in companies_this_level
@@ -669,7 +669,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             ),
         )
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
             future_to_cnum = {
                 executor.submit(
                     self._fetch_company_network_data, cnum, snapshot_date

@@ -97,6 +97,19 @@ class TokenBucket:
                 return True
             return False
     
+    def update_params(self, capacity: int, refill_rate: float) -> None:
+        """
+        Update bucket parameters at runtime (thread-safe).
+
+        Args:
+            capacity: New maximum tokens the bucket can hold
+            refill_rate: New tokens added per second
+        """
+        with self.lock:
+            self.capacity = capacity
+            self.refill_rate = refill_rate
+            self.tokens = min(self.tokens, capacity)
+
     @property
     def available_tokens(self) -> float:
         """Get the current number of available tokens."""
