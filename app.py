@@ -79,7 +79,12 @@ class App(tk.Tk):
         # API status cache
         self.api_statuses = None
         self.api_status_timestamp = None
-        
+
+        # API status panel widget references (for in-place updates)
+        self.status_canvases = {}
+        self.status_tooltips = {}
+        self.status_timestamp_label = None
+
         # Main container
         self.container = ttk.Frame(self, padding=10)
         self.container.pack(fill=tk.BOTH, expand=True)
@@ -472,24 +477,19 @@ class App(tk.Tk):
         self.status_panel = ttk.LabelFrame(header_frame, text="API Status", padding=5)
         self.status_panel.pack(side=tk.RIGHT, anchor="ne")
 
-        # Load Status Logic
-        if self.api_statuses:
-            self._display_api_status(self.status_panel)
-        else:
-            checking_label = ttk.Label(
-                self.status_panel,
-                text="Checking APIs...",
-                font=('Segoe UI', 7, 'italic'),
-                foreground='gray'
-            )
-            checking_label.pack()
+        # Always build the full panel structure so layout never shifts
+        self._build_api_status_panel(self.status_panel)
 
+        if self.api_statuses:
+            # Cached results available - update dots and timestamp immediately
+            self._update_api_status_display()
+        else:
+            # No cache - dots are already grey from _build_api_status_panel
+            # Start background check and update in place when done
             def run_check():
                 self.check_api_status()
-                if checking_label.winfo_exists():
-                    self.after(0, checking_label.destroy)
-                if self.status_panel.winfo_exists():
-                    self.after(0, lambda: self._display_api_status(self.status_panel))
+                if self.status_panel and self.status_panel.winfo_exists():
+                    self.after(0, self._update_api_status_display)
 
             threading.Thread(target=run_check, daemon=True).start()
 
@@ -692,47 +692,128 @@ class App(tk.Tk):
         return statuses
 
 
-    def _create_status_indicator(self, parent, label, status, use_pack=True):
-        """Create a single status indicator with colored circle."""
-        frame = ttk.Frame(parent)
-        if use_pack:
-            frame.pack(anchor='w', pady=2)
-        
-        # Status circle (using Unicode circle characters)
-        color_map = {
-            'ok': ('●', '#28a745'),
-            'error': ('●', '#dc3545'),
-            'no_key': ('●', '#fd7e14'),
-            'unknown': ('●', '#6c757d')
-        }
-        
-        symbol, color = color_map.get(status, ('●', 'gray'))
-        
+    def _build_api_status_panel(self, status_panel):
+        """Build the static structure of the API status panel.
+
+        Shows grey dots for APIs that need a network check, and orange dots
+        immediately for APIs with no key configured. The panel is always fully
+        populated so the layout never shifts when results arrive.
+        """
+        self.status_canvases = {}
+        self.status_tooltips = {}
+
         style = ttk.Style()
         bg_color = style.lookup('TFrame', 'background')
 
-        # Create a small canvas to draw a colored circle
-        canvas = tk.Canvas(frame, width=12, height=12, highlightthickness=0)
-
-        canvas.configure(background=bg_color)
-        canvas.pack(side=tk.LEFT, padx=(0, 3))
-
-        # Draw a filled circle
-        canvas.create_oval(2, 2, 10, 10, fill=color, outline=color)
-        
-        text_label = ttk.Label(frame, text=label, font=('Segoe UI', 7))
-        text_label.pack(side=tk.LEFT)
-        
-        # Tooltip explaining status
-        tooltip_text = {
-            'ok': f'{label}: Connected ✓',
-            'error': f'{label}: Connection failed',
-            'no_key': f'{label}: No API key configured',
-            'unknown': f'{label}: Status unknown'
+        color_map = {
+            'ok': '#28a745',
+            'error': '#dc3545',
+            'no_key': '#fd7e14',
+            'unknown': '#6c757d',
         }
-        Tooltip(frame, tooltip_text.get(status, label))
-        
-        return frame
+
+        # Determine initial dot color: orange if key is known missing, grey otherwise
+        initial_statuses = {
+            'companies_house': 'unknown' if self.api_key else 'no_key',
+            'charity_commission': 'unknown' if self.charity_api_key else 'no_key',
+            'grantnav': 'unknown',
+            'contracts_finder': 'unknown',
+        }
+
+        api_configs = [
+            ('companies_house',   'Companies House',      0, 0, (0, 15)),
+            ('charity_commission','Charity Commission',   0, 1, (0, 0)),
+            ('grantnav',         'GrantNav (360Giving)', 1, 0, (0, 15)),
+            ('contracts_finder', 'Contracts Finder',     1, 1, (0, 0)),
+        ]
+
+        grid_frame = ttk.Frame(status_panel)
+        grid_frame.pack(fill=tk.X)
+
+        for key, label_text, row, col, padx in api_configs:
+            frame = ttk.Frame(grid_frame)
+            frame.grid(row=row, column=col, sticky='w', padx=padx, pady=2)
+
+            status = initial_statuses[key]
+            color = color_map.get(status, '#6c757d')
+
+            canvas = tk.Canvas(frame, width=12, height=12, highlightthickness=0)
+            canvas.configure(background=bg_color)
+            canvas.pack(side=tk.LEFT, padx=(0, 3))
+            canvas.create_oval(2, 2, 10, 10, fill=color, outline=color, tags='dot')
+            self.status_canvases[key] = canvas
+
+            ttk.Label(frame, text=label_text, font=('Segoe UI', 7)).pack(side=tk.LEFT)
+
+            tooltip_texts = {
+                'ok':      f'{label_text}: Connected ✓',
+                'error':   f'{label_text}: Connection failed',
+                'no_key':  f'{label_text}: No API key configured',
+                'unknown': f'{label_text}: Status unknown',
+            }
+            self.status_tooltips[key] = Tooltip(frame, tooltip_texts.get(status, label_text))
+
+        # Footer: timestamp + refresh button
+        footer_frame = ttk.Frame(status_panel)
+        footer_frame.pack(fill=tk.X, pady=(5, 0))
+
+        self.status_timestamp_label = ttk.Label(
+            footer_frame,
+            text="Checking APIs...",
+            font=('Segoe UI', 7),
+            foreground='gray'
+        )
+        self.status_timestamp_label.pack(side=tk.LEFT)
+
+        refresh_btn = ttk.Button(
+            footer_frame,
+            text="↻",
+            width=2,
+            command=self.refresh_api_status
+        )
+        refresh_btn.pack(side=tk.RIGHT)
+        Tooltip(refresh_btn, "Refresh API status")
+
+    def _update_api_status_display(self):
+        """Update dot colours and timestamp in place after a status check."""
+        if not self.status_canvases or not self.api_statuses:
+            return
+
+        color_map = {
+            'ok':      '#28a745',
+            'error':   '#dc3545',
+            'no_key':  '#fd7e14',
+            'unknown': '#6c757d',
+        }
+
+        api_labels = {
+            'companies_house':   'Companies House',
+            'charity_commission':'Charity Commission',
+            'grantnav':          'GrantNav (360Giving)',
+            'contracts_finder':  'Contracts Finder',
+        }
+
+        tooltip_templates = {
+            'ok':      '{}: Connected ✓',
+            'error':   '{}: Connection failed',
+            'no_key':  '{}: No API key configured',
+            'unknown': '{}: Status unknown',
+        }
+
+        for key, canvas in self.status_canvases.items():
+            if not canvas.winfo_exists():
+                continue
+            status = self.api_statuses.get(key, 'unknown')
+            color = color_map.get(status, '#6c757d')
+            canvas.delete('dot')
+            canvas.create_oval(2, 2, 10, 10, fill=color, outline=color, tags='dot')
+
+            if key in self.status_tooltips:
+                label = api_labels.get(key, key)
+                self.status_tooltips[key].text = tooltip_templates.get(status, '{}').format(label)
+
+        if self.status_timestamp_label and self.status_timestamp_label.winfo_exists():
+            self.status_timestamp_label.config(text=f"Checked: {self._get_time_since_check()}")
 
     def _get_time_since_check(self):
         """Return human-readable time since last API check."""
@@ -752,103 +833,23 @@ class App(tk.Tk):
             return f"{hours} hour{'s' if hours != 1 else ''} ago"
 
     def refresh_api_status(self):
-        """Force refresh of API status."""
-        # Clear the status panel and show checking message
-        for widget in self.status_panel.winfo_children():
-            widget.destroy()
-        
-        checking_label = ttk.Label(
-            self.status_panel,
-            text="Checking APIs...",
-            font=('Segoe UI', 7, 'italic'),
-            foreground='gray'
-        )
-        checking_label.pack()
-        
-        # Run check in background
+        """Force refresh of API status, updating dots and timestamp in place."""
+        # Grey out all dots to signal that a check is in progress
+        for canvas in self.status_canvases.values():
+            if canvas.winfo_exists():
+                canvas.delete('dot')
+                canvas.create_oval(2, 2, 10, 10, fill='#6c757d', outline='#6c757d', tags='dot')
+
+        if self.status_timestamp_label and self.status_timestamp_label.winfo_exists():
+            self.status_timestamp_label.config(text="Checking APIs...")
+
         def run_check():
-            statuses = self.check_api_status()
-            
-            # Update UI on main thread (only if widgets still exist)
-            if checking_label.winfo_exists():
-                self.after(0, checking_label.destroy)
-            if self.status_panel.winfo_exists():
-                self.after(0, lambda: self._display_api_status(self.status_panel))
-        
+            self.check_api_status()
+            if self.status_panel and self.status_panel.winfo_exists():
+                self.after(0, self._update_api_status_display)
+
         threading.Thread(target=run_check, daemon=True).start()
 
-    def _display_api_status(self, status_panel):
-        """Display API status indicators (used by both initial load and refresh)."""
-        # Safety check - panel may have been destroyed if user navigated away
-        if not status_panel.winfo_exists():
-            return
-
-        if not self.api_statuses:
-            return
-
-        # Clear existing children to prevent duplication
-        for widget in status_panel.winfo_children():
-            widget.destroy()
-
-        # Create grid container for 2x2 layout
-        grid_frame = ttk.Frame(status_panel)
-        grid_frame.pack(fill=tk.X)
-
-        # Row 1: Companies House | Charity Commission
-        ch_indicator = self._create_status_indicator(
-            grid_frame, 
-            "Companies House", 
-            self.api_statuses['companies_house'],
-            use_pack=False
-        )
-        ch_indicator.grid(row=0, column=0, sticky='w', padx=(0, 15), pady=2)
-        
-        cc_indicator = self._create_status_indicator(
-            grid_frame, 
-            "Charity Commission", 
-            self.api_statuses['charity_commission'],
-            use_pack=False
-        )
-        cc_indicator.grid(row=0, column=1, sticky='w', pady=2)
-        
-        # Row 2: GrantNav | Contracts Finder
-        gn_indicator = self._create_status_indicator(
-            grid_frame, 
-            "GrantNav (360Giving)", 
-            self.api_statuses['grantnav'],
-            use_pack=False
-        )
-        gn_indicator.grid(row=1, column=0, sticky='w', padx=(0, 15), pady=2)
-        
-        cf_indicator = self._create_status_indicator(
-            grid_frame, 
-            "Contracts Finder", 
-            self.api_statuses.get('contracts_finder', 'unknown'),
-            use_pack=False
-        )
-        cf_indicator.grid(row=1, column=1, sticky='w', pady=2)
-        
-        # Add timestamp and refresh button
-        footer_frame = ttk.Frame(status_panel)
-        footer_frame.pack(fill=tk.X, pady=(5, 0))
-        
-        timestamp_label = ttk.Label(
-            footer_frame,
-            text=f"Checked: {self._get_time_since_check()}",
-            font=('Segoe UI', 7),
-            foreground='gray'
-        )
-        timestamp_label.pack(side=tk.LEFT)
-        
-        refresh_btn = ttk.Button(
-            footer_frame,
-            text="↻",
-            width=2,
-            command=self.refresh_api_status
-        )
-        refresh_btn.pack(side=tk.RIGHT)
-        Tooltip(refresh_btn, "Refresh API status")
-    
     # --- Module Navigation Methods ---
     # These methods load the respective investigation modules.
     # Each module is imported and instantiated when needed.
