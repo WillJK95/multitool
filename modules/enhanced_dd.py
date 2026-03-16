@@ -184,7 +184,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         extra_checks = [
             ('filing_patterns', 'Filing history pattern analysis', True),
             ('grants_lookup', 'Include grants received (360Giving GrantNav)', False),
-            ('cross_analysis', 'Financial & grant cross-analysis (G1-G2, F1-F4)', False),
+            ('cross_analysis', 'Financial & grant cross-analysis', False),
             ('ownership_graph', 'Corporate ownership structure graph (API calls per corporate PSC)', False),
         ]
 
@@ -364,7 +364,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self.show_manual_input = tk.BooleanVar(value=False)
         manual_toggle = ttk.Checkbutton(
             self.content_frame,
-            text="▶ Grant Details & Supplementary Accounts Data (Optional)",
+            text="\u25B6 Grant Details & Supplementary Accounts Data (Optional)",
             variable=self.show_manual_input,
             command=self._toggle_manual_input,
         )
@@ -382,7 +382,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         row = ttk.Frame(grant_frame)
         row.pack(fill=tk.X, pady=2)
-        ttk.Label(row, text="Proposed Award Amount (£):", width=30).pack(side=tk.LEFT)
+        ttk.Label(row, text="Proposed Award Amount (\u00a3):", width=30).pack(side=tk.LEFT)
         self.proposed_award_var = tk.StringVar()
         ttk.Entry(row, textvariable=self.proposed_award_var, width=15).pack(side=tk.LEFT)
 
@@ -395,49 +395,131 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             values=PAYMENT_MECHANISMS, state='readonly', width=18
         ).pack(side=tk.LEFT)
 
-        # --- Supplementary Accounts Data ---
+        # --- Supplementary Accounts Data (multi-year) ---
         supp_frame = ttk.LabelFrame(
             self.manual_input_frame, text="Supplementary Accounts Data", padding=5
         )
         supp_frame.pack(fill=tk.X, pady=2, padx=5)
 
-        # Accounting period date
-        row = ttk.Frame(supp_frame)
-        row.pack(fill=tk.X, pady=2)
+        ttk.Label(
+            supp_frame,
+            text="Enter figures for up to 5 accounting periods. "
+                 "Losses / negative values should be entered with a minus sign (e.g. -15000).",
+            foreground='grey', wraplength=550,
+        ).pack(anchor='w', pady=(0, 5))
+
+        # Buttons row
+        btn_row = ttk.Frame(supp_frame)
+        btn_row.pack(fill=tk.X, pady=(0, 5))
+        ttk.Button(btn_row, text="Add Year", command=self._add_manual_year).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(btn_row, text="Clear All", command=self._clear_all_manual_input).pack(side=tk.LEFT)
+
+        # Container for year panels
+        self._manual_years_container = ttk.Frame(supp_frame)
+        self._manual_years_container.pack(fill=tk.X)
+
+        # List of year panel data: each entry is a dict of StringVars + the frame widget
+        self._manual_year_panels = []
+
+        # Start with one year panel
+        self._add_manual_year()
+
+    def _add_manual_year(self):
+        """Add a new year panel to the supplementary accounts section."""
+        if len(self._manual_year_panels) >= 5:
+            return  # Max 5 years
+
+        idx = len(self._manual_year_panels) + 1
+        panel_frame = ttk.LabelFrame(
+            self._manual_years_container,
+            text=f"Year {idx}",
+            padding=5,
+        )
+        panel_frame.pack(fill=tk.X, pady=2)
+
+        vars_dict = {}
+
+        # Period end date
+        row = ttk.Frame(panel_frame)
+        row.pack(fill=tk.X, pady=1)
         ttk.Label(row, text="Accounting Period End Date:", width=30).pack(side=tk.LEFT)
-        self.manual_period_var = tk.StringVar()
-        ttk.Entry(row, textvariable=self.manual_period_var, width=15).pack(side=tk.LEFT)
+        period_var = tk.StringVar()
+        vars_dict['_period_end'] = period_var
+        ttk.Entry(row, textvariable=period_var, width=15).pack(side=tk.LEFT)
         ttk.Label(row, text="(YYYY-MM-DD)", foreground='grey').pack(side=tk.LEFT, padx=5)
 
         # Tier 1 fields (always visible)
-        self.manual_input_vars = {}
         for field_key, _, label in MANUAL_INPUT_FIELDS_TIER1:
-            row = ttk.Frame(supp_frame)
-            row.pack(fill=tk.X, pady=2)
-            ttk.Label(row, text=f"{label} (£):", width=30).pack(side=tk.LEFT)
+            row = ttk.Frame(panel_frame)
+            row.pack(fill=tk.X, pady=1)
+            display = label
+            if 'Profit' in label or 'Loss' in label:
+                display = f"{label} (use negative for loss)"
+            ttk.Label(row, text=f"{display} (\u00a3):", width=30).pack(side=tk.LEFT)
             var = tk.StringVar()
-            self.manual_input_vars[field_key] = var
+            vars_dict[field_key] = var
             ttk.Entry(row, textvariable=var, width=15).pack(side=tk.LEFT)
 
-        # Tier 2 fields (behind expander)
-        self.show_tier2 = tk.BooleanVar(value=False)
-        tier2_toggle = ttk.Checkbutton(
-            supp_frame,
-            text="▶ Additional fields",
-            variable=self.show_tier2,
-            command=self._toggle_tier2_fields,
+        # Tier 2 toggle
+        show_t2 = tk.BooleanVar(value=False)
+        vars_dict['_show_tier2'] = show_t2
+        t2_toggle = ttk.Checkbutton(
+            panel_frame,
+            text="\u25B6 Additional fields",
+            variable=show_t2,
         )
-        tier2_toggle.pack(anchor='w', pady=(5, 0))
-        self._tier2_toggle_widget = tier2_toggle
+        t2_toggle.pack(anchor='w', pady=(3, 0))
 
-        self.tier2_frame = ttk.Frame(supp_frame)
+        t2_frame = ttk.Frame(panel_frame)
+
+        def _toggle_t2(_show=show_t2, _frame=t2_frame, _btn=t2_toggle):
+            if _show.get():
+                _frame.pack(fill=tk.X, pady=1)
+                _btn.config(text="\u25BC Additional fields")
+            else:
+                _frame.pack_forget()
+                _btn.config(text="\u25B6 Additional fields")
+
+        show_t2.trace_add('write', lambda *_a, cb=_toggle_t2: cb())
+
         for field_key, _, label in MANUAL_INPUT_FIELDS_TIER2:
-            row = ttk.Frame(self.tier2_frame)
-            row.pack(fill=tk.X, pady=2)
-            ttk.Label(row, text=f"{label} (£):", width=30).pack(side=tk.LEFT)
+            row = ttk.Frame(t2_frame)
+            row.pack(fill=tk.X, pady=1)
+            ttk.Label(row, text=f"{label} (\u00a3):", width=30).pack(side=tk.LEFT)
             var = tk.StringVar()
-            self.manual_input_vars[field_key] = var
+            vars_dict[field_key] = var
             ttk.Entry(row, textvariable=var, width=15).pack(side=tk.LEFT)
+
+        # Remove button
+        ttk.Button(
+            panel_frame, text="Remove",
+            command=lambda f=panel_frame: self._remove_manual_year(f),
+        ).pack(anchor='e', pady=(3, 0))
+
+        self._manual_year_panels.append({
+            'frame': panel_frame,
+            'vars': vars_dict,
+        })
+
+    def _remove_manual_year(self, frame_widget):
+        """Remove a specific year panel."""
+        self._manual_year_panels = [
+            p for p in self._manual_year_panels if p['frame'] is not frame_widget
+        ]
+        frame_widget.destroy()
+        # Re-number remaining panels
+        for i, panel in enumerate(self._manual_year_panels, 1):
+            panel['frame'].config(text=f"Year {i}")
+
+    def _clear_all_manual_input(self):
+        """Clear all manual input fields including grant details."""
+        self.proposed_award_var.set('')
+        self.payment_mechanism_var.set('Unknown')
+        # Remove all year panels and add a fresh one
+        for panel in self._manual_year_panels:
+            panel['frame'].destroy()
+        self._manual_year_panels.clear()
+        self._add_manual_year()
 
     def _toggle_manual_input(self):
         """Show/hide the manual input form."""
@@ -445,12 +527,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             self.manual_input_frame.pack(fill=tk.X, pady=5, padx=10,
                                          before=self._get_config_frame())
             self._manual_toggle_widget.config(
-                text="▼ Grant Details & Supplementary Accounts Data (Optional)"
+                text="\u25BC Grant Details & Supplementary Accounts Data (Optional)"
             )
         else:
             self.manual_input_frame.pack_forget()
             self._manual_toggle_widget.config(
-                text="▶ Grant Details & Supplementary Accounts Data (Optional)"
+                text="\u25B6 Grant Details & Supplementary Accounts Data (Optional)"
             )
 
     def _get_config_frame(self):
@@ -460,26 +542,43 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 return widget
         return None
 
-    def _toggle_tier2_fields(self):
-        """Show/hide tier 2 supplementary fields."""
-        if self.show_tier2.get():
-            self.tier2_frame.pack(fill=tk.X, pady=2)
-            self._tier2_toggle_widget.config(text="▼ Additional fields")
-        else:
-            self.tier2_frame.pack_forget()
-            self._tier2_toggle_widget.config(text="▶ Additional fields")
-
     def _collect_manual_input(self):
-        """Collect manual input values into a plain dict. Call on main thread."""
-        data = {}
-        for field_key, var in self.manual_input_vars.items():
-            raw = var.get().strip().replace(',', '').replace('£', '')
-            if raw:
+        """Collect multi-year manual input into a list of year dicts. Call on main thread.
+
+        Returns a list of dicts, each with 'year' (int extracted from period end)
+        and metric keys with float values.  Empty panels are skipped.
+        """
+        years_data = []
+        for panel in self._manual_year_panels:
+            vars_dict = panel['vars']
+            period_raw = vars_dict['_period_end'].get().strip()
+
+            # Extract year from period end date
+            year = None
+            if period_raw:
                 try:
-                    data[field_key] = float(raw)
+                    year = datetime.strptime(period_raw[:10], '%Y-%m-%d').year
                 except ValueError:
-                    log_message(f"Invalid manual input for {field_key}: {raw}")
-        return data
+                    # Try plain year
+                    if period_raw.isdigit() and len(period_raw) == 4:
+                        year = int(period_raw)
+
+            year_data = {}
+            for key, var in vars_dict.items():
+                if key.startswith('_'):
+                    continue
+                raw = var.get().strip().replace(',', '').replace('\u00a3', '')
+                if raw:
+                    try:
+                        year_data[key] = float(raw)
+                    except ValueError:
+                        log_message(f"Invalid manual input for {key}: {raw}")
+
+            if year_data and year is not None:
+                year_data['_year'] = year
+                years_data.append(year_data)
+
+        return years_data
 
     def _toggle_advanced_settings(self):
         """Show/hide advanced settings panel."""

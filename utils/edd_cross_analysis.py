@@ -48,16 +48,33 @@ class UnifiedFinancialData:
     ----------
     auto_analyzer : FinancialAnalyzer or None
         The existing FinancialAnalyzer populated from iXBRL files.
-    manual_data : dict
-        Keys are field names (matching MANUAL_INPUT_FIELDS keys or auto
-        column names), values are floats.  May also contain
-        ``'period_end'`` (str, YYYY-MM-DD).
+    manual_data : list[dict] or dict
+        Either a list of year-dicts (each with ``'_year'`` key and metric
+        values) for multi-year manual entry, or a single flat dict for
+        backward compatibility.
     """
 
-    def __init__(self, auto_analyzer=None, manual_data: Optional[Dict] = None):
+    def __init__(self, auto_analyzer=None, manual_data=None):
         self.auto_analyzer = auto_analyzer
-        self.manual_data = manual_data or {}
         self._provenance: Dict[str, str] = {}  # metric -> "auto" | "manual"
+
+        # Normalise manual_data to a list of year-dicts
+        if manual_data is None:
+            self._manual_years: List[Dict] = []
+        elif isinstance(manual_data, list):
+            self._manual_years = [d for d in manual_data if isinstance(d, dict)]
+        elif isinstance(manual_data, dict):
+            # Legacy single-dict format — wrap in a list
+            self._manual_years = [manual_data] if manual_data else []
+        else:
+            self._manual_years = []
+
+        # Index manual data by year for fast lookup
+        self._manual_by_year: Dict[int, Dict] = {}
+        for entry in self._manual_years:
+            yr = entry.get('_year')
+            if yr is not None:
+                self._manual_by_year[int(yr)] = entry
 
         # Build auto DataFrame reference
         if auto_analyzer and not auto_analyzer.data.empty:
@@ -92,40 +109,66 @@ class UnifiedFinancialData:
         'ManualDebtors': 'Debtors',
     }
 
+    # Reverse mapping: auto column name → manual field key(s)
+    _AUTO_TO_MANUAL = {
+        'Revenue': 'Turnover',
+        'ProfitLoss': 'PreTaxProfitLoss',
+        'CashBankInHand': 'CashAtBank',
+        'Debtors': 'ManualDebtors',
+    }
+
     # -- accessors ----------------------------------------------------------
 
     def get_years(self) -> List[int]:
-        """Return sorted list of years available in auto data."""
-        if self._auto_df.empty:
-            return []
-        return sorted(self._auto_df['Year'].dropna().astype(int).tolist())
+        """Return sorted list of all years available (auto + manual)."""
+        years = set()
+        if not self._auto_df.empty:
+            years.update(self._auto_df['Year'].dropna().astype(int).tolist())
+        years.update(self._manual_by_year.keys())
+        return sorted(years)
+
+    def _all_keys_for(self, name: str) -> List[str]:
+        """Return all possible dict keys for a metric (manual + auto names)."""
+        auto_col = self._MANUAL_TO_AUTO.get(name, name)
+        manual_key = self._AUTO_TO_MANUAL.get(name)
+        keys = [name]
+        if auto_col != name:
+            keys.append(auto_col)
+        if manual_key and manual_key not in keys:
+            keys.append(manual_key)
+        return keys
+
+    def _manual_value(self, name: str, year: int) -> Optional[float]:
+        """Look up a manual value for a specific year."""
+        entry = self._manual_by_year.get(year)
+        if entry is None:
+            return None
+        for key in self._all_keys_for(name):
+            val = entry.get(key)
+            if val is not None:
+                return float(val)
+        return None
 
     def get_metric(self, name: str, year: Optional[int] = None) -> Optional[float]:
-        """Return a metric value, preferring manual override for the latest year.
+        """Return a metric value, preferring manual data where available.
 
         If *year* is None, return the value for the most recent year.
-        Manual data is only applied to the latest year (or the year matching
-        the user-specified accounting period).
         """
-        # Determine the auto column to query
         auto_col = self._MANUAL_TO_AUTO.get(name, name)
+        all_years = self.get_years()
+        target_year = year if year is not None else (all_years[-1] if all_years else None)
 
-        # Try manual data first (applies to latest year only)
-        latest_year = self.get_years()[-1] if self.get_years() else None
-        if year is None or year == latest_year:
-            # Check if the manual key itself is provided
-            if name in self.manual_data and self.manual_data[name] is not None:
+        if target_year is not None:
+            # Try manual data for this year
+            manual_val = self._manual_value(name, target_year)
+            if manual_val is not None:
                 self._provenance[name] = 'manual'
-                return float(self.manual_data[name])
-            # Check mapped auto column name from manual data
-            if auto_col != name and auto_col in self.manual_data and self.manual_data[auto_col] is not None:
-                self._provenance[name] = 'manual'
-                return float(self.manual_data[auto_col])
+                return manual_val
 
         # Fall back to auto data
         if not self._auto_df.empty and auto_col in self._auto_df.columns:
-            if year is not None:
-                rows = self._auto_df[self._auto_df['Year'] == year]
+            if target_year is not None:
+                rows = self._auto_df[self._auto_df['Year'] == target_year]
             else:
                 rows = self._auto_df.tail(1)
             if not rows.empty:
@@ -137,10 +180,14 @@ class UnifiedFinancialData:
         return None
 
     def get_metric_series(self, name: str) -> Dict[int, float]:
-        """Return {year: value} dict for all available years of a metric."""
+        """Return {year: value} dict for all available years of a metric.
+
+        Manual data overlays/supplements auto-parsed data per year.
+        """
         auto_col = self._MANUAL_TO_AUTO.get(name, name)
         result: Dict[int, float] = {}
 
+        # Auto data first
         if not self._auto_df.empty and auto_col in self._auto_df.columns:
             for _, row in self._auto_df.iterrows():
                 yr = int(row['Year'])
@@ -148,11 +195,14 @@ class UnifiedFinancialData:
                 if pd.notna(val):
                     result[yr] = float(val)
 
-        # Overlay manual value onto latest year
-        latest_year = max(result.keys()) if result else None
-        manual_val = self.manual_data.get(name) or self.manual_data.get(auto_col)
-        if manual_val is not None and latest_year is not None:
-            result[latest_year] = float(manual_val)
+        # Overlay / add manual data per year (check all possible key names)
+        keys_to_check = self._all_keys_for(name)
+        for yr, entry in self._manual_by_year.items():
+            for key in keys_to_check:
+                val = entry.get(key)
+                if val is not None:
+                    result[yr] = float(val)
+                    break
 
         return result
 
@@ -162,10 +212,13 @@ class UnifiedFinancialData:
         return not self._auto_df.empty and auto_col in self._auto_df.columns
 
     def has_manual(self, name: str) -> bool:
-        """Check if a metric was provided via manual input."""
-        auto_col = self._MANUAL_TO_AUTO.get(name, name)
-        return (name in self.manual_data and self.manual_data[name] is not None) or \
-               (auto_col in self.manual_data and self.manual_data[auto_col] is not None)
+        """Check if a metric was provided via manual input in any year."""
+        keys_to_check = self._all_keys_for(name)
+        for entry in self._manual_years:
+            for key in keys_to_check:
+                if entry.get(key) is not None:
+                    return True
+        return False
 
     @property
     def provenance(self) -> Dict[str, str]:
