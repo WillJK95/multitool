@@ -829,6 +829,14 @@ def generate_static_ownership_graph(
     ax.set_title('Corporate Ownership Structure', fontsize=13, fontweight='bold', pad=10)
     ax.axis('off')
 
+    # Add horizontal margins so node labels are not clipped at edges
+    x_vals = [p[0] for p in pos.values()]
+    if x_vals:
+        x_min, x_max = min(x_vals), max(x_vals)
+        x_range = x_max - x_min if x_max != x_min else 100
+        x_pad = x_range * 0.15  # 15% padding on each side
+        ax.set_xlim(x_min - x_pad, x_max + x_pad)
+
     # Legend
     legend_items = [
         mpatches.Patch(facecolor='#B9D9EB', edgecolor='#333', label='Investigated Company'),

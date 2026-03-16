@@ -403,9 +403,10 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         ttk.Label(
             supp_frame,
-            text="Enter figures for up to 5 accounting periods. "
-                 "Losses / negative values should be entered with a minus sign (e.g. -15000).",
-            foreground='grey', wraplength=550,
+            text="Enter figures for up to 5 accounting periods. Use the same period end dates as "
+                 "the filed accounts so that manual data merges correctly with uploaded iXBRL data. "
+                 "Enter losses and negative values with a minus sign (e.g. -15000).",
+            foreground='grey', wraplength=600, justify=tk.LEFT,
         ).pack(anchor='w', pady=(0, 5))
 
         # Buttons row
@@ -439,26 +440,37 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         vars_dict = {}
 
+        # Use a grid for consistent alignment
+        grid_frame = ttk.Frame(panel_frame)
+        grid_frame.pack(fill=tk.X, pady=1)
+        grid_frame.columnconfigure(0, weight=1)  # Label column stretches
+        grid_frame.columnconfigure(1, weight=0)  # Entry column fixed
+        grid_row = 0
+
         # Period end date
-        row = ttk.Frame(panel_frame)
-        row.pack(fill=tk.X, pady=1)
-        ttk.Label(row, text="Accounting Period End Date:", width=30).pack(side=tk.LEFT)
+        ttk.Label(grid_frame, text="Accounting Period End Date:").grid(
+            row=grid_row, column=0, sticky='w', pady=1)
+        period_box = ttk.Frame(grid_frame)
+        period_box.grid(row=grid_row, column=1, sticky='e', pady=1)
         period_var = tk.StringVar()
         vars_dict['_period_end'] = period_var
-        ttk.Entry(row, textvariable=period_var, width=15).pack(side=tk.LEFT)
-        ttk.Label(row, text="(YYYY-MM-DD)", foreground='grey').pack(side=tk.LEFT, padx=5)
+        ttk.Entry(period_box, textvariable=period_var, width=15).pack(side=tk.LEFT)
+        ttk.Label(period_box, text=" YYYY-MM-DD", foreground='grey').pack(side=tk.LEFT)
+        grid_row += 1
 
         # Tier 1 fields (always visible)
         for field_key, _, label in MANUAL_INPUT_FIELDS_TIER1:
-            row = ttk.Frame(panel_frame)
-            row.pack(fill=tk.X, pady=1)
             display = label
+            hint = ""
             if 'Profit' in label or 'Loss' in label:
-                display = f"{label} (use negative for loss)"
-            ttk.Label(row, text=f"{display} (\u00a3):", width=30).pack(side=tk.LEFT)
+                hint = "  (negative for loss)"
+            ttk.Label(grid_frame, text=f"{display} (\u00a3):{hint}").grid(
+                row=grid_row, column=0, sticky='w', pady=1)
             var = tk.StringVar()
             vars_dict[field_key] = var
-            ttk.Entry(row, textvariable=var, width=15).pack(side=tk.LEFT)
+            ttk.Entry(grid_frame, textvariable=var, width=15).grid(
+                row=grid_row, column=1, sticky='e', pady=1)
+            grid_row += 1
 
         # Tier 2 toggle
         show_t2 = tk.BooleanVar(value=False)
@@ -482,13 +494,19 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         show_t2.trace_add('write', lambda *_a, cb=_toggle_t2: cb())
 
+        t2_grid = ttk.Frame(t2_frame)
+        t2_grid.pack(fill=tk.X)
+        t2_grid.columnconfigure(0, weight=1)
+        t2_grid.columnconfigure(1, weight=0)
+        t2_row = 0
         for field_key, _, label in MANUAL_INPUT_FIELDS_TIER2:
-            row = ttk.Frame(t2_frame)
-            row.pack(fill=tk.X, pady=1)
-            ttk.Label(row, text=f"{label} (\u00a3):", width=30).pack(side=tk.LEFT)
+            ttk.Label(t2_grid, text=f"{label} (\u00a3):").grid(
+                row=t2_row, column=0, sticky='w', pady=1)
             var = tk.StringVar()
             vars_dict[field_key] = var
-            ttk.Entry(row, textvariable=var, width=15).pack(side=tk.LEFT)
+            ttk.Entry(t2_grid, textvariable=var, width=15).grid(
+                row=t2_row, column=1, sticky='e', pady=1)
+            t2_row += 1
 
         # Remove button
         ttk.Button(
