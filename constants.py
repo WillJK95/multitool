@@ -18,11 +18,13 @@ CH_ACCOUNT_NAME = "CompaniesHouseAPI"
 CC_ACCOUNT_NAME = "CharityCommissionAPI"
 
 # --- API Rate Limiting Defaults ---
-DEFAULT_CH_RATE_LIMIT = 590       # requests per 5 minutes (standard tier)
-DEFAULT_CH_BURST_CAPACITY = 50    # max tokens for burst requests
-DEFAULT_CH_MAX_WORKERS = 2        # concurrent API threads
-MAX_CH_MAX_WORKERS = 8            # hard ceiling for workers
-MIN_CH_MAX_WORKERS = 1            # floor for workers
+DEFAULT_CH_PACING_MODE = "smooth"       # "smooth" or "burst"
+INITIAL_RATE_LIMIT = 590                # conservative startup value (before first API response)
+SMOOTH_BURST_WINDOW_SECONDS = 15        # seconds of tokens the smooth-mode bucket holds
+SMOOTH_SAFETY_MARGIN = 0.90             # fraction of server rate used in smooth mode
+DEFAULT_CH_MAX_WORKERS = 2              # concurrent API threads
+MAX_CH_MAX_WORKERS = 8                  # hard ceiling for workers
+MIN_CH_MAX_WORKERS = 1                  # floor for workers
 
 # --- Default Values ---
 DEFAULT_ITEMS_PER_PAGE = 100
