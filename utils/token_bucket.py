@@ -167,6 +167,19 @@ class TokenBucket:
                 self.tokens = min(remain, self.capacity)
                 self.last_refill_time = time.monotonic()
 
+                # Log noteworthy rate limit states
+                if remain == 0:
+                    log_message(
+                        f"Rate limit depleted: 0/{self.capacity} requests "
+                        f"remaining, window resets in {seconds_until_reset}s"
+                    )
+                elif self.capacity > 0 and remain < self.capacity * 0.1:
+                    log_message(
+                        f"Rate limit warning: {remain}/{self.capacity} "
+                        f"requests remaining, window resets in "
+                        f"{seconds_until_reset}s"
+                    )
+
         except (ValueError, TypeError):
             # Malformed headers - ignore and keep local state
             pass
