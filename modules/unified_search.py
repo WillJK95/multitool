@@ -555,7 +555,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
                 )
 
         self._api_failures = failed_rows
-        self.after(100, self._finish_investigation)
+        self.safe_ui_call(self._finish_investigation)
 
     def _finish_investigation(self):
         if self.cancel_flag.is_set():
