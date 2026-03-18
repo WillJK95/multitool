@@ -26,7 +26,7 @@ from ..constants import (
 )
 
 # Utility functions (were global functions or duplicated in classes)
-from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label
+from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary
 
 # UI components (were classes in original file)
 from ..ui.tooltip import Tooltip
@@ -337,9 +337,9 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                         if self.cancel_flag.is_set():
                             break
                         task = futures[future]
-                        generated_rows, next_level_cnums = future.result()
+                        generated_rows, next_level_cnums, err = future.result()
                         if not generated_rows and not next_level_cnums:
-                            failed_companies.append(task[0])  # company number
+                            failed_companies.append((task[0], err))
                         if generated_rows:
                             self.results_data.extend(generated_rows)
                             pscs_found_for_this_root = True  # Mark as found
@@ -365,12 +365,14 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
 
         if not self.cancel_flag.is_set():
             if failed_companies:
-                unique_failed = list(set(failed_companies))
-                msg = (
-                    f"Investigation complete! "
-                    f"WARNING: {len(unique_failed)} company(ies) could not be retrieved due to API errors."
-                )
-                log_message(f"Skipped companies due to API errors: {', '.join(unique_failed)}")
+                # Deduplicate by company number, keeping first error
+                seen = {}
+                for cnum, err in failed_companies:
+                    if cnum not in seen:
+                        seen[cnum] = err
+                unique_failures = list(seen.items())
+                warning = format_error_summary(unique_failures, "company")
+                msg = f"Investigation complete! {warning}"
             else:
                 msg = "Investigation complete!"
             self.app.after(0, lambda m=msg: self.status_var.set(m))
@@ -382,7 +384,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
     def _process_ubo_company(self, company_tuple):
         company_num, level, root_cnum, root_name, snapshot_date = company_tuple
         if self.cancel_flag.is_set():
-            return [], []
+            return [], [], None
 
         generated_rows, next_level_companies = [], []
         pscs_list, error = ch_get_data(
@@ -395,7 +397,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             log_message(
                 f"UBO Chain Error for {company_num}: {error or 'No PSC list found'}"
             )
-            return [], []
+            return [], [], error or "No PSC data"
 
         for p_summary in pscs_list.get("items", []):
             if self.cancel_flag.is_set():
@@ -484,7 +486,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             }
             generated_rows.append(row)
 
-        return generated_rows, next_level_companies
+        return generated_rows, next_level_companies, None
 
     # --- NEW AND REFACTORED GRAPHING/EXPORT LOGIC ---
 
@@ -557,7 +559,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
 
     def _fetch_company_network_data(self, company_number, snapshot_date=None):
         """Worker to fetch profile, officers, and PSCs for one company."""
-        profile, _ = ch_get_data(
+        profile, profile_err = ch_get_data(
             self.api_key, self.ch_token_bucket, f"/company/{company_number}"
         )
         officers, _ = ch_get_data(
@@ -572,7 +574,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         )
         # --- NEW: If no snapshot date is provided, return all data immediately ---
         if not snapshot_date:
-            return profile, officers, pscs
+            return profile, officers, pscs, profile_err
 
         # --- NEW: Filter officers based on the snapshot date ---
         if officers and officers.get("items"):
@@ -628,7 +630,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                     active_pscs.append(psc_summary)
             pscs["items"] = active_pscs
 
-        return profile, officers, pscs
+        return profile, officers, pscs, profile_err
 
     def _build_ubo_network_graph_object(self):
         """
@@ -703,9 +705,9 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                     ),
                 )
 
-                profile, officers, pscs = future.result()
+                profile, officers, pscs, profile_err = future.result()
                 if not profile:
-                    failed_graph_companies.append(cnum)
+                    failed_graph_companies.append((cnum, profile_err))
                     continue
 
                 G.add_node(
@@ -795,19 +797,17 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                             if psc_addr_clean:
                                 G.add_edge(person_key, psc_addr_clean, label="correspondence_at")
         if failed_graph_companies:
-            log_message(f"Skipped companies in graph due to API errors: {', '.join(failed_graph_companies)}")
+            warning = format_error_summary(failed_graph_companies, "company")
             self.app.after(
                 0,
-                lambda n=len(failed_graph_companies): self.status_var.set(
-                    f"Graph built. WARNING: {n} company(ies) could not be retrieved due to API errors."
-                ),
+                lambda w=warning: self.status_var.set(f"Graph built. {w}"),
             )
 
         return G
 
     def _fetch_full_company_details(self, company_number):
         """Worker to fetch profile and officers for a single company."""
-        profile, _ = ch_get_data(
+        profile, profile_err = ch_get_data(
             self.api_key, self.ch_token_bucket, f"/company/{company_number}"
         )
         officers, _ = ch_get_data(
@@ -815,7 +815,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             self.ch_token_bucket,
             f"/company/{company_number}/officers?items_per_page=100",
         )
-        return profile, officers
+        return profile, officers, profile_err
 
     def _generate_and_open_graph(self):
         """Renders and opens the visual graph with specific PSC chain styling."""

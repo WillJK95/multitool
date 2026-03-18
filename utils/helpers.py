@@ -5,7 +5,8 @@ import os
 import re
 import textwrap
 from datetime import datetime
-from typing import Any, Dict, Optional
+from collections import Counter
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..constants import CONFIG_DIR
 
@@ -183,3 +184,57 @@ def extract_address_string(addr_data: Optional[Dict]) -> Optional[str]:
     return raw_address_str if raw_address_str else None
 
 
+def _friendly_error_label(error_string: str) -> str:
+    """Normalise a ch_get_data error string to a short human-friendly label."""
+    if not error_string:
+        return "Unknown Error"
+    e = error_string.lower()
+    if "404" in e:
+        return "Not Found"
+    if "401" in e:
+        return "Unauthorized"
+    if "403" in e:
+        return "Forbidden"
+    if "rate limited" in e or "429" in e:
+        return "Rate Limited"
+    if "excessive use" in e:
+        return "Rate Limited"
+    if "server error" in e or "500" in e or "502" in e or "503" in e or "504" in e:
+        return "Server Error"
+    if "connection error" in e:
+        return "Connection Error"
+    return "Error"
+
+
+def format_error_summary(
+    failures: List[Tuple[str, str]],
+    item_type: str = "company",
+) -> str:
+    """
+    Build a categorised error summary from a list of (identifier, error) tuples.
+
+    Logs a per-item breakdown and returns a short grouped string suitable for
+    the status bar, e.g. "5 company(ies) failed (3 Not Found, 2 Rate Limited)".
+
+    Args:
+        failures: List of (identifier, raw_error_string) tuples.
+        item_type: Noun to use in the summary (e.g. "company", "officer", "row").
+
+    Returns:
+        A summary string for display in the UI status bar.
+    """
+    if not failures:
+        return ""
+
+    # Log per-item details
+    for identifier, error in failures:
+        label = _friendly_error_label(error)
+        log_message(f"Failed {item_type} {identifier}: {label}")
+
+    # Group by friendly label
+    counts = Counter(_friendly_error_label(err) for _, err in failures)
+    breakdown = ", ".join(f"{count} {label}" for label, count in counts.items())
+
+    n = len(failures)
+    plural = f"{item_type}(ies)" if item_type.endswith("y") else f"{item_type}(s)"
+    return f"WARNING: {n} {plural} failed ({breakdown})."

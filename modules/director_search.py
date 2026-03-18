@@ -31,7 +31,7 @@ from ..constants import (
 )
 
 # Utility functions (were global functions or duplicated in classes)
-from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label
+from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary
 
 # UI components (were classes in original file)
 from ..ui.tooltip import Tooltip
@@ -403,8 +403,7 @@ class DirectorSearch(InvestigationModuleBase):
                     processed_list, error = future.result()
                     if error:
                         officer_name = officer.get("title", "Unknown")
-                        failed_officers.append(officer_name)
-                        log_message(f"Error processing officer appointments: {error}")
+                        failed_officers.append((officer_name, error))
                     if processed_list:
                         self.results_data.extend(processed_list)
 
@@ -438,11 +437,11 @@ class DirectorSearch(InvestigationModuleBase):
         else:
             failed = getattr(self, "_api_failures", [])
             if failed:
+                err_summary = format_error_summary(failed, "officer")
                 warning = (
                     f"Search complete. Found {len(self.results_data)} unique appointments. "
-                    f"WARNING: {len(failed)} officer(s) could not be retrieved due to API errors."
+                    f"{err_summary}"
                 )
-                log_message(f"Skipped officers due to API errors: {', '.join(failed)}")
             else:
                 warning = f"Search complete. Found {len(self.results_data)} unique appointments."
             self.app.after(0, lambda msg=warning: self.status_var.set(msg))
@@ -729,10 +728,10 @@ class DirectorSearch(InvestigationModuleBase):
                         f"Fetching network data for {cnum} ({i + 1}/{len(unique_company_numbers)})..."
                     ),
                 )
-                profile, officers, pscs = future.result()
+                profile, officers, pscs, profile_err = future.result()
 
                 if not profile:
-                    failed_companies.append(cnum)
+                    failed_companies.append((cnum, profile_err))
                     continue
 
                 company_name = profile.get("company_name", cnum)
@@ -829,19 +828,17 @@ class DirectorSearch(InvestigationModuleBase):
 
 
         if failed_companies:
-            log_message(f"Skipped companies due to API errors: {', '.join(failed_companies)}")
+            warning = format_error_summary(failed_companies, "company")
             self.app.after(
                 0,
-                lambda n=len(failed_companies): self.status_var.set(
-                    f"Graph generated. WARNING: {n} company(ies) could not be retrieved due to API errors."
-                ),
+                lambda w=warning: self.status_var.set(f"Graph generated. {w}"),
             )
 
         return G
 
     def _fetch_company_network_data(self, company_number):
         """Worker function to fetch profile, officers, and PSCs for one company."""
-        profile, _ = ch_get_data(
+        profile, profile_err = ch_get_data(
             self.api_key, self.ch_token_bucket, f"/company/{company_number}"
         )
         officers, _ = ch_get_data(
@@ -854,7 +851,7 @@ class DirectorSearch(InvestigationModuleBase):
             self.ch_token_bucket,
             f"/company/{company_number}/persons-with-significant-control?items_per_page=100",
         )
-        return profile, officers, pscs
+        return profile, officers, pscs, profile_err
 
     def _generate_and_open_graph(self, G):
         """Converts the networkx graph to a pyvis graph and opens it."""

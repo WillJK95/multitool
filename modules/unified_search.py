@@ -34,7 +34,7 @@ from ..constants import (
 )
 
 # Utility functions (were global functions or duplicated in classes)
-from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label
+from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary
 
 # UI components (were classes in original file)
 from ..ui.tooltip import Tooltip
@@ -545,8 +545,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
                         if result:
                             self.results_data.append(result)
                     except Exception as exc:
-                        failed_rows.append(str(row_data))
-                        log_message(f"Could not process row {row_data}. Error: {exc}")
+                        failed_rows.append((str(row_data), str(exc)))
 
                     self.app.after(0, self.progress_bar.step, 1)
             except Exception as e:
@@ -564,11 +563,8 @@ class CompanyCharitySearch(InvestigationModuleBase):
         else:
             failed = getattr(self, "_api_failures", [])
             if failed:
-                msg = (
-                    f"Investigation complete! "
-                    f"WARNING: {len(failed)} row(s) could not be processed due to API errors."
-                )
-                log_message(f"Skipped rows due to API errors: {len(failed)}")
+                warning = format_error_summary(failed, "row")
+                msg = f"Investigation complete! {warning}"
             else:
                 msg = "Investigation complete!"
             self.app.after(0, lambda m=msg: self.status_var.set(m))
@@ -893,7 +889,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
     def _fetch_company_network_data(self, company_number):
         """Worker function to fetch profile, officers, and PSCs for one company."""
-        profile, _ = ch_get_data(
+        profile, profile_err = ch_get_data(
             self.api_key, self.ch_token_bucket, f"/company/{company_number}"
         )
         officers, _ = ch_get_data(
@@ -906,7 +902,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
             self.ch_token_bucket,
             f"/company/{company_number}/persons-with-significant-control?items_per_page=100",
         )
-        return profile, officers, pscs
+        return profile, officers, pscs, profile_err
 
     def _fetch_charity_network_data(self, charity_number):
         """Worker function to fetch charity details and trustees for one charity."""
@@ -981,9 +977,9 @@ class CompanyCharitySearch(InvestigationModuleBase):
                         ),
                     )
 
-                    profile, officers, pscs = future.result()
+                    profile, officers, pscs, profile_err = future.result()
                     if not profile:
-                        failed_companies.append(cnum)
+                        failed_companies.append((cnum, profile_err))
                         continue
 
                     company_name = profile.get("company_name", cnum)
@@ -1138,12 +1134,10 @@ class CompanyCharitySearch(InvestigationModuleBase):
                 G.add_edge(company_number, charity_node_id, label="registered_as")
 
         if failed_companies:
-            log_message(f"Skipped companies due to API errors: {', '.join(failed_companies)}")
+            warning = format_error_summary(failed_companies, "company")
             self.app.after(
                 0,
-                lambda n=len(failed_companies): self.status_var.set(
-                    f"Graph built. WARNING: {n} company(ies) could not be retrieved due to API errors."
-                ),
+                lambda w=warning: self.status_var.set(f"Graph built. {w}"),
             )
 
         return G

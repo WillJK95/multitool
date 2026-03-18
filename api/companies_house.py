@@ -57,6 +57,7 @@ def ch_get_data(
 
     token_bucket.consume()
     url = f"{API_BASE_URL}{path}"
+    last_error_reason = "Unknown Error"
 
     for i in range(retries):
         try:
@@ -77,8 +78,10 @@ def ch_get_data(
             # Excessive-use response - the API has temporarily blocked us.
             # Wait for the full window reset before retrying.
             if response.status_code == 429:
+                last_error_reason = "Rate Limited (429)"
                 body = _safe_json(response)
                 if body and body.get("type") == "ch:service/excessive-use":
+                    last_error_reason = "Excessive Use Block (429)"
                     reset_wait = token_bucket.get_wait_from_reset(
                         response.headers
                     )
@@ -113,6 +116,7 @@ def ch_get_data(
 
             # Server errors - retry with backoff
             if response.status_code in [500, 502, 503, 504]:
+                last_error_reason = f"Server Error ({response.status_code})"
                 wait_time = backoff_factor * (2 ** i)
                 log_message(
                     f"API returned status {response.status_code}. "
@@ -133,12 +137,13 @@ def ch_get_data(
             return result
 
         except requests.exceptions.RequestException as e:
+            last_error_reason = "Connection Error"
             wait_time = backoff_factor * (2 ** i)
             log_message(f"Request failed: {e}. Retrying in {wait_time:.2f}s...")
             time.sleep(wait_time)
 
     # All retries exhausted - NOT cached so future attempts can retry
-    return None, f"Error: Failed to get data for {path} after {retries} retries."
+    return None, last_error_reason
 
 
 def ch_search_officers(
