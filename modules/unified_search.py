@@ -528,6 +528,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
             ),
         )
 
+        failed_rows = []
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = {
                 executor.submit(self._process_single_row, row): row
@@ -537,16 +538,15 @@ class CompanyCharitySearch(InvestigationModuleBase):
                 for future in as_completed(futures):
                     if self.cancel_flag.is_set():
                         break
-                    
-                    # --- NEW: Check for exceptions on each future individually ---
+
+                    row_data = futures[future]
                     try:
                         result = future.result()
                         if result:
                             self.results_data.append(result)
                     except Exception as exc:
-                        row_data = futures[future]
+                        failed_rows.append(str(row_data))
                         log_message(f"Could not process row {row_data}. Error: {exc}")
-                    # --- END NEW ---
 
                     self.app.after(0, self.progress_bar.step, 1)
             except Exception as e:
@@ -555,13 +555,23 @@ class CompanyCharitySearch(InvestigationModuleBase):
                     messagebox.showerror, "Error", f"A processing error occurred: {e}"
                 )
 
+        self._api_failures = failed_rows
         self.after(100, self._finish_investigation)
 
     def _finish_investigation(self):
         if self.cancel_flag.is_set():
             self.app.after(0, lambda: self.status_var.set("Investigation cancelled."))
         else:
-            self.app.after(0, lambda: self.status_var.set("Investigation complete!"))
+            failed = getattr(self, "_api_failures", [])
+            if failed:
+                msg = (
+                    f"Investigation complete! "
+                    f"WARNING: {len(failed)} row(s) could not be processed due to API errors."
+                )
+                log_message(f"Skipped rows due to API errors: {len(failed)}")
+            else:
+                msg = "Investigation complete!"
+            self.app.after(0, lambda m=msg: self.status_var.set(m))
 
         self.cancel_btn.pack_forget()
         self.run_btn.pack(side=tk.LEFT, padx=5)
@@ -950,6 +960,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
         processed_count = 0
 
         # --- Process Companies ---
+        failed_companies = []
         if company_numbers:
             with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
                 future_to_cnum = {
@@ -972,6 +983,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
                     profile, officers, pscs = future.result()
                     if not profile:
+                        failed_companies.append(cnum)
                         continue
 
                     company_name = profile.get("company_name", cnum)
@@ -1124,6 +1136,15 @@ class CompanyCharitySearch(InvestigationModuleBase):
             charity_node_id = f"CC-{charity_number}"
             if G.has_node(company_number) and G.has_node(charity_node_id):
                 G.add_edge(company_number, charity_node_id, label="registered_as")
+
+        if failed_companies:
+            log_message(f"Skipped companies due to API errors: {', '.join(failed_companies)}")
+            self.app.after(
+                0,
+                lambda n=len(failed_companies): self.status_var.set(
+                    f"Graph built. WARNING: {n} company(ies) could not be retrieved due to API errors."
+                ),
+            )
 
         return G
 

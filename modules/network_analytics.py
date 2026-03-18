@@ -5294,6 +5294,7 @@ class NetworkAnalytics(InvestigationModuleBase):
             if fetch_associated:
                 self.app.after(0, lambda: self.seed_status_var.set(f"Found {len(officers['items'])} officers. Fetching appointments..."))
                 all_appointments = []
+                failed_officers = []
                 with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
                     future_to_officer = {
                         executor.submit(self._fetch_officer_appointments, o.get("links", {})): o
@@ -5302,9 +5303,21 @@ class NetworkAnalytics(InvestigationModuleBase):
                     for future in as_completed(future_to_officer):
                         if self.cancel_flag.is_set():
                             return
+                        officer = future_to_officer[future]
                         appointments = future.result()
                         if appointments:
                             all_appointments.extend(appointments)
+                        elif appointments is None:
+                            failed_officers.append(officer.get("name", "Unknown"))
+
+                if failed_officers:
+                    log_message(f"Skipped officers due to API errors: {', '.join(failed_officers)}")
+                    self.app.after(
+                        0,
+                        lambda n=len(failed_officers): self.seed_status_var.set(
+                            f"WARNING: {n} officer(s) could not be retrieved due to API errors."
+                        ),
+                    )
 
                 unique_company_numbers = {
                     app.get("appointed_to", {}).get("company_number")
@@ -5316,6 +5329,7 @@ class NetworkAnalytics(InvestigationModuleBase):
 
             self.app.after(0, lambda: self.seed_status_var.set(f"Found {len(unique_company_numbers)} companies. Building network..."))
             temp_graph = nx.DiGraph()
+            failed_graph_companies = []
             with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
                 future_to_cnum = {
                     executor.submit(self._fetch_company_network_data, cnum, fetch_pscs): cnum
@@ -5324,10 +5338,22 @@ class NetworkAnalytics(InvestigationModuleBase):
                 for i, future in enumerate(as_completed(future_to_cnum)):
                     if self.cancel_flag.is_set():
                         return
+                    cnum = future_to_cnum[future]
                     self.app.after(0, lambda i=i: self.seed_status_var.set(f"Processing company {i+1}/{len(unique_company_numbers)}..."))
                     profile, officers_data, pscs_data = future.result()
                     if profile:
                         self._add_company_to_graph(temp_graph, profile, officers_data, pscs_data)
+                    else:
+                        failed_graph_companies.append(cnum)
+
+            if failed_graph_companies:
+                log_message(f"Skipped companies in graph due to API errors: {', '.join(failed_graph_companies)}")
+                self.app.after(
+                    0,
+                    lambda n=len(failed_graph_companies): self.seed_status_var.set(
+                        f"Graph built. WARNING: {n} company(ies) could not be retrieved due to API errors."
+                    ),
+                )
 
             self.app.after(100, lambda: self._save_graph_to_temp_csv(temp_graph, seed_cnum))
 
@@ -5338,16 +5364,19 @@ class NetworkAnalytics(InvestigationModuleBase):
         finally:
             self.app.after(100, lambda: self.seed_btn.config(state="normal"))
 
-    def _fetch_officer_appointments(self, officer_links: dict) -> List[dict]:
+    def _fetch_officer_appointments(self, officer_links: dict):
         base_path = officer_links.get("officer", {}).get("appointments")
         if not base_path: return []
-        page_size = 100 
+        page_size = 100
         start_index = 0
         all_items = []
         while True:
             path = f"{base_path}?items_per_page={page_size}&start_index={start_index}"
             data, err = ch_get_data(self.api_key, self.ch_token_bucket, path)
-            if err or not data: break
+            if err or not data:
+                if not all_items:
+                    return None  # Signal total failure (no data retrieved)
+                break  # Partial failure — return what we have
             page_items = data.get("items", [])
             all_items.extend(page_items)
             if len(page_items) < page_size: break

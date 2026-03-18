@@ -1,16 +1,20 @@
 # multitool/api/companies_house.py
 """Companies House API client."""
 
+import threading
 import time
 import requests
-from functools import lru_cache
 from typing import Tuple, Optional, Any, Dict
 
 from ..constants import API_BASE_URL, DEFAULT_MAX_RETRIES, DEFAULT_BACKOFF_FACTOR
 from ..utils.helpers import log_message
 
+# Thread-safe success-only cache (errors are never cached so retries work)
+_cache = {}
+_cache_lock = threading.Lock()
+_CACHE_MAX_SIZE = 1024
 
-@lru_cache(maxsize=1024)
+
 def ch_get_data(
     api_key: str,
     token_bucket,
@@ -21,10 +25,11 @@ def ch_get_data(
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Make a GET request to the Companies House API.
-    
+
     Implements intelligent retries with exponential backoff for transient errors.
-    Results are cached using lru_cache to avoid repeated API calls.
-    
+    Successful results are cached to avoid repeated API calls. Failed results
+    are NOT cached so that transient errors (e.g. 429) can be retried.
+
     Args:
         api_key: Companies House API key
         token_bucket: TokenBucket instance for rate limiting
@@ -32,17 +37,23 @@ def ch_get_data(
         is_psc: Whether this is a PSC-related request (unused, kept for compatibility)
         retries: Maximum number of retry attempts
         backoff_factor: Base delay multiplier for exponential backoff
-        
+
     Returns:
         Tuple of (data dict or None, error message or None)
     """
+    cache_key = (api_key, path, is_psc)
+
+    with _cache_lock:
+        if cache_key in _cache:
+            return _cache[cache_key]
+
     token_bucket.consume()
     url = f"{API_BASE_URL}{path}"
-    
+
     for i in range(retries):
         try:
             response = requests.get(url, auth=(api_key, ""), timeout=30)
-            
+
             # Client errors - don't retry
             if response.status_code in [404, 401, 403]:
                 log_message(
@@ -50,7 +61,7 @@ def ch_get_data(
                     "This is a final error and will not be retried."
                 )
                 return None, f"Client Error: {response.status_code}"
-            
+
             # Server errors - retry with backoff
             if response.status_code in [429, 500, 502, 503, 504]:
                 wait_time = backoff_factor * (2 ** i)
@@ -60,18 +71,24 @@ def ch_get_data(
                 )
                 time.sleep(wait_time)
                 continue
-            
+
             response.raise_for_status()
-            
-            # Success
-            return response.json(), None
-            
+
+            # Success - cache the result
+            result = (response.json(), None)
+            with _cache_lock:
+                if len(_cache) >= _CACHE_MAX_SIZE:
+                    # Evict oldest entry
+                    _cache.pop(next(iter(_cache)))
+                _cache[cache_key] = result
+            return result
+
         except requests.exceptions.RequestException as e:
             wait_time = backoff_factor * (2 ** i)
             log_message(f"Request failed: {e}. Retrying in {wait_time:.2f}s...")
             time.sleep(wait_time)
-    
-    # All retries exhausted
+
+    # All retries exhausted - NOT cached so future attempts can retry
     return None, f"Error: Failed to get data for {path} after {retries} retries."
 
 

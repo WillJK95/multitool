@@ -385,6 +385,7 @@ class DirectorSearch(InvestigationModuleBase):
     def _fetch_appointments(self, officers):
         """Phase 2 (threaded): Fetch appointments for all matched officers."""
         try:
+            failed_officers = []
             with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
                 futures = {
                     executor.submit(self._process_officer, officer): officer
@@ -398,8 +399,11 @@ class DirectorSearch(InvestigationModuleBase):
                             f.cancel()
                         break
 
+                    officer = futures[future]
                     processed_list, error = future.result()
                     if error:
+                        officer_name = officer.get("title", "Unknown")
+                        failed_officers.append(officer_name)
                         log_message(f"Error processing officer appointments: {error}")
                     if processed_list:
                         self.results_data.extend(processed_list)
@@ -412,6 +416,7 @@ class DirectorSearch(InvestigationModuleBase):
                         ),
                     )
 
+            self._api_failures = failed_officers
             self.after(100, self._populate_results)
 
         except Exception as e:
@@ -431,12 +436,16 @@ class DirectorSearch(InvestigationModuleBase):
         if self.cancel_flag.is_set():
             self.app.after(0, lambda: self.status_var.set("Search cancelled."))
         else:
-            self.app.after(
-                0,
-                lambda: self.status_var.set(
-                    f"Search complete. Found {len(self.results_data)} unique appointments."
-                ),
-            )
+            failed = getattr(self, "_api_failures", [])
+            if failed:
+                warning = (
+                    f"Search complete. Found {len(self.results_data)} unique appointments. "
+                    f"WARNING: {len(failed)} officer(s) could not be retrieved due to API errors."
+                )
+                log_message(f"Skipped officers due to API errors: {', '.join(failed)}")
+            else:
+                warning = f"Search complete. Found {len(self.results_data)} unique appointments."
+            self.app.after(0, lambda msg=warning: self.status_var.set(msg))
 
         self._restore_button_states()
 
@@ -702,6 +711,7 @@ class DirectorSearch(InvestigationModuleBase):
             )
             return None
 
+        failed_companies = []
         with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
             future_to_cnum = {
                 executor.submit(self._fetch_company_network_data, cnum): cnum
@@ -722,6 +732,7 @@ class DirectorSearch(InvestigationModuleBase):
                 profile, officers, pscs = future.result()
 
                 if not profile:
+                    failed_companies.append(cnum)
                     continue
 
                 company_name = profile.get("company_name", cnum)
@@ -816,6 +827,15 @@ class DirectorSearch(InvestigationModuleBase):
                             if psc_addr_clean:
                                 G.add_edge(person_key, psc_addr_clean, label="correspondence_at")
 
+
+        if failed_companies:
+            log_message(f"Skipped companies due to API errors: {', '.join(failed_companies)}")
+            self.app.after(
+                0,
+                lambda n=len(failed_companies): self.status_var.set(
+                    f"Graph generated. WARNING: {n} company(ies) could not be retrieved due to API errors."
+                ),
+            )
 
         return G
 

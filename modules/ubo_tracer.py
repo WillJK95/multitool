@@ -296,6 +296,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             ),
         )
 
+        failed_companies = []
         for i, root_cnum in enumerate(root_companies):
             if self.cancel_flag.is_set():
                 break
@@ -335,7 +336,10 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                     for future in as_completed(futures):
                         if self.cancel_flag.is_set():
                             break
+                        task = futures[future]
                         generated_rows, next_level_cnums = future.result()
+                        if not generated_rows and not next_level_cnums:
+                            failed_companies.append(task[0])  # company number
                         if generated_rows:
                             self.results_data.extend(generated_rows)
                             pscs_found_for_this_root = True  # Mark as found
@@ -360,7 +364,16 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                 self.results_data.append(placeholder_row)
 
         if not self.cancel_flag.is_set():
-            self.app.after(0, lambda: self.status_var.set("Investigation complete!"))
+            if failed_companies:
+                unique_failed = list(set(failed_companies))
+                msg = (
+                    f"Investigation complete! "
+                    f"WARNING: {len(unique_failed)} company(ies) could not be retrieved due to API errors."
+                )
+                log_message(f"Skipped companies due to API errors: {', '.join(unique_failed)}")
+            else:
+                msg = "Investigation complete!"
+            self.app.after(0, lambda m=msg: self.status_var.set(m))
         else:
             self.app.after(0, lambda: self.status_var.set("Investigation cancelled."))
 
@@ -669,6 +682,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             ),
         )
 
+        failed_graph_companies = []
         with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
             future_to_cnum = {
                 executor.submit(
@@ -691,6 +705,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
 
                 profile, officers, pscs = future.result()
                 if not profile:
+                    failed_graph_companies.append(cnum)
                     continue
 
                 G.add_node(
@@ -779,6 +794,15 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                                 )
                             if psc_addr_clean:
                                 G.add_edge(person_key, psc_addr_clean, label="correspondence_at")
+        if failed_graph_companies:
+            log_message(f"Skipped companies in graph due to API errors: {', '.join(failed_graph_companies)}")
+            self.app.after(
+                0,
+                lambda n=len(failed_graph_companies): self.status_var.set(
+                    f"Graph built. WARNING: {n} company(ies) could not be retrieved due to API errors."
+                ),
+            )
+
         return G
 
     def _fetch_full_company_details(self, company_number):
