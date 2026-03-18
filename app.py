@@ -26,8 +26,7 @@ from .constants import (
     API_BASE_URL,
     CHARITY_API_BASE_URL,
     GRANTNAV_API_BASE_URL,
-    DEFAULT_CH_RATE_LIMIT,
-    DEFAULT_CH_BURST_CAPACITY,
+    DEFAULT_CH_PACING_MODE,
     DEFAULT_CH_MAX_WORKERS,
     MAX_CH_MAX_WORKERS,
     MIN_CH_MAX_WORKERS,
@@ -35,7 +34,7 @@ from .constants import (
 from .help_content import HELP_CONTENT
 from .utils.helpers import log_message
 from .utils.token_bucket import TokenBucket
-from .utils.settings import load_settings, save_settings, derive_rate_params
+from .utils.settings import load_settings, save_settings, derive_initial_params
 from .ui.tooltip import Tooltip
 from .ui.help_window import HelpWindow
 
@@ -78,11 +77,13 @@ class App(tk.Tk):
         if self._settings["font_size"] != 10:
             self.after(100, self._update_font_size)
 
-        # Rate limiter for Companies House API (configurable via Settings)
-        rate_params = derive_rate_params(self._settings["ch_rate_limit"])
-        bucket_capacity = self._settings["ch_burst_capacity"]
-        bucket_refill = rate_params["refill_rate"]
-        self.ch_token_bucket = TokenBucket(capacity=bucket_capacity, refill_rate=bucket_refill)
+        # Rate limiter for Companies House API (auto-detected from headers)
+        initial = derive_initial_params(self._settings["ch_pacing_mode"])
+        self.ch_token_bucket = TokenBucket(
+            capacity=initial["capacity"],
+            refill_rate=initial["refill_rate"],
+            pacing_mode=self._settings["ch_pacing_mode"],
+        )
         self.ch_max_workers = self._settings["ch_max_workers"]
         
         # API keys
@@ -234,24 +235,48 @@ class App(tk.Tk):
         )
         api_frame.pack(fill="x", expand=True, pady=(10, 0))
 
-        # Rate limit input
-        rate_row = ttk.Frame(api_frame)
-        rate_row.pack(fill="x", pady=5)
-        ttk.Label(rate_row, text="My rate limit:").pack(side="left", padx=(0, 5))
+        # Auto-detection note
+        ttk.Label(
+            api_frame,
+            text="Rate limits are detected automatically from the API.",
+            font=("Segoe UI", 9), foreground="gray",
+        ).pack(anchor="w", pady=(0, 8))
 
-        rate_limit_var = tk.IntVar(value=self._settings["ch_rate_limit"])
-        rate_spin = ttk.Spinbox(
-            rate_row, from_=100, to=6000, increment=10,
-            textvariable=rate_limit_var, width=8
-        )
-        rate_spin.pack(side="left", padx=(0, 5))
-        ttk.Label(rate_row, text="requests per 5 minutes").pack(side="left")
+        # Pacing strategy
+        pacing_var = tk.StringVar(value=self._settings["ch_pacing_mode"])
 
-        # Advanced toggle
+        ttk.Label(api_frame, text="Pacing strategy:").pack(anchor="w")
+
+        smooth_frame = ttk.Frame(api_frame)
+        smooth_frame.pack(fill="x", padx=(10, 0), pady=(4, 0))
+        ttk.Radiobutton(
+            smooth_frame, text="Smooth (Recommended)",
+            variable=pacing_var, value="smooth",
+        ).pack(anchor="w")
+        ttk.Label(
+            smooth_frame,
+            text=("Requests are spread evenly over time. Best for large "
+                  "queries \u2014 avoids long idle periods between batches."),
+            wraplength=420, foreground="gray", font=("Segoe UI", 8),
+        ).pack(anchor="w", padx=(20, 0))
+
+        burst_frame = ttk.Frame(api_frame)
+        burst_frame.pack(fill="x", padx=(10, 0), pady=(4, 0))
+        ttk.Radiobutton(
+            burst_frame, text="Burst",
+            variable=pacing_var, value="burst",
+        ).pack(anchor="w")
+        ttk.Label(
+            burst_frame,
+            text=("Sends requests as fast as allowed, then waits for the "
+                  "rate limit to reset. Fine for small queries of a few "
+                  "companies."),
+            wraplength=420, foreground="gray", font=("Segoe UI", 8),
+        ).pack(anchor="w", padx=(20, 0))
+
+        # Advanced toggle (parallel workers only)
         show_advanced = tk.BooleanVar(value=False)
         advanced_frame = ttk.Frame(api_frame, padding=(15, 5, 0, 0))
-
-        burst_var = tk.IntVar(value=self._settings["ch_burst_capacity"])
         workers_var = tk.IntVar(value=self._settings["ch_max_workers"])
 
         def toggle_advanced():
@@ -265,20 +290,7 @@ class App(tk.Tk):
             variable=show_advanced, command=toggle_advanced,
             bootstyle="round-toggle",
         )
-        adv_toggle.pack(anchor="w", pady=(5, 0))
-
-        # Advanced fields
-        burst_row = ttk.Frame(advanced_frame)
-        burst_row.pack(fill="x", pady=2)
-        ttk.Label(burst_row, text="Burst capacity:").pack(side="left", padx=(0, 5))
-        ttk.Spinbox(
-            burst_row, from_=5, to=500, increment=5,
-            textvariable=burst_var, width=6
-        ).pack(side="left", padx=(0, 5))
-        ttk.Label(
-            burst_row, text="(max requests before throttling)",
-            foreground="gray", font=("Segoe UI", 8)
-        ).pack(side="left")
+        adv_toggle.pack(anchor="w", pady=(8, 0))
 
         workers_row = ttk.Frame(advanced_frame)
         workers_row.pack(fill="x", pady=2)
@@ -301,38 +313,32 @@ class App(tk.Tk):
         summary_label.pack(anchor="w")
 
         def update_summary(*_args):
+            mode = pacing_var.get()
             try:
-                rl = rate_limit_var.get()
+                workers = workers_var.get()
             except (tk.TclError, ValueError):
-                return
-            params = derive_rate_params(rl)
+                workers = DEFAULT_CH_MAX_WORKERS
 
-            # Use advanced overrides if advanced section is visible
-            if show_advanced.get():
-                try:
-                    burst = burst_var.get()
-                    workers = workers_var.get()
-                except (tk.TclError, ValueError):
-                    burst = params["capacity"]
-                    workers = params["max_workers"]
+            if mode == "burst":
+                desc = (
+                    "All available tokens are used immediately. The app "
+                    "waits when the limit is reached."
+                )
             else:
-                burst = params["capacity"]
-                workers = params["max_workers"]
-                burst_var.set(burst)
-                workers_var.set(workers)
+                desc = (
+                    "Requests flow at a steady rate with small bursts. "
+                    "A 10% safety margin is applied automatically."
+                )
 
-            sustained = params["refill_rate"]
             summary_label.config(
                 text=(
-                    f"Sustained rate: ~{sustained:.1f} requests/second  |  "
-                    f"Burst: up to {burst} requests  |  "
-                    f"Parallel threads: {workers}\n"
-                    f"A 10% safety margin is applied automatically to stay within your limit."
+                    f"{desc}\n"
+                    f"Parallel threads: {workers}  |  "
+                    f"Rate limit is auto-detected from the API."
                 )
             )
 
-        rate_limit_var.trace_add("write", update_summary)
-        burst_var.trace_add("write", update_summary)
+        pacing_var.trace_add("write", update_summary)
         workers_var.trace_add("write", update_summary)
         show_advanced.trace_add("write", update_summary)
         update_summary()  # initial render
@@ -342,13 +348,10 @@ class App(tk.Tk):
         button_frame.pack(pady=20)
 
         def apply_all():
-            self._apply_settings(
-                settings_win, rate_limit_var, burst_var, workers_var
-            )
+            self._apply_settings(settings_win, pacing_var, workers_var)
 
         def reset_defaults():
-            rate_limit_var.set(DEFAULT_CH_RATE_LIMIT)
-            burst_var.set(DEFAULT_CH_BURST_CAPACITY)
+            pacing_var.set(DEFAULT_CH_PACING_MODE)
             workers_var.set(DEFAULT_CH_MAX_WORKERS)
 
         ttk.Button(
@@ -366,27 +369,17 @@ class App(tk.Tk):
             command=settings_win.destroy, bootstyle="primary",
         ).pack(side="left", padx=5)
 
-    def _apply_settings(self, settings_win, rate_limit_var, burst_var, workers_var):
+    def _apply_settings(self, settings_win, pacing_var, workers_var):
         """Validate and apply all settings from the dialog."""
-        # Read values
         try:
-            rate_limit = rate_limit_var.get()
-            burst = burst_var.get()
+            pacing_mode = pacing_var.get()
             workers = workers_var.get()
         except (tk.TclError, ValueError):
             messagebox.showerror("Error", "Please enter valid numbers.", parent=settings_win)
             return
 
-        # Validate
-        if rate_limit < 100 or rate_limit > 6000:
-            messagebox.showerror(
-                "Error", "Rate limit must be between 100 and 6,000.", parent=settings_win
-            )
-            return
-        if burst < 5 or burst > 500:
-            messagebox.showerror(
-                "Error", "Burst capacity must be between 5 and 500.", parent=settings_win
-            )
+        if pacing_mode not in ("smooth", "burst"):
+            messagebox.showerror("Error", "Invalid pacing mode.", parent=settings_win)
             return
         if workers < MIN_CH_MAX_WORKERS or workers > MAX_CH_MAX_WORKERS:
             messagebox.showerror(
@@ -396,11 +389,8 @@ class App(tk.Tk):
             )
             return
 
-        # Derive refill rate from rate limit
-        params = derive_rate_params(rate_limit)
-
         # Apply rate limiting changes
-        self.ch_token_bucket.update_params(burst, params["refill_rate"])
+        self.ch_token_bucket.update_pacing_mode(pacing_mode)
         self.ch_max_workers = workers
 
         # Apply appearance
@@ -410,16 +400,13 @@ class App(tk.Tk):
         self._settings = {
             "dark_theme": self.dark_theme_enabled.get(),
             "font_size": self.font_size.get(),
-            "ch_rate_limit": rate_limit,
+            "ch_pacing_mode": pacing_mode,
             "ch_max_workers": workers,
-            "ch_burst_capacity": burst,
         }
         save_settings(self._settings)
 
         log_message(
-            f"Settings applied: rate_limit={rate_limit}/5min, "
-            f"burst={burst}, workers={workers}, "
-            f"refill_rate={params['refill_rate']:.2f}/s"
+            f"Settings applied: pacing_mode={pacing_mode}, workers={workers}"
         )
         messagebox.showinfo(
             "Settings Applied",

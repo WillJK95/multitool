@@ -7,11 +7,13 @@ import os
 from ..constants import (
     CONFIG_DIR,
     CONFIG_FILE,
-    DEFAULT_CH_RATE_LIMIT,
-    DEFAULT_CH_BURST_CAPACITY,
+    DEFAULT_CH_PACING_MODE,
     DEFAULT_CH_MAX_WORKERS,
+    INITIAL_RATE_LIMIT,
     MAX_CH_MAX_WORKERS,
     MIN_CH_MAX_WORKERS,
+    SMOOTH_BURST_WINDOW_SECONDS,
+    SMOOTH_SAFETY_MARGIN,
 )
 
 DEFAULTS = {
@@ -20,37 +22,38 @@ DEFAULTS = {
         "font_size": "10",
     },
     "rate_limiting": {
-        "ch_rate_limit": str(DEFAULT_CH_RATE_LIMIT),
+        "ch_pacing_mode": DEFAULT_CH_PACING_MODE,
         "ch_max_workers": str(DEFAULT_CH_MAX_WORKERS),
-        "ch_burst_capacity": str(DEFAULT_CH_BURST_CAPACITY),
     },
 }
 
 
-def derive_rate_params(rate_limit: int) -> dict:
+def derive_initial_params(pacing_mode: str) -> dict:
     """
-    Derive token bucket and concurrency parameters from a rate limit.
+    Derive token bucket parameters for app startup (before first API response).
 
-    Given a rate limit in requests per 5 minutes, derives:
-    - refill_rate: tokens per second (with 90% safety margin)
-    - capacity: burst capacity (15-second burst window)
-    - max_workers: concurrent thread count
+    Uses a conservative initial rate limit. Once the first API response
+    arrives, sync_from_headers() takes over and these values are replaced.
 
     Args:
-        rate_limit: Maximum requests allowed per 5 minutes.
+        pacing_mode: "smooth" or "burst".
 
     Returns:
-        Dict with keys 'refill_rate', 'capacity', 'max_workers'.
+        Dict with keys 'refill_rate' and 'capacity'.
     """
-    safety_margin = 0.90
-    effective_rate = rate_limit * safety_margin
-    refill_rate = effective_rate / 300  # 5 minutes = 300 seconds
-    capacity = max(10, int(refill_rate * 15))  # 15-second burst window
-    max_workers = min(MAX_CH_MAX_WORKERS, max(MIN_CH_MAX_WORKERS, rate_limit // 200))
+    rate_limit = INITIAL_RATE_LIMIT
+    raw_rate = rate_limit / 300  # 5 minutes = 300 seconds
+
+    if pacing_mode == "burst":
+        refill_rate = raw_rate
+        capacity = rate_limit
+    else:
+        refill_rate = raw_rate * SMOOTH_SAFETY_MARGIN
+        capacity = max(10, int(refill_rate * SMOOTH_BURST_WINDOW_SECONDS))
+
     return {
         "refill_rate": round(refill_rate, 4),
         "capacity": capacity,
-        "max_workers": max_workers,
     }
 
 
@@ -60,7 +63,7 @@ def load_settings() -> dict:
 
     Returns:
         Dict with keys: dark_theme (bool), font_size (int),
-        ch_rate_limit (int), ch_max_workers (int), ch_burst_capacity (int).
+        ch_pacing_mode (str), ch_max_workers (int).
     """
     config = configparser.ConfigParser()
 
@@ -76,17 +79,13 @@ def load_settings() -> dict:
             "Appearance", "font_size",
             fallback=int(DEFAULTS["appearance"]["font_size"])
         ),
-        "ch_rate_limit": config.getint(
-            "RateLimiting", "ch_rate_limit",
-            fallback=int(DEFAULTS["rate_limiting"]["ch_rate_limit"])
+        "ch_pacing_mode": config.get(
+            "RateLimiting", "ch_pacing_mode",
+            fallback=DEFAULTS["rate_limiting"]["ch_pacing_mode"]
         ),
         "ch_max_workers": config.getint(
             "RateLimiting", "ch_max_workers",
             fallback=int(DEFAULTS["rate_limiting"]["ch_max_workers"])
-        ),
-        "ch_burst_capacity": config.getint(
-            "RateLimiting", "ch_burst_capacity",
-            fallback=int(DEFAULTS["rate_limiting"]["ch_burst_capacity"])
         ),
     }
 
@@ -108,9 +107,8 @@ def save_settings(settings: dict) -> None:
     }
 
     config["RateLimiting"] = {
-        "ch_rate_limit": str(settings.get("ch_rate_limit", DEFAULT_CH_RATE_LIMIT)),
+        "ch_pacing_mode": settings.get("ch_pacing_mode", DEFAULT_CH_PACING_MODE),
         "ch_max_workers": str(settings.get("ch_max_workers", DEFAULT_CH_MAX_WORKERS)),
-        "ch_burst_capacity": str(settings.get("ch_burst_capacity", DEFAULT_CH_BURST_CAPACITY)),
     }
 
     with open(CONFIG_FILE, "w") as f:
