@@ -34,7 +34,7 @@ from ..constants import (
 )
 
 # Utility functions
-from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, clean_company_number, extract_address_string, format_address_label
+from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, clean_company_number, extract_address_string, format_address_label, format_error_summary
 
 # UI components
 from ..ui.tooltip import Tooltip
@@ -4921,7 +4921,7 @@ class NetworkAnalytics(InvestigationModuleBase):
 
 
     def _fetch_company_network_data(self, company_number, fetch_pscs=True):
-        profile, _ = ch_get_data(
+        profile, profile_err = ch_get_data(
             self.api_key, self.ch_token_bucket, f"/company/{company_number}"
         )
         officers, _ = ch_get_data(
@@ -4936,7 +4936,7 @@ class NetworkAnalytics(InvestigationModuleBase):
                 self.ch_token_bucket,
                 f"/company/{company_number}/persons-with-significant-control?items_per_page=100",
             )
-        return profile, officers, pscs
+        return profile, officers, pscs, profile_err
 
     def _update_visualise_checkbox_state(self):
         """
@@ -5308,15 +5308,13 @@ class NetworkAnalytics(InvestigationModuleBase):
                         if appointments:
                             all_appointments.extend(appointments)
                         elif appointments is None:
-                            failed_officers.append(officer.get("name", "Unknown"))
+                            failed_officers.append((officer.get("name", "Unknown"), "API Error"))
 
                 if failed_officers:
-                    log_message(f"Skipped officers due to API errors: {', '.join(failed_officers)}")
+                    warning = format_error_summary(failed_officers, "officer")
                     self.app.after(
                         0,
-                        lambda n=len(failed_officers): self.seed_status_var.set(
-                            f"WARNING: {n} officer(s) could not be retrieved due to API errors."
-                        ),
+                        lambda w=warning: self.seed_status_var.set(w),
                     )
 
                 unique_company_numbers = {
@@ -5340,19 +5338,17 @@ class NetworkAnalytics(InvestigationModuleBase):
                         return
                     cnum = future_to_cnum[future]
                     self.app.after(0, lambda i=i: self.seed_status_var.set(f"Processing company {i+1}/{len(unique_company_numbers)}..."))
-                    profile, officers_data, pscs_data = future.result()
+                    profile, officers_data, pscs_data, profile_err = future.result()
                     if profile:
                         self._add_company_to_graph(temp_graph, profile, officers_data, pscs_data)
                     else:
-                        failed_graph_companies.append(cnum)
+                        failed_graph_companies.append((cnum, profile_err))
 
             if failed_graph_companies:
-                log_message(f"Skipped companies in graph due to API errors: {', '.join(failed_graph_companies)}")
+                warning = format_error_summary(failed_graph_companies, "company")
                 self.app.after(
                     0,
-                    lambda n=len(failed_graph_companies): self.seed_status_var.set(
-                        f"Graph built. WARNING: {n} company(ies) could not be retrieved due to API errors."
-                    ),
+                    lambda w=warning: self.seed_status_var.set(f"Graph built. {w}"),
                 )
 
             self.app.after(100, lambda: self._save_graph_to_temp_csv(temp_graph, seed_cnum))
