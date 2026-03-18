@@ -15,6 +15,14 @@ _cache_lock = threading.Lock()
 _CACHE_MAX_SIZE = 1024
 
 
+def _safe_json(response: requests.Response) -> Optional[Dict[str, Any]]:
+    """Return parsed JSON body or None if the body isn't valid JSON."""
+    try:
+        return response.json()
+    except (ValueError, AttributeError):
+        return None
+
+
 def ch_get_data(
     api_key: str,
     token_bucket,
@@ -54,6 +62,10 @@ def ch_get_data(
         try:
             response = requests.get(url, auth=(api_key, ""), timeout=30)
 
+            # Sync token bucket with server-reported rate limit state on
+            # every response (success or failure) so we stay aligned.
+            token_bucket.sync_from_headers(response.headers)
+
             # Client errors - don't retry
             if response.status_code in [404, 401, 403]:
                 log_message(
@@ -62,8 +74,45 @@ def ch_get_data(
                 )
                 return None, f"Client Error: {response.status_code}"
 
+            # Excessive-use response - the API has temporarily blocked us.
+            # Wait for the full window reset before retrying.
+            if response.status_code == 429:
+                body = _safe_json(response)
+                if body and body.get("type") == "ch:service/excessive-use":
+                    reset_wait = token_bucket.get_wait_from_reset(
+                        response.headers
+                    )
+                    wait_time = reset_wait if reset_wait else 300.0
+                    log_message(
+                        f"Excessive-use block received for {path}. "
+                        f"Waiting {wait_time:.0f}s for window reset..."
+                    )
+                    time.sleep(wait_time)
+                    continue
+
+                # Standard 429 - use the reset header for precise wait time
+                reset_wait = token_bucket.get_wait_from_reset(
+                    response.headers
+                )
+                if reset_wait is not None:
+                    log_message(
+                        f"Rate limited (429) for {path}. "
+                        f"Waiting {reset_wait:.1f}s until window reset..."
+                    )
+                    time.sleep(reset_wait)
+                    continue
+
+                # Fallback: exponential backoff if headers are absent
+                wait_time = backoff_factor * (2 ** i)
+                log_message(
+                    f"Rate limited (429) for {path}. "
+                    f"Retrying in {wait_time:.2f}s (no reset header)..."
+                )
+                time.sleep(wait_time)
+                continue
+
             # Server errors - retry with backoff
-            if response.status_code in [429, 500, 502, 503, 504]:
+            if response.status_code in [500, 502, 503, 504]:
                 wait_time = backoff_factor * (2 ** i)
                 log_message(
                     f"API returned status {response.status_code}. "
