@@ -5,6 +5,8 @@ import threading
 import time
 from typing import Optional
 
+from ..utils.helpers import log_message
+
 
 class TokenBucket:
     """
@@ -109,6 +111,99 @@ class TokenBucket:
             self.capacity = capacity
             self.refill_rate = refill_rate
             self.tokens = min(self.tokens, capacity)
+
+    def sync_from_headers(self, headers: dict) -> None:
+        """
+        Sync bucket state from Companies House rate limit response headers.
+
+        Reads X-Ratelimit-Limit, X-Ratelimit-Remain, X-Ratelimit-Reset, and
+        X-Ratelimit-Window to align the local token bucket with the server's
+        actual rate limit state.
+
+        Args:
+            headers: Response headers dict (case-insensitive).
+        """
+        try:
+            remain = headers.get("X-Ratelimit-Remain")
+            limit = headers.get("X-Ratelimit-Limit")
+            reset_epoch = headers.get("X-Ratelimit-Reset")
+            window = headers.get("X-Ratelimit-Window")
+
+            if remain is None or reset_epoch is None:
+                return
+
+            remain = int(remain)
+            reset_epoch = int(reset_epoch)
+
+            # Derive seconds until window resets
+            seconds_until_reset = max(1, reset_epoch - int(time.time()))
+
+            with self.lock:
+                # Update capacity if the server reports a different limit
+                if limit is not None:
+                    server_limit = int(limit)
+                    if server_limit != self.capacity:
+                        self.capacity = server_limit
+                        log_message(
+                            f"Rate limit capacity updated from server: {server_limit}"
+                        )
+
+                # Update refill rate from the window if provided
+                if window is not None and limit is not None:
+                    window_seconds = self._parse_window(window)
+                    if window_seconds > 0:
+                        server_limit = int(limit)
+                        new_refill = server_limit / window_seconds
+                        if abs(new_refill - self.refill_rate) > 0.01:
+                            self.refill_rate = new_refill
+                            log_message(
+                                f"Refill rate updated from server: "
+                                f"{new_refill:.4f} tokens/s "
+                                f"({server_limit}/{window_seconds}s)"
+                            )
+
+                # Set available tokens to match the server's remaining count,
+                # but never exceed capacity
+                self.tokens = min(remain, self.capacity)
+                self.last_refill_time = time.monotonic()
+
+        except (ValueError, TypeError):
+            # Malformed headers - ignore and keep local state
+            pass
+
+    def get_wait_from_reset(self, headers: dict) -> Optional[float]:
+        """
+        Calculate seconds to wait based on X-Ratelimit-Reset header.
+
+        Returns:
+            Seconds to wait until the rate limit window resets, or None if
+            the header is missing/unparseable.
+        """
+        try:
+            reset_epoch = headers.get("X-Ratelimit-Reset")
+            if reset_epoch is None:
+                return None
+            return max(0.5, int(reset_epoch) - time.time())
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _parse_window(window: str) -> int:
+        """
+        Parse a window string like '5m' into seconds.
+
+        Supports 's' (seconds) and 'm' (minutes) suffixes.
+        Returns 0 if the format is unrecognised.
+        """
+        window = window.strip()
+        if window.endswith("m"):
+            return int(window[:-1]) * 60
+        if window.endswith("s"):
+            return int(window[:-1])
+        try:
+            return int(window)
+        except ValueError:
+            return 0
 
     @property
     def available_tokens(self) -> float:
