@@ -805,10 +805,13 @@ def generate_static_ownership_graph(
 
     labels = {n: G.nodes[n].get('label', n) for n in G.nodes()}
 
-    # Offset label positions above nodes to avoid text overlapping the node
+    # Offset label positions above nodes so they do not overlap the node circle.
+    # Use a minimum absolute offset so that even flat/compressed layouts remain
+    # readable (the relative-only approach produced near-zero offsets on shallow
+    # graphs where all nodes share the same Y coordinate).
     y_vals = [p[1] for p in pos.values()]
     y_range = max(y_vals) - min(y_vals) if len(y_vals) > 1 else 100
-    label_offset = y_range * 0.06
+    label_offset = max(y_range * 0.12, 30)
     label_pos = {node: (x, y + label_offset) for node, (x, y) in pos.items()}
 
     nx.draw_networkx_nodes(G, pos, ax=ax, node_color=node_colors,
@@ -829,13 +832,21 @@ def generate_static_ownership_graph(
     ax.set_title('Corporate Ownership Structure', fontsize=13, fontweight='bold', pad=10)
     ax.axis('off')
 
-    # Add horizontal margins so node labels are not clipped at edges
+    # Add horizontal and vertical margins so node labels are not clipped
     x_vals = [p[0] for p in pos.values()]
     if x_vals:
         x_min, x_max = min(x_vals), max(x_vals)
         x_range = x_max - x_min if x_max != x_min else 100
         x_pad = x_range * 0.15  # 15% padding on each side
         ax.set_xlim(x_min - x_pad, x_max + x_pad)
+
+    if y_vals:
+        y_min_pos, y_max_pos = min(y_vals), max(y_vals)
+        y_range_pos = y_max_pos - y_min_pos if y_max_pos != y_min_pos else 100
+        y_pad_bottom = y_range_pos * 0.15
+        # Extra headroom above the topmost label (label sits label_offset above node)
+        y_pad_top = label_offset + y_range_pos * 0.20
+        ax.set_ylim(y_min_pos - y_pad_bottom, y_max_pos + y_pad_top)
 
     # Legend
     legend_items = [

@@ -723,6 +723,26 @@ def rule_f3_working_capital_deterioration(unified: UnifiedFinancialData) -> Cros
     narratives = []
     risk_flag = "LOW"
 
+    # Compute peak NCA and single-year drop for additional checks
+    peak_nca = max(nca_series.values())
+    prior_year = years_sorted[-2] if len(years_sorted) >= 2 else None
+    prior_nca = nca_series[prior_year] if prior_year is not None else None
+
+    # Single-year significant drop: latest year dropped >25% from prior year
+    single_year_large_drop = (
+        prior_nca is not None
+        and prior_nca != 0
+        and ((latest_nca - prior_nca) / abs(prior_nca)) < -0.25
+    )
+
+    # Peak-to-latest deterioration: latest NCA is >25% below the historical peak
+    peak_to_latest_deterioration = (
+        peak_nca != 0
+        and peak_nca > 0
+        and latest_nca < peak_nca
+        and ((latest_nca - peak_nca) / abs(peak_nca)) < -0.25
+    )
+
     # Basic version
     if positive_to_negative:
         risk_flag = "HIGH"
@@ -740,6 +760,22 @@ def rule_f3_working_capital_deterioration(unified: UnifiedFinancialData) -> Cros
         risk_flag = "MEDIUM"
         narratives.append(
             f"Net current assets have declined for {decline_count} consecutive years."
+        )
+    elif single_year_large_drop and prior_nca is not None:
+        pct = ((latest_nca - prior_nca) / abs(prior_nca)) * 100
+        risk_flag = "MEDIUM"
+        narratives.append(
+            f"Net current assets fell by {abs(pct):.0f}% in the most recent year "
+            f"(from £{prior_nca:,.0f} to £{latest_nca:,.0f}), "
+            "a significant single-year deterioration in working capital."
+        )
+    elif peak_to_latest_deterioration:
+        pct = ((latest_nca - peak_nca) / abs(peak_nca)) * 100
+        risk_flag = "MEDIUM"
+        narratives.append(
+            f"Net current assets of £{latest_nca:,.0f} ({latest_year}) are "
+            f"{abs(pct):.0f}% below the historical peak of £{peak_nca:,.0f}, "
+            "indicating a material erosion of the working capital buffer."
         )
 
     # Detailed version — cash trap detection

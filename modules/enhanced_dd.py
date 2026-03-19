@@ -1787,49 +1787,10 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 'narrative': f"Based on linear extrapolation of the last {len(df)} years of filed accounts, the following concerns are projected for {predictions[0]['next_year'] if predictions else latest_year + 1}: " + "; ".join(concerns) + ". Note: These projections assume historical trends continue unchanged and do not account for management actions, market changes, or other factors.",
                 'recommendation': 'Request current management accounts and forward-looking cash flow forecasts. Assess whether management has plans to address the projected trajectory.'
             })
-        elif predictions:
-            # Check for positive trajectory
-            positive_indicators = []
-            for p in predictions:
-                if p['category'] == 'growth' and p['pct_change'] > 10:
-                    positive_indicators.append(f"Revenue growth of {p['pct_change']:.0f}% projected")
-                if p['category'] == 'profitability' and p['predicted'] > 0 and p['last_actual'] <= 0:
-                    positive_indicators.append("Return to profitability projected")
-                if p['category'] == 'solvency' and p['pct_change'] > 15:
-                    positive_indicators.append(f"Net assets projected to grow by {p['pct_change']:.0f}%")
-            
-            if positive_indicators:
-                findings.append({
-                    'category': 'Financial',
-                    'severity': 'Positive',
-                    'title': 'Positive Financial Trajectory',
-                    'narrative': f"Linear projection of historical trends suggests: " + "; ".join(positive_indicators) + f". These projections are based on {len(df)} years of filed accounts and assume trends continue. Actual results will depend on management execution and market conditions.",
-                    'recommendation': 'While the projected trajectory is positive, verify with current trading performance and management accounts.'
-                })
-        
-        # Always add a summary of projections if we have them (informational)
-        if predictions and not concerns:
-            # Build a summary table of all projections
-            projection_lines = []
-            for p in predictions:
-                direction = "↑" if p['pct_change'] > 0 else "↓" if p['pct_change'] < 0 else "→"
-                projection_lines.append(
-                    f"{p['metric']}: £{p['last_actual']:,.0f} → £{p['predicted']:,.0f} ({direction} {abs(p['pct_change']):.1f}%)"
-                )
-            
-            if projection_lines:
-                findings.append({
-                    'category': 'Financial',
-                    'severity': 'Moderate',
-                    'title': 'Financial Projections Summary',
-                    'narrative': f"Based on linear extrapolation of {len(df)} years of filed accounts, the projected values for {predictions[0]['next_year']} are: " + "; ".join(projection_lines) + ". These projections assume historical trends continue unchanged and should be verified against current trading performance.",
-                    'recommendation': 'Compare these projections against management forecasts and current trading data to assess whether historical trends remain valid.'
-                })
-        
         # Fallback: If we have financial data but couldn't generate predictions
         if not predictions and not findings:
             available_metrics = [col for col in ['NetAssets', 'Revenue', 'ProfitLoss', 'CashBankInHand'] if col in df.columns]
-            
+
             if not available_metrics:
                 findings.append({
                     'category': 'Financial',
@@ -1837,15 +1798,6 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     'title': 'Limited Financial Disclosure',
                     'narrative': "The uploaded accounts do not contain the standard financial metrics (Net Assets, Revenue, Profit/Loss, Cash) in a format that could be extracted. This may indicate micro-entity or heavily abbreviated accounts.",
                     'recommendation': 'Request full statutory accounts or management accounts for a complete financial picture.'
-                })
-            else:
-                # Metrics exist but predictions still failed - unusual case
-                findings.append({
-                    'category': 'Financial',
-                    'severity': 'Moderate',
-                    'title': 'Unable to Generate Projections',
-                    'narrative': f"Financial metrics were found ({', '.join(available_metrics)}) but projections could not be generated. This may be due to incomplete data across multiple years.",
-                    'recommendation': 'Review the uploaded accounts files for completeness.'
                 })
         
         log_message(f"Predictive outlook: Returning {len(findings)} findings, {len(predictions)} predictions generated")
@@ -2590,10 +2542,19 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         
         for label, value in profile_items:
             html_output += f'<div class="profile-item"><strong>{label}</strong>{value}</div>'
-        
+
+        # Previous company names
+        previous_names = profile.get('previous_company_names', [])
+        if previous_names:
+            names_html = '; '.join(
+                html.escape(f"{p.get('name', 'Unknown')} (until {format_display_date(p.get('ceased_on', ''))})")
+                for p in previous_names
+            )
+            html_output += f'<div class="profile-item"><strong>Previous Names</strong>{names_html}</div>'
+
         html_output += '</div>'
         return html_output
-    
+
     def _generate_findings_section(self, title, findings):
         """Generate HTML for a findings section."""
         if not findings:
@@ -2709,9 +2670,20 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             positives = []
             
             if self.check_vars['filing_status'].get():
-                if not any('late' in f['title'].lower() or 'overdue' in f['title'].lower() 
-                          for f in self._check_filing_compliance()):
-                    positives.append("The company appears to have maintained timely filing compliance with Companies House.")
+                compliance_findings = self._check_filing_compliance()
+                pattern_findings = self._check_filing_patterns()
+                filing_history = self.company_data.get('filing_history', {})
+                has_strikeoff = any(
+                    'GAZ1' in filing.get('type', '') or 'DISS' in filing.get('type', '')
+                    for filing in filing_history.get('items', [])
+                )
+                has_late_filing = (
+                    any('late' in f['title'].lower() or 'overdue' in f['title'].lower()
+                        for f in compliance_findings)
+                    or any('late' in f['title'].lower() for f in pattern_findings)
+                )
+                if not has_late_filing and not has_strikeoff:
+                    positives.append("The company has maintained timely filing compliance with Companies House with no late filings or strike-off notifications on record.")
             
             if self.accounts_loaded and self.check_vars['solvency'].get():
                 df = self.financial_analyzer.data.sort_values('Year')
