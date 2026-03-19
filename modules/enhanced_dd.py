@@ -451,7 +451,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         """Open a Toplevel window with Balance Sheet and Income Statement tabs."""
         win = tk.Toplevel(self.app)
         win.title("Supplementary Accounts Data")
-        win.geometry("820x620")
+        win.geometry("1050x620")
         win.minsize(700, 500)
         win.transient(self.app)
         win.grab_set()
@@ -493,27 +493,64 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         notebook.add(bs_outer, text="Balance Sheet")
         notebook.add(is_outer, text="Income Statement")
 
-        # Canvas + scrollbar per tab
+        # Canvas + scrollbar per tab (with horizontal scrollbar for wide layouts)
         tab_grids = {}
+        canvases = {}
         for tab_name, outer in [('bs', bs_outer), ('is', is_outer)]:
             canvas = tk.Canvas(outer, highlightthickness=0)
-            scrollbar = ttk.Scrollbar(outer, orient='vertical', command=canvas.yview)
+            v_scroll = ttk.Scrollbar(outer, orient='vertical', command=canvas.yview)
+            h_scroll = ttk.Scrollbar(outer, orient='horizontal', command=canvas.xview)
             inner = ttk.Frame(canvas)
-            inner.bind('<Configure>', lambda e, c=canvas: c.configure(scrollregion=c.bbox('all')))
+            inner.bind('<Configure>',
+                       lambda e, c=canvas: c.configure(scrollregion=c.bbox('all')))
             canvas.create_window((0, 0), window=inner, anchor='nw')
-            canvas.configure(yscrollcommand=scrollbar.set)
-            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+            h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
+            v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
             canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-            def _on_mousewheel(event, c=canvas):
-                c.yview_scroll(
-                    int(-1 * (event.delta / 120)) if event.delta else (-1 if event.num == 4 else 1),
-                    'units',
-                )
-            canvas.bind_all('<MouseWheel>', _on_mousewheel)
-            canvas.bind_all('<Button-4>', _on_mousewheel)
-            canvas.bind_all('<Button-5>', _on_mousewheel)
+            canvases[tab_name] = canvas
             tab_grids[tab_name] = inner
+
+        # Per-canvas mousewheel scrolling using enter/leave pattern
+        # (avoids TclError from global bind_all hitting destroyed canvases)
+        def _bind_mousewheel(target_canvas):
+            def _on_mousewheel(event):
+                try:
+                    target_canvas.yview_scroll(
+                        int(-1 * (event.delta / 120)) if event.delta
+                        else (-1 if event.num == 4 else 1),
+                        'units',
+                    )
+                except tk.TclError:
+                    pass  # canvas already destroyed
+
+            def _on_enter(_event):
+                target_canvas.bind_all('<MouseWheel>', _on_mousewheel)
+                target_canvas.bind_all('<Button-4>', _on_mousewheel)
+                target_canvas.bind_all('<Button-5>', _on_mousewheel)
+
+            def _on_leave(_event):
+                target_canvas.unbind_all('<MouseWheel>')
+                target_canvas.unbind_all('<Button-4>')
+                target_canvas.unbind_all('<Button-5>')
+
+            target_canvas.bind('<Enter>', _on_enter)
+            target_canvas.bind('<Leave>', _on_leave)
+
+        for _c in canvases.values():
+            _bind_mousewheel(_c)
+
+        # Clean up global bindings when window is closed
+        def _on_window_close():
+            for evt in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
+                try:
+                    win.unbind_all(evt)
+                except Exception:
+                    pass
+            win.grab_release()
+            win.destroy()
+
+        win.protocol('WM_DELETE_WINDOW', _on_window_close)
 
         def _rebuild_grids():
             """Rebuild both tab grids to reflect the current year_columns."""
@@ -668,8 +705,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             else:
                 self._supp_status_label.config(text="No data entered.", foreground='grey')
 
-            win.grab_release()
-            win.destroy()
+            _on_window_close()
 
         # --- Bottom button bar ---
         btn_bar = ttk.Frame(win)
