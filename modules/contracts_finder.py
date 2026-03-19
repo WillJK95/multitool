@@ -13,6 +13,7 @@ import os
 import re
 import threading
 import tkinter as tk
+import urllib.parse
 from datetime import datetime, timedelta
 from tkinter import ttk, filedialog, messagebox
 from typing import Dict, List, Optional
@@ -530,7 +531,6 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
     
     def _search_company_by_name(self, name: str) -> Optional[str]:
         """Search Companies House for a company by name and return the best match."""
-        import urllib.parse
         encoded_name = urllib.parse.quote(name)
         
         results, error = ch_get_data(

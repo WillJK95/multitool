@@ -3,9 +3,7 @@
 
 from typing import Dict, Any
 
-# Import will be done at runtime to avoid circular imports
-# from ..api.companies_house import ch_get_data
-# from ..api.charity_commission import cc_get_data
+from ..api.companies_house import ch_get_officers, ch_get_pscs
 
 
 def enrich_with_company_data(
@@ -97,19 +95,17 @@ def enrich_with_company_data(
         sic_data = profile.get("sic_codes", [])
         row["sic_codes"] = "; ".join(sic_data) if sic_data else ""
     
-    # Officers (requires additional API call)
-    if fields_to_fetch.get("officers") and fields_to_fetch["officers"].get() and ch_get_data_func:
-        officers, _ = ch_get_data_func(api_key, ch_token_bucket, f"/company/{cid}/officers")
+    # Officers (requires additional API call — uses paginated wrapper)
+    if fields_to_fetch.get("officers") and fields_to_fetch["officers"].get():
+        officers, _ = ch_get_officers(api_key, ch_token_bucket, cid)
         if officers:
             row["officers"] = "; ".join(
                 [o.get("name", "") for o in officers.get("items", [])]
             )
-    
-    # PSCs (requires additional API call)
-    if fields_to_fetch.get("persons_with_significant_control") and fields_to_fetch["persons_with_significant_control"].get() and ch_get_data_func:
-        pscs, _ = ch_get_data_func(
-            api_key, ch_token_bucket, f"/company/{cid}/persons-with-significant-control"
-        )
+
+    # PSCs (requires additional API call — uses paginated wrapper)
+    if fields_to_fetch.get("persons_with_significant_control") and fields_to_fetch["persons_with_significant_control"].get():
+        pscs, _ = ch_get_pscs(api_key, ch_token_bucket, cid)
         if pscs:
             row["persons_with_significant_control"] = "; ".join(
                 [p.get("name", "") for p in pscs.get("items", [])]
@@ -252,13 +248,18 @@ def enrich_with_charity_data(
                 for item in data
                 if item.get("accounts_qualified")
             ]
-            late_submissions = [
-                item["reporting_period_year_end"]
-                for item in data
-                if item.get("date_received")
-                and item.get("date_due")
-                and item["date_received"] > item["date_due"]
-            ]
+            late_submissions = []
+            for item in data:
+                received_str = item.get("date_received")
+                due_str = item.get("date_due")
+                if not received_str or not due_str:
+                    continue
+                try:
+                    from dateutil import parser as _du_parser
+                    if _du_parser.parse(received_str) > _du_parser.parse(due_str):
+                        late_submissions.append(item["reporting_period_year_end"])
+                except (ValueError, TypeError):
+                    pass
             if qualified_accounts:
                 row["qualified_accounts_years"] = "; ".join(qualified_accounts)
             if late_submissions:

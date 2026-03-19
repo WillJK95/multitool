@@ -6,10 +6,8 @@ import threading
 import requests
 from typing import List, Dict, Tuple, Optional, Callable
 
+from ..constants import CONTRACTS_FINDER_BASE_URL
 from ..utils.helpers import log_message
-
-# Base URL for Contracts Finder API
-CONTRACTS_FINDER_BASE_URL = "https://www.contractsfinder.service.gov.uk"
 
 # Thread-safe rate limiting
 _rate_limit_lock = threading.Lock()
@@ -384,6 +382,9 @@ def search_awarded_by_buyer(
     Returns:
         Tuple of (list of contract dicts with supplier info, error message or None)
     """
+    if not buyer_name or not buyer_name.strip():
+        return [], "Buyer name cannot be empty"
+
     # Search using the buyer name as keyword
     results, error = search_notices(
         keyword=buyer_name,
