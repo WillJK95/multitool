@@ -3,6 +3,7 @@
 
 import time
 import threading
+import urllib.parse
 import requests
 from typing import Tuple, Optional, Any, Dict, List
 
@@ -111,7 +112,6 @@ def search_grants_by_org_id(
     Returns:
         Tuple of (grants data dict or None, error message or None)
     """
-    import urllib.parse
     encoded_id = urllib.parse.quote(org_id)
     url = f"{GRANTNAV_API_BASE_URL}/grants?recipientOrganization.id={encoded_id}&page_size={page_size}"
     return grantnav_get_data(url)
@@ -123,15 +123,14 @@ def search_grants_by_org_name(
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Search for grants by organisation name.
-    
+
     Args:
         org_name: Organisation name to search for
         page_size: Number of results per page
-        
+
     Returns:
         Tuple of (grants data dict or None, error message or None)
     """
-    import urllib.parse
     encoded_name = urllib.parse.quote(org_name)
     url = f"{GRANTNAV_API_BASE_URL}/grants?recipientOrganization.name={encoded_name}&page_size={page_size}"
     return grantnav_get_data(url)
@@ -151,8 +150,6 @@ def get_all_grants_for_org(
     Returns:
         List of grant dictionaries
     """
-    import urllib.parse
-    
     all_grants = []
     encoded_id = urllib.parse.quote(org_id)
     url = f"{GRANTNAV_API_BASE_URL}/grants?recipientOrganization.id={encoded_id}&page_size=100"

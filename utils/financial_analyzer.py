@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
 import pandas as pd
-import matplotlib.pyplot as plt
 from ..constants import (
     IXBRL_NAMESPACES,
     TAXONOMY_MAP
@@ -53,11 +52,16 @@ class iXBRLParser:
             if prefix:  # Skip default namespace
                 self.namespaces[prefix] = uri
     
-    def _find_value(self, tags_to_find, context_ref):
-        """Find a value for any of the given tags with the specified context."""
+    def _find_value(self, elements, tags_to_find, context_ref):
+        """Find a value for any of the given tags with the specified context.
+
+        Args:
+            elements: Pre-computed list of ix:nonFraction elements (avoids
+                      repeated full-tree traversal for every call).
+            tags_to_find: List of XBRL tag local-names to search for.
+            context_ref: The contextRef attribute value to match.
+        """
         for tag in tags_to_find:
-            # Find all nonFraction elements
-            elements = self.tree.findall('.//ix:nonFraction', namespaces=self.namespaces)
             for element in elements:
                 name_attr = element.get('name', '')
                 # Check if name ends with our tag (works regardless of prefix)
@@ -76,48 +80,51 @@ class iXBRLParser:
     def parse_financials(self):
         """Parse financial data from iXBRL file."""
         financial_data = {}
-        
+
+        # Build the element list once — shared across all _find_value calls
+        # to avoid repeating the full-tree traversal per metric per context.
+        nf_elements = self.tree.findall('.//ix:nonFraction', namespaces=self.namespaces)
+
         # Find all context blocks
         contexts = self.tree.findall('.//xbrli:context', namespaces=self.namespaces)
-        
+
         # Build a mapping of context_id -> year
         context_to_year = {}
         for context in contexts:
             context_id = context.get('id')
             instant_element = context.find('.//xbrli:instant', namespaces=self.namespaces)
-            
+
             if context_id and instant_element is not None and instant_element.text:
                 date_str = instant_element.text.strip()
                 if '-' in date_str:
                     year = date_str.split('-')[0]
                     if year.isdigit():
-                        # Store this context
                         context_to_year[context_id] = year
-        
+
         # Group contexts by year (multiple context IDs can map to same year)
         year_to_contexts = {}
         for context_id, year in context_to_year.items():
             if year not in year_to_contexts:
                 year_to_contexts[year] = []
             year_to_contexts[year].append(context_id)
-        
+
         # Now find values using ALL contexts for each year
         for year, context_ids in year_to_contexts.items():
             if year not in financial_data:
                 financial_data[year] = {}
-            
+
             for key, tags in TAXONOMY_MAP.items():
                 # Skip if already found
                 if key in financial_data[year]:
                     continue
-                
+
                 # Try each context for this year
                 for context_id in context_ids:
-                    value = self._find_value(tags, context_id)
+                    value = self._find_value(nf_elements, tags, context_id)
                     if value is not None:
                         financial_data[year][key] = value
                         break  # Found it, move to next metric
-        
+
         return financial_data
     
     def get_all_available_tags(self):
@@ -141,43 +148,6 @@ class iXBRLParser:
                 context_info[context_id] = instant.text if instant is not None and instant.text else 'N/A'
         return context_info
     
-    def debug_info(self):
-        """Print debug information about the file."""
-        print("=== DETECTED NAMESPACES ===")
-        for prefix, uri in self.namespaces.items():
-            print(f"  {prefix}: {uri}")
-        
-        print("\n=== AVAILABLE TAGS ===")
-        tags = self.get_all_available_tags()
-        if tags:
-            for tag in tags:
-                print(f"  {tag}")
-        else:
-            print("  (No tags found - checking with flexible search...)")
-            # Try namespace-agnostic search
-            elements = self.tree.xpath(".//*[local-name()='nonFraction']")
-            print(f"  Found {len(elements)} nonFraction elements without namespace")
-            if elements:
-                print("  Sample tags:")
-                for elem in elements[:10]:
-                    print(f"    {elem.get('name')}")
-        
-        print("\n=== AVAILABLE CONTEXTS ===")
-        contexts = self.get_all_contexts()
-        for ctx_id, date in contexts.items():
-            print(f"  {ctx_id}: {date}")
-        
-        print(f"\n=== SAMPLE VALUES ===")
-        elements = self.tree.findall('.//ix:nonFraction', namespaces=self.namespaces)
-        if not elements:
-            print("  (No elements found with namespace - trying without...)")
-            elements = self.tree.xpath(".//*[local-name()='nonFraction']")
-        
-        for elem in elements[:10]:
-            name = elem.get('name')
-            ctx = elem.get('contextRef')
-            val = elem.text
-            print(f"  {name} [{ctx}] = {val}")
 
 
 class FinancialAnalyzer:
@@ -243,7 +213,6 @@ class FinancialAnalyzer:
     def _extract_filing_year(self, filename: str, financial_data: dict) -> int:
         """Extract or infer the filing year from filename or data."""
         # Try to extract year from filename (e.g., "accounts_2021.xhtml" or "2021_accounts.xhtml")
-        import re
         year_match = re.search(r'(20\d{2})', filename)
         if year_match:
             return int(year_match.group(1))
@@ -368,97 +337,6 @@ class FinancialAnalyzer:
             growth_data.append(growth_record)
         
         return pd.DataFrame(growth_data)
-    
-    def plot_trends(self, metrics: Optional[List[str]] = None, figsize=(12, 6)):
-        """Plot time series trends for specified metrics."""
-        if self.data.empty:
-            log_message("No data to plot.")
-            return
-
-        if metrics is None:
-            # Default to common metrics that are likely present
-            available = ['Revenue', 'ProfitLoss', 'NetAssets', 'CurrentAssets']
-            metrics = [m for m in available if m in self.data.columns]
-
-        if not metrics:
-            log_message("No valid metrics to plot.")
-            return
-        
-        fig, axes = plt.subplots(len(metrics), 1, figsize=figsize)
-        if len(metrics) == 1:
-            axes = [axes]
-        
-        for i, metric in enumerate(metrics):
-            if metric in self.data.columns:
-                data_to_plot = self.data[['Year', metric]].dropna()
-                axes[i].plot(data_to_plot['Year'], data_to_plot[metric], 
-                           marker='o', linewidth=2, markersize=8)
-                axes[i].set_title(f'{metric} Over Time', fontsize=12, fontweight='bold')
-                axes[i].set_xlabel('Year')
-                axes[i].set_ylabel(metric)
-                axes[i].grid(True, alpha=0.3)
-                
-                # Format y-axis with commas for large numbers
-                axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:,.0f}'))
-        
-        plt.tight_layout()
-        plt.show()
-    
-    def plot_ratios(self, figsize=(12, 8)):
-        """Plot financial ratios over time."""
-        df_ratios = self.calculate_ratios()
-        
-        ratio_cols = ['CurrentRatio', 'QuickRatio', 'ROA', 'ProfitMargin', 'DebtToEquity']
-        ratio_cols = [col for col in ratio_cols if col in df_ratios.columns]
-        
-        if not ratio_cols:
-            log_message("No ratios available to plot.")
-            return
-        
-        fig, axes = plt.subplots((len(ratio_cols) + 1) // 2, 2, figsize=figsize)
-        axes = axes.flatten()
-        
-        for i, ratio in enumerate(ratio_cols):
-            data_to_plot = df_ratios[['Year', ratio]].dropna()
-            if not data_to_plot.empty:
-                axes[i].plot(data_to_plot['Year'], data_to_plot[ratio], 
-                           marker='o', linewidth=2, markersize=8, color='coral')
-                axes[i].set_title(f'{ratio} Over Time', fontsize=11, fontweight='bold')
-                axes[i].set_xlabel('Year')
-                axes[i].set_ylabel(ratio)
-                axes[i].grid(True, alpha=0.3)
-        
-        # Hide unused subplots
-        for i in range(len(ratio_cols), len(axes)):
-            axes[i].axis('off')
-        
-        plt.tight_layout()
-        plt.show()
-    
-    def export_to_excel(self, output_file: str):
-        """Export all analysis to an Excel file with multiple sheets."""
-        if self.data.empty:
-            log_message("No data to export.")
-            return
-        
-        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            # Raw data
-            self.data.to_excel(writer, sheet_name='Raw_Data', index=False)
-            
-            # Financial ratios
-            ratios = self.calculate_ratios()
-            ratios.to_excel(writer, sheet_name='Financial_Ratios', index=False)
-            
-            # YoY Growth
-            growth = self.year_over_year_growth()
-            if not growth.empty:
-                growth.to_excel(writer, sheet_name='YoY_Growth', index=False)
-            
-            # Summary stats
-            summary = self.data.describe()
-            summary.to_excel(writer, sheet_name='Summary_Stats')
-        
-        log_message(f"✓ Data exported to {output_file}")
     
     def predict_next_year(self, metric: str, method: str = 'linear') -> Dict:
         """Simple prediction for next year using linear regression or average growth."""

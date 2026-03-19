@@ -261,32 +261,32 @@ def find_best_match(
     """
     if not query or not candidates:
         return None, 0, None
-    
+
     if scorer is None:
         scorer = fuzzy_score
-    
+
+    query_lower = query.lower()
+
+    # Exact match always takes precedence — check first to short-circuit
+    for idx, candidate in enumerate(candidates):
+        if candidate and query_lower == candidate.lower():
+            return candidate, 100, idx
+
     best_match = None
     best_score = 0
     best_index = None
-    
-    query_lower = query.lower()
-    
+
     for idx, candidate in enumerate(candidates):
         if not candidate:
             continue
-        
+
         score = scorer(query_lower, candidate.lower())
-        
+
         if score > best_score:
             best_match = candidate
             best_score = score
             best_index = idx
-    
-    # Check for exact match (always takes precedence)
-    for idx, candidate in enumerate(candidates):
-        if candidate and query.lower() == candidate.lower():
-            return candidate, 100, idx
-    
+
     if best_match and best_score >= threshold:
         return best_match, best_score, best_index
     else:
@@ -316,19 +316,25 @@ def find_best_match_with_variants(
     """
     if not query or not candidates:
         return None, 0, None
-    
+
+    # Exact match always takes precedence — check first to short-circuit
+    query_lower = query.lower()
+    for idx, candidate in enumerate(candidates):
+        if candidate and query_lower == candidate.lower():
+            return candidate, 100, idx
+
     variants = generate_company_name_variants(query)
-    
+
     best_match = None
     best_score = 0
     best_index = None
-    
+
     for idx, candidate in enumerate(candidates):
         if not candidate:
             continue
-        
+
         candidate_lower = candidate.lower()
-        
+
         # Find the highest score for this candidate against any variant
         for variant in variants:
             score = fuzzy_score(variant, candidate_lower, normalize=False)
@@ -336,12 +342,7 @@ def find_best_match_with_variants(
                 best_match = candidate
                 best_score = score
                 best_index = idx
-    
-    # Check for exact match
-    for idx, candidate in enumerate(candidates):
-        if candidate and query.lower() == candidate.lower():
-            return candidate, 100, idx
-    
+
     if best_match and best_score >= threshold:
         return best_match, best_score, best_index
     else:

@@ -4,6 +4,8 @@
 import base64
 import html
 import threading
+import urllib.parse
+from collections import deque
 from io import BytesIO
 from datetime import datetime, timedelta
 from typing import Optional
@@ -430,8 +432,6 @@ def fetch_grants_for_company(company_number: str) -> list:
     Uses the /org/{id}/grants_received endpoint (same as Director Search)
     which is the reliable endpoint for fetching grants by organisation.
     """
-    import urllib.parse
-
     cleaned = clean_company_number(company_number)
     if not cleaned:
         return []
@@ -893,11 +893,11 @@ def _hierarchical_layout(G, root, width=1.0, vert_gap=0.2, vert_loc=0):
     """Simple BFS-based hierarchical layout as fallback when graphviz is unavailable."""
     pos = {}
     visited = set()
-    queue = [(root, 0)]
+    queue = deque([(root, 0)])
     levels = {}
 
     while queue:
-        node, depth = queue.pop(0)
+        node, depth = queue.popleft()
         if node in visited:
             continue
         visited.add(node)

@@ -3,6 +3,7 @@
 
 import threading
 import time
+import urllib.parse
 import requests
 from typing import Tuple, Optional, Any, Dict
 
@@ -154,17 +155,16 @@ def ch_search_officers(
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Search for officers by name.
-    
+
     Args:
         api_key: Companies House API key
         token_bucket: TokenBucket instance for rate limiting
         query: Name to search for
         items_per_page: Number of results per page (max 100)
-        
+
     Returns:
         Tuple of (search results dict or None, error message or None)
     """
-    import urllib.parse
     encoded_query = urllib.parse.quote(query)
     path = f"/search/officers?q={encoded_query}&items_per_page={items_per_page}"
     return ch_get_data(api_key, token_bucket, path)
@@ -178,17 +178,16 @@ def ch_search_companies(
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Search for companies by name.
-    
+
     Args:
         api_key: Companies House API key
         token_bucket: TokenBucket instance for rate limiting
         query: Company name to search for
         items_per_page: Number of results per page (max 100)
-        
+
     Returns:
         Tuple of (search results dict or None, error message or None)
     """
-    import urllib.parse
     encoded_query = urllib.parse.quote(query)
     path = f"/search/companies?q={encoded_query}&items_per_page={items_per_page}"
     return ch_get_data(api_key, token_bucket, path)
@@ -220,19 +219,50 @@ def ch_get_officers(
     items_per_page: int = 100
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
-    Get officers for a company.
-    
+    Get all officers for a company, automatically paginating beyond 100 results.
+
+    Each page is fetched via ch_get_data and benefits from the response cache.
+    The merged result has the same structure as a single-page response so all
+    existing callers continue to work without changes.
+
     Args:
         api_key: Companies House API key
         token_bucket: TokenBucket instance for rate limiting
         company_number: Company registration number
-        items_per_page: Number of results per page
-        
+        items_per_page: Results per page (max 100 per API limits)
+
     Returns:
-        Tuple of (officers dict or None, error message or None)
+        Tuple of (officers dict with all items, or None, error message or None)
     """
-    path = f"/company/{company_number}/officers?items_per_page={items_per_page}"
-    return ch_get_data(api_key, token_bucket, path)
+    all_items = []
+    start_index = 0
+    last_data = None
+
+    while True:
+        path = (
+            f"/company/{company_number}/officers"
+            f"?items_per_page={items_per_page}&start_index={start_index}"
+        )
+        data, error = ch_get_data(api_key, token_bucket, path)
+        if error or not data:
+            if not all_items:
+                return None, error
+            break
+
+        last_data = data
+        page_items = data.get("items", [])
+        all_items.extend(page_items)
+
+        total_results = data.get("total_results", 0)
+        start_index += len(page_items)
+        if not page_items or start_index >= total_results:
+            break
+
+    if last_data is not None:
+        merged = dict(last_data)
+        merged["items"] = all_items
+        return merged, None
+    return {"items": all_items, "total_results": len(all_items)}, None
 
 
 def ch_get_pscs(
@@ -242,19 +272,51 @@ def ch_get_pscs(
     items_per_page: int = 100
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
-    Get Persons with Significant Control for a company.
-    
+    Get all Persons with Significant Control for a company, automatically
+    paginating beyond 100 results.
+
+    Each page is fetched via ch_get_data and benefits from the response cache.
+    The merged result has the same structure as a single-page response so all
+    existing callers continue to work without changes.
+
     Args:
         api_key: Companies House API key
         token_bucket: TokenBucket instance for rate limiting
         company_number: Company registration number
-        items_per_page: Number of results per page
-        
+        items_per_page: Results per page (max 100 per API limits)
+
     Returns:
-        Tuple of (PSCs dict or None, error message or None)
+        Tuple of (PSCs dict with all items, or None, error message or None)
     """
-    path = f"/company/{company_number}/persons-with-significant-control?items_per_page={items_per_page}"
-    return ch_get_data(api_key, token_bucket, path)
+    all_items = []
+    start_index = 0
+    last_data = None
+
+    while True:
+        path = (
+            f"/company/{company_number}/persons-with-significant-control"
+            f"?items_per_page={items_per_page}&start_index={start_index}"
+        )
+        data, error = ch_get_data(api_key, token_bucket, path)
+        if error or not data:
+            if not all_items:
+                return None, error
+            break
+
+        last_data = data
+        page_items = data.get("items", [])
+        all_items.extend(page_items)
+
+        total_results = data.get("total_results", 0)
+        start_index += len(page_items)
+        if not page_items or start_index >= total_results:
+            break
+
+    if last_data is not None:
+        merged = dict(last_data)
+        merged["items"] = all_items
+        return merged, None
+    return {"items": all_items, "total_results": len(all_items)}, None
 
 
 def ch_get_filing_history(
