@@ -183,6 +183,59 @@ MANUAL_INPUT_FIELDS_TIER2 = [
     ('CapitalisedDevCosts', None, 'Capitalised Development Costs'),
 ]
 
+# --- Supplementary Accounts Window Field Definitions ---
+# Each tuple: (manual_field_key, auto_column_or_None, display_label)
+# Fields are organised to mirror standard UK abbreviated accounts.
+
+# Section markers use None as the manual key — they are rendered as bold
+# headers spanning the full row width.  The tuple format is:
+#   (None, None, 'Section Title')
+
+BALANCE_SHEET_FIELDS = [
+    # Fixed Assets
+    (None, None, 'Fixed Assets'),
+    ('IntangibleAssets', 'IntangibleAssets', 'Intangible Assets'),
+    ('TangibleAssets', 'TangibleAssets', 'Tangible Assets'),
+    ('FixedAssets', 'FixedAssets', 'Total Fixed Assets'),
+    # Current Assets
+    (None, None, 'Current Assets'),
+    ('StockInventory', None, 'Stock / Inventory'),
+    ('ManualDebtors', 'Debtors', 'Debtors'),
+    ('CashAtBank', 'CashBankInHand', 'Cash at Bank and in Hand'),
+    ('CurrentAssets', 'CurrentAssets', 'Total Current Assets'),
+    # Creditors due within one year
+    (None, None, 'Current Liabilities'),
+    ('CurrentLiabilities', 'CurrentLiabilities', 'Creditors: due within one year'),
+    ('DeferredIncome', None, 'Deferred Income'),
+    # Net current assets
+    (None, None, ''),
+    ('NetCurrentAssets', 'NetCurrentAssets', 'Net Current Assets / (Liabilities)'),
+    # Long-term creditors
+    (None, None, 'Long-term Liabilities'),
+    ('CreditorsAfterOneYear', 'CreditorsAfterOneYear', 'Creditors: due after more than one year'),
+    # Total net assets
+    (None, None, ''),
+    ('NetAssets', 'NetAssets', 'Total Net Assets / (Liabilities)'),
+    # Capital & Reserves
+    (None, None, 'Capital and Reserves'),
+    ('ShareCapital', 'ShareCapital', 'Share Capital'),
+    ('RetainedEarnings', 'RetainedEarnings', 'Retained Earnings'),
+    # Other / Notes
+    (None, None, 'Other'),
+    ('DirectorLoans', None, 'Director Loans (amount owed)'),
+    ('CapitalisedDevCosts', None, 'Capitalised Development Costs'),
+    ('Employees', 'Employees', 'Average Number of Employees'),
+]
+
+INCOME_STATEMENT_FIELDS = [
+    ('Turnover', 'Revenue', 'Turnover'),
+    ('OtherIncome', None, 'Other Income'),
+    ('CostOfMaterials', None, 'Cost of Materials'),
+    ('StaffCosts', None, 'Staff Costs'),
+    ('OtherCharges', None, 'Other Charges'),
+    ('PreTaxProfitLoss', 'ProfitLoss', 'Profit or (Loss) for Period'),
+]
+
 PAYMENT_MECHANISMS = ['Unknown', 'Advance', 'Arrears', 'Milestone-based']
 
 IXBRL_NAMESPACES = {

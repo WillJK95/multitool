@@ -29,6 +29,8 @@ from ..constants import (
     FILING_TYPE_CATEGORIES,
     MANUAL_INPUT_FIELDS_TIER1,
     MANUAL_INPUT_FIELDS_TIER2,
+    BALANCE_SHEET_FIELDS,
+    INCOME_STATEMENT_FIELDS,
     PAYMENT_MECHANISMS,
 )
 from .base import InvestigationModuleBase
@@ -384,7 +386,27 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         row.pack(fill=tk.X, pady=2)
         ttk.Label(row, text="Proposed Award Amount (\u00a3):", width=30).pack(side=tk.LEFT)
         self.proposed_award_var = tk.StringVar()
-        ttk.Entry(row, textvariable=self.proposed_award_var, width=15).pack(side=tk.LEFT)
+        award_entry = ttk.Entry(row, textvariable=self.proposed_award_var, width=15)
+        award_entry.pack(side=tk.LEFT)
+
+        def _validate_award(*_args):
+            raw = self.proposed_award_var.get().strip().replace(',', '').replace('\u00a3', '')
+            if not raw:
+                try:
+                    award_entry.configure(bootstyle='default')
+                except Exception:
+                    pass
+                return
+            try:
+                float(raw)
+                award_entry.configure(bootstyle='default')
+            except (ValueError, AttributeError):
+                try:
+                    award_entry.configure(bootstyle='danger')
+                except Exception:
+                    pass
+
+        self.proposed_award_var.trace_add('write', _validate_award)
 
         row = ttk.Frame(grant_frame)
         row.pack(fill=tk.X, pady=2)
@@ -395,7 +417,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             values=PAYMENT_MECHANISMS, state='readonly', width=18
         ).pack(side=tk.LEFT)
 
-        # --- Supplementary Accounts Data (multi-year) ---
+        # --- Supplementary Accounts Data (opens separate window) ---
         supp_frame = ttk.LabelFrame(
             self.manual_input_frame, text="Supplementary Accounts Data", padding=5
         )
@@ -403,141 +425,301 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         ttk.Label(
             supp_frame,
-            text="Enter figures for up to 5 accounting periods. Use the same period end dates as "
-                 "the filed accounts so that manual data merges correctly with uploaded iXBRL data. "
-                 "Enter losses and negative values with a minus sign (e.g. -15000).",
+            text="Enter Balance Sheet and Income Statement figures in a layout that mirrors "
+                 "standard UK filed accounts.  If iXBRL accounts have been uploaded, fields "
+                 "will be auto-populated — you can then review and amend.",
             foreground='grey', wraplength=600, justify=tk.LEFT,
         ).pack(anchor='w', pady=(0, 5))
 
-        # Buttons row
         btn_row = ttk.Frame(supp_frame)
         btn_row.pack(fill=tk.X, pady=(0, 5))
-        ttk.Button(btn_row, text="Add Year", command=self._add_manual_year).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(btn_row, text="Clear All", command=self._clear_all_manual_input).pack(side=tk.LEFT)
+        ttk.Button(
+            btn_row, text="Open Supplementary Accounts\u2026",
+            command=self._open_supplementary_accounts_window,
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        self._supp_status_label = ttk.Label(btn_row, text="No data entered.", foreground='grey')
+        self._supp_status_label.pack(side=tk.LEFT)
 
-        # Container for year panels
-        self._manual_years_container = ttk.Frame(supp_frame)
-        self._manual_years_container.pack(fill=tk.X)
-
-        # List of year panel data: each entry is a dict of StringVars + the frame widget
+        # Persistent storage shared with the window and _collect_manual_input
         self._manual_year_panels = []
 
-        # Start with one year panel
-        self._add_manual_year()
+    # ------------------------------------------------------------------
+    # Supplementary Accounts Window
+    # ------------------------------------------------------------------
 
-    def _add_manual_year(self):
-        """Add a new year panel to the supplementary accounts section."""
-        if len(self._manual_year_panels) >= 5:
-            return  # Max 5 years
+    def _open_supplementary_accounts_window(self):
+        """Open a Toplevel window with Balance Sheet and Income Statement tabs."""
+        win = tk.Toplevel(self.app)
+        win.title("Supplementary Accounts Data")
+        win.geometry("820x620")
+        win.minsize(700, 500)
+        win.transient(self.app)
+        win.grab_set()
 
-        idx = len(self._manual_year_panels) + 1
-        panel_frame = ttk.LabelFrame(
-            self._manual_years_container,
-            text=f"Year {idx}",
-            padding=5,
-        )
-        panel_frame.pack(fill=tk.X, pady=2)
+        # --- shared year columns (max 5) ---
+        year_columns = []   # list of {'period_end': StringVar, 'vars': {key: StringVar}}
 
-        vars_dict = {}
+        # --- validation tracking ---
+        validation_entries = []  # (entry_widget, StringVar, field_label)
 
-        # Use a grid for consistent alignment
-        grid_frame = ttk.Frame(panel_frame)
-        grid_frame.pack(fill=tk.X, pady=1)
-        grid_frame.columnconfigure(0, weight=1)  # Label column stretches
-        grid_frame.columnconfigure(1, weight=0)  # Entry column fixed
-        grid_row = 0
+        def _validate_currency(var, entry_widget, _allow_empty=True):
+            raw = var.get().strip().replace(',', '').replace('\u00a3', '')
+            if not raw and _allow_empty:
+                try:
+                    entry_widget.configure(bootstyle='default')
+                except Exception:
+                    pass
+                return True
+            try:
+                float(raw)
+                try:
+                    entry_widget.configure(bootstyle='default')
+                except Exception:
+                    pass
+                return True
+            except (ValueError, AttributeError):
+                try:
+                    entry_widget.configure(bootstyle='danger')
+                except Exception:
+                    pass
+                return False
 
-        # Period end date
-        ttk.Label(grid_frame, text="Accounting Period End Date:").grid(
-            row=grid_row, column=0, sticky='w', pady=1)
-        period_box = ttk.Frame(grid_frame)
-        period_box.grid(row=grid_row, column=1, sticky='e', pady=1)
-        period_var = tk.StringVar()
-        vars_dict['_period_end'] = period_var
-        ttk.Entry(period_box, textvariable=period_var, width=15).pack(side=tk.LEFT)
-        ttk.Label(period_box, text=" YYYY-MM-DD", foreground='grey').pack(side=tk.LEFT)
-        grid_row += 1
+        # --- notebook ---
+        notebook = ttk.Notebook(win)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 0))
 
-        # Tier 1 fields (always visible)
-        for field_key, _, label in MANUAL_INPUT_FIELDS_TIER1:
-            display = label
-            hint = ""
-            if 'Profit' in label or 'Loss' in label:
-                hint = "  (negative for loss)"
-            ttk.Label(grid_frame, text=f"{display} (\u00a3):{hint}").grid(
-                row=grid_row, column=0, sticky='w', pady=1)
-            var = tk.StringVar()
-            vars_dict[field_key] = var
-            ttk.Entry(grid_frame, textvariable=var, width=15).grid(
-                row=grid_row, column=1, sticky='e', pady=1)
-            grid_row += 1
+        bs_outer = ttk.Frame(notebook)
+        is_outer = ttk.Frame(notebook)
+        notebook.add(bs_outer, text="Balance Sheet")
+        notebook.add(is_outer, text="Income Statement")
 
-        # Tier 2 toggle
-        show_t2 = tk.BooleanVar(value=False)
-        vars_dict['_show_tier2'] = show_t2
-        t2_toggle = ttk.Checkbutton(
-            panel_frame,
-            text="\u25B6 Additional fields",
-            variable=show_t2,
-        )
-        t2_toggle.pack(anchor='w', pady=(3, 0))
+        # Canvas + scrollbar per tab
+        tab_grids = {}
+        for tab_name, outer in [('bs', bs_outer), ('is', is_outer)]:
+            canvas = tk.Canvas(outer, highlightthickness=0)
+            scrollbar = ttk.Scrollbar(outer, orient='vertical', command=canvas.yview)
+            inner = ttk.Frame(canvas)
+            inner.bind('<Configure>', lambda e, c=canvas: c.configure(scrollregion=c.bbox('all')))
+            canvas.create_window((0, 0), window=inner, anchor='nw')
+            canvas.configure(yscrollcommand=scrollbar.set)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        t2_frame = ttk.Frame(panel_frame)
+            def _on_mousewheel(event, c=canvas):
+                c.yview_scroll(
+                    int(-1 * (event.delta / 120)) if event.delta else (-1 if event.num == 4 else 1),
+                    'units',
+                )
+            canvas.bind_all('<MouseWheel>', _on_mousewheel)
+            canvas.bind_all('<Button-4>', _on_mousewheel)
+            canvas.bind_all('<Button-5>', _on_mousewheel)
+            tab_grids[tab_name] = inner
 
-        def _toggle_t2(_show=show_t2, _frame=t2_frame, _btn=t2_toggle):
-            if _show.get():
-                _frame.pack(fill=tk.X, pady=1)
-                _btn.config(text="\u25BC Additional fields")
+        def _rebuild_grids():
+            """Rebuild both tab grids to reflect the current year_columns."""
+            validation_entries.clear()
+            for tab_name, fields in [('bs', BALANCE_SHEET_FIELDS), ('is', INCOME_STATEMENT_FIELDS)]:
+                grid = tab_grids[tab_name]
+                for w in grid.winfo_children():
+                    w.destroy()
+
+                n_years = len(year_columns)
+
+                # Header row
+                ttk.Label(grid, text="Period End (YYYY-MM-DD)", foreground='grey',
+                          font=('TkDefaultFont', 8)).grid(
+                    row=0, column=0, sticky='e', padx=(5, 10), pady=2)
+                for ci, ycol in enumerate(year_columns):
+                    pe_entry = ttk.Entry(grid, textvariable=ycol['period_end'],
+                                         width=14, justify='center')
+                    pe_entry.grid(row=0, column=ci + 1, padx=3, pady=2)
+
+                grid_row = 1
+                for field_key, auto_col, label in fields:
+                    # Section header
+                    if field_key is None:
+                        if label:
+                            lbl = ttk.Label(grid, text=label,
+                                            font=('TkDefaultFont', 9, 'bold'))
+                            lbl.grid(row=grid_row, column=0, columnspan=n_years + 1,
+                                     sticky='w', padx=5, pady=(8, 2))
+                        grid_row += 1
+                        continue
+
+                    # Field row
+                    display = label
+                    if any(kw in label for kw in ('Profit', 'Loss', 'Net Current', 'Net Assets')):
+                        display += "  (neg. for loss)"
+                    is_currency = field_key != 'Employees'
+                    suffix = " (\u00a3)" if is_currency else ""
+
+                    ttk.Label(grid, text=f"{display}{suffix}").grid(
+                        row=grid_row, column=0, sticky='e', padx=(5, 10), pady=1)
+
+                    for ci, ycol in enumerate(year_columns):
+                        var = ycol['vars'].setdefault(field_key, tk.StringVar())
+                        entry = ttk.Entry(grid, textvariable=var, width=14, justify='right')
+                        entry.grid(row=grid_row, column=ci + 1, padx=3, pady=1)
+                        if is_currency:
+                            validation_entries.append((entry, var, label))
+                            var.trace_add(
+                                'write',
+                                lambda *_a, v=var, e=entry: _validate_currency(v, e),
+                            )
+                    grid_row += 1
+
+        def _add_year_column():
+            if len(year_columns) >= 5:
+                return
+            year_columns.append({'period_end': tk.StringVar(), 'vars': {}})
+            _rebuild_grids()
+            _update_year_label()
+
+        def _remove_last_year():
+            if year_columns:
+                year_columns.pop()
+                _rebuild_grids()
+                _update_year_label()
+
+        def _clear_all():
+            year_columns.clear()
+            _add_year_column()
+
+        def _update_year_label():
+            n = len(year_columns)
+            year_count_label.config(text=f"{n} year{'s' if n != 1 else ''}")
+
+        def _auto_populate():
+            """Populate fields from iXBRL data if available."""
+            if not self.accounts_loaded or not self.financial_analyzer:
+                messagebox.showinfo(
+                    "No iXBRL Data",
+                    "Upload iXBRL accounts files first, then re-open this window.",
+                    parent=win,
+                )
+                return
+
+            df = self.financial_analyzer.data
+            if df.empty:
+                return
+
+            years = sorted(df['Year'].unique())
+            year_columns.clear()
+            for yr in years[:5]:
+                year_columns.append({
+                    'period_end': tk.StringVar(value=f"{int(yr)}-12-31"),
+                    'vars': {},
+                })
+
+            all_fields = BALANCE_SHEET_FIELDS + INCOME_STATEMENT_FIELDS
+            for field_key, auto_col, _ in all_fields:
+                if field_key is None:
+                    continue
+                col_name = auto_col if auto_col else field_key
+                if col_name not in df.columns:
+                    continue
+                for i, yr in enumerate(years[:5]):
+                    rows = df[df['Year'] == yr]
+                    if rows.empty:
+                        continue
+                    val = rows.iloc[0].get(col_name)
+                    if pd.notna(val):
+                        fval = float(val)
+                        formatted = f"{fval:,.0f}" if fval == int(fval) else f"{fval:,.2f}"
+                        year_columns[i]['vars'][field_key] = tk.StringVar(value=formatted)
+
+            _rebuild_grids()
+            _update_year_label()
+
+        def _save_and_close():
+            """Validate, persist data to self._manual_year_panels, close."""
+            invalid = []
+            for entry_w, var, label in validation_entries:
+                if not _validate_currency(var, entry_w):
+                    invalid.append(label)
+            if invalid:
+                messagebox.showerror(
+                    "Invalid Input",
+                    "The following fields contain non-numeric values:\n\n"
+                    + "\n".join(f"  - {f}" for f in invalid[:10]),
+                    parent=win,
+                )
+                return
+
+            self._manual_year_panels = []
+            filled_count = 0
+            for ycol in year_columns:
+                vars_dict = {}
+                vars_dict['_period_end'] = tk.StringVar(value=ycol['period_end'].get())
+                has_data = False
+                for key, var in ycol['vars'].items():
+                    vars_dict[key] = tk.StringVar(value=var.get())
+                    if var.get().strip():
+                        has_data = True
+                if has_data:
+                    filled_count += 1
+                self._manual_year_panels.append({'frame': None, 'vars': vars_dict})
+
+            if filled_count > 0:
+                self._supp_status_label.config(
+                    text=f"{filled_count} year{'s' if filled_count != 1 else ''} of data entered.",
+                    foreground='green',
+                )
             else:
-                _frame.pack_forget()
-                _btn.config(text="\u25B6 Additional fields")
+                self._supp_status_label.config(text="No data entered.", foreground='grey')
 
-        show_t2.trace_add('write', lambda *_a, cb=_toggle_t2: cb())
+            win.grab_release()
+            win.destroy()
 
-        t2_grid = ttk.Frame(t2_frame)
-        t2_grid.pack(fill=tk.X)
-        t2_grid.columnconfigure(0, weight=1)
-        t2_grid.columnconfigure(1, weight=0)
-        t2_row = 0
-        for field_key, _, label in MANUAL_INPUT_FIELDS_TIER2:
-            ttk.Label(t2_grid, text=f"{label} (\u00a3):").grid(
-                row=t2_row, column=0, sticky='w', pady=1)
-            var = tk.StringVar()
-            vars_dict[field_key] = var
-            ttk.Entry(t2_grid, textvariable=var, width=15).grid(
-                row=t2_row, column=1, sticky='e', pady=1)
-            t2_row += 1
+        # --- Bottom button bar ---
+        btn_bar = ttk.Frame(win)
+        btn_bar.pack(fill=tk.X, padx=10, pady=10)
 
-        # Remove button
-        ttk.Button(
-            panel_frame, text="Remove",
-            command=lambda f=panel_frame: self._remove_manual_year(f),
-        ).pack(anchor='e', pady=(3, 0))
+        ttk.Button(btn_bar, text="Add Year", command=_add_year_column).pack(
+            side=tk.LEFT, padx=(0, 5))
+        ttk.Button(btn_bar, text="Remove Last Year", command=_remove_last_year).pack(
+            side=tk.LEFT, padx=(0, 5))
+        ttk.Button(btn_bar, text="Clear All", command=_clear_all).pack(
+            side=tk.LEFT, padx=(0, 15))
 
-        self._manual_year_panels.append({
-            'frame': panel_frame,
-            'vars': vars_dict,
-        })
+        if self.accounts_loaded:
+            ttk.Button(btn_bar, text="Auto-populate from iXBRL",
+                       command=_auto_populate).pack(side=tk.LEFT, padx=(0, 5))
 
-    def _remove_manual_year(self, frame_widget):
-        """Remove a specific year panel."""
-        self._manual_year_panels = [
-            p for p in self._manual_year_panels if p['frame'] is not frame_widget
-        ]
-        frame_widget.destroy()
-        # Re-number remaining panels
-        for i, panel in enumerate(self._manual_year_panels, 1):
-            panel['frame'].config(text=f"Year {i}")
+        year_count_label = ttk.Label(btn_bar, text="")
+        year_count_label.pack(side=tk.LEFT, padx=10)
 
-    def _clear_all_manual_input(self):
-        """Clear all manual input fields including grant details."""
-        self.proposed_award_var.set('')
-        self.payment_mechanism_var.set('Unknown')
-        # Remove all year panels and add a fresh one
-        for panel in self._manual_year_panels:
-            panel['frame'].destroy()
-        self._manual_year_panels.clear()
-        self._add_manual_year()
+        ttk.Button(btn_bar, text="Save & Close", command=_save_and_close,
+                   bootstyle='success').pack(side=tk.RIGHT)
+
+        # --- Seed initial data ---
+        if self._manual_year_panels:
+            for panel in self._manual_year_panels:
+                pv = panel['vars']
+                pe_val = ''
+                pe = pv.get('_period_end')
+                if isinstance(pe, tk.StringVar):
+                    pe_val = pe.get()
+                elif isinstance(pe, str):
+                    pe_val = pe
+                ycol = {'period_end': tk.StringVar(value=pe_val), 'vars': {}}
+                for key, var in pv.items():
+                    if key.startswith('_'):
+                        continue
+                    val = var.get() if isinstance(var, tk.StringVar) else str(var)
+                    ycol['vars'][key] = tk.StringVar(value=val)
+                year_columns.append(ycol)
+        else:
+            year_columns.append({'period_end': tk.StringVar(), 'vars': {}})
+
+        _rebuild_grids()
+        _update_year_label()
+
+        # Auto-populate if iXBRL loaded and no manual data yet
+        if self.accounts_loaded and not any(
+            any(v.get().strip() for v in yc['vars'].values()) for yc in year_columns
+        ):
+            _auto_populate()
 
     def _toggle_manual_input(self):
         """Show/hide the manual input form."""
