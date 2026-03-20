@@ -33,11 +33,27 @@ class CharityFinancialData:
     _INCOME_FIELD = 'inc_total'
     _EXPENDITURE_FIELD = 'exp_total'
 
+    # Map charity supplementary field names to cross-analysis metric names.
+    # Manual data from the supplementary accounts window uses these keys.
+    _MANUAL_TO_METRIC = {
+        'TotalIncome': 'Revenue',
+        'TotalExpenditure': 'TotalExpenses',
+        'NetIncome': 'ProfitLoss',
+        'NetAssets': 'NetAssets',
+        'CurrentAssets': 'CurrentAssets',
+        'TotalLiabilities': 'TotalLiabilities',
+        'TangibleAssets': 'TangibleAssets',
+        'LongTermInvestments': 'Investments',
+        'TotalCharityFunds': 'NetAssets',
+        'Employees': 'Employees',
+    }
+
     def __init__(
         self,
         financial_history: Optional[List[dict]] = None,
         assets_liabilities: Optional[List[dict]] = None,
         overview: Optional[dict] = None,
+        manual_data: Optional[List[dict]] = None,
     ):
         self._provenance: Dict[str, str] = {}
 
@@ -58,6 +74,14 @@ class CharityFinancialData:
                     self._bal_by_year[yr] = entry
 
         self._overview = overview or {}
+
+        # Manual supplementary data (from the supplementary accounts window)
+        self._manual_by_year: Dict[int, dict] = {}
+        if manual_data:
+            for entry in manual_data:
+                yr = entry.get('_year')
+                if yr is not None:
+                    self._manual_by_year[int(yr)] = entry
 
     @staticmethod
     def _extract_year(entry: dict) -> Optional[int]:
@@ -80,14 +104,21 @@ class CharityFinancialData:
         """Return sorted list of all years with financial data."""
         years = set(self._fin_by_year.keys())
         years.update(self._bal_by_year.keys())
+        years.update(self._manual_by_year.keys())
         return sorted(years)
 
     def get_metric(self, name: str, year: Optional[int] = None) -> Optional[float]:
-        """Return a metric value for a given year (or most recent if None)."""
+        """Return a metric value, preferring manual data where available."""
         all_years = self.get_years()
         target_year = year if year is not None else (all_years[-1] if all_years else None)
         if target_year is None:
             return None
+
+        # Try manual data first
+        manual_val = self._manual_value(name, target_year)
+        if manual_val is not None:
+            self._provenance[name] = 'manual'
+            return manual_val
 
         val = self._resolve_metric(name, target_year)
         if val is not None:
@@ -95,12 +126,20 @@ class CharityFinancialData:
         return val
 
     def get_metric_series(self, name: str) -> Dict[int, float]:
-        """Return {year: value} for all available years of a metric."""
+        """Return {year: value} for all available years of a metric.
+
+        Manual supplementary data overlays API data for matching years.
+        """
         result: Dict[int, float] = {}
         for yr in self.get_years():
             val = self._resolve_metric(name, yr)
             if val is not None:
                 result[yr] = val
+        # Overlay manual data on top
+        for yr in self._manual_by_year:
+            manual_val = self._manual_value(name, yr)
+            if manual_val is not None:
+                result[yr] = manual_val
         return result
 
     def has_auto(self, name: str) -> bool:
@@ -108,12 +147,50 @@ class CharityFinancialData:
         return self.get_metric(name) is not None
 
     def has_manual(self, name: str) -> bool:
-        """Charity mode has no manual input."""
+        """Check if manual supplementary data exists for this metric."""
+        if not self._manual_by_year:
+            return False
+        # Build reverse map: metric_name -> manual_field_key(s)
+        reverse = {}
+        for manual_key, metric_name in self._MANUAL_TO_METRIC.items():
+            reverse.setdefault(metric_name, []).append(manual_key)
+        # Check direct name match or mapped name match
+        keys_to_check = [name] + reverse.get(name, [])
+        for yr_data in self._manual_by_year.values():
+            for k in keys_to_check:
+                if yr_data.get(k) is not None:
+                    return True
         return False
 
     @property
     def provenance(self) -> Dict[str, str]:
         return dict(self._provenance)
+
+    def _manual_value(self, name: str, year: int) -> Optional[float]:
+        """Look up a metric from manual supplementary data for a given year.
+
+        Checks both the direct field name and the _MANUAL_TO_METRIC mapping
+        (which maps charity field names like 'TotalIncome' to cross-analysis
+        metric names like 'Revenue').
+        """
+        yr_data = self._manual_by_year.get(year)
+        if not yr_data:
+            return None
+
+        # Direct match (e.g. name='NetAssets', field key='NetAssets')
+        val = self._safe_float(yr_data.get(name))
+        if val is not None:
+            return val
+
+        # Reverse lookup: if name is a metric name, find the manual field key
+        # e.g. name='Revenue' -> manual key 'TotalIncome'
+        for manual_key, metric_name in self._MANUAL_TO_METRIC.items():
+            if metric_name == name:
+                val = self._safe_float(yr_data.get(manual_key))
+                if val is not None:
+                    return val
+
+        return None
 
     def _resolve_metric(self, name: str, year: int) -> Optional[float]:
         """Resolve a metric name to a CC API value for a specific year."""

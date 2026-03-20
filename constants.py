@@ -269,6 +269,55 @@ CHARITY_EDD_THRESHOLDS = {
     'broad_area_income_threshold': 100_000,
 }
 
+# --- Charity Supplementary Accounts Field Definitions ---
+# Mirrors the company BALANCE_SHEET_FIELDS / INCOME_STATEMENT_FIELDS but adapted
+# for the Statement of Financial Activities and charity-sector balance sheet.
+# Tuple format: (manual_field_key, cc_api_field_or_None, display_label)
+# Section headers use (None, None, 'Title').
+
+CHARITY_BALANCE_SHEET_FIELDS = [
+    # Fixed Assets
+    (None, None, 'Fixed Assets'),
+    ('TangibleAssets', 'assets_own_use', 'Tangible Assets (own use)'),
+    ('LongTermInvestments', 'assets_long_term_investment', 'Long-Term Investments'),
+    # Current Assets
+    (None, None, 'Current Assets'),
+    ('CurrentAssets', 'assets_other_assets', 'Total Current Assets'),
+    # Liabilities
+    (None, None, 'Liabilities'),
+    ('TotalLiabilities', 'assets_total_liabilities', 'Total Liabilities'),
+    # Pension
+    (None, None, 'Pension'),
+    ('PensionAssets', 'defined_net_assets_pension', 'Defined Benefit Pension Assets / (Liabilities)'),
+    # Net Assets
+    (None, None, ''),
+    ('NetAssets', None, 'Total Net Assets / (Liabilities)'),
+    # Funds
+    (None, None, 'Charity Funds'),
+    ('TotalCharityFunds', None, 'Total Charity Funds'),
+    # Other
+    (None, None, 'Other'),
+    ('Employees', 'employees', 'Average Number of Employees'),
+]
+
+CHARITY_INCOME_STATEMENT_FIELDS = [
+    # Income
+    (None, None, 'Income'),
+    ('TotalIncome', 'inc_total', 'Total Income'),
+    ('IncCharitableActivities', 'inc_charitable_activities', 'Income from Charitable Activities'),
+    ('IncDonationsLegacies', 'inc_donations_and_legacies', 'Donations and Legacies'),
+    ('IncTradingInvestment', None, 'Other Trading Activities & Investments'),
+    # Expenditure
+    (None, None, 'Expenditure'),
+    ('TotalExpenditure', 'exp_total', 'Total Expenditure'),
+    ('ExpCharitableActivities', 'exp_charitable_activities', 'Cost of Charitable Activities'),
+    ('ExpFundraising', 'exp_raising_funds', 'Cost of Fundraising'),
+    ('ExpGovernanceOther', None, 'Governance & Other Costs'),
+    # Net
+    (None, None, ''),
+    ('NetIncome', None, 'Net Income / (Expenditure)'),
+]
+
 # Standard charity policies expected to be held (per Charity Commission guidance)
 CHARITY_EXPECTED_POLICIES = [
     'risk_management',

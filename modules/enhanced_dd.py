@@ -45,6 +45,8 @@ from ..constants import (
     MANUAL_INPUT_FIELDS_TIER2,
     BALANCE_SHEET_FIELDS,
     INCOME_STATEMENT_FIELDS,
+    CHARITY_BALANCE_SHEET_FIELDS,
+    CHARITY_INCOME_STATEMENT_FIELDS,
     PAYMENT_MECHANISMS,
     CHARITY_EDD_THRESHOLDS,
 )
@@ -781,12 +783,24 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
     def _open_supplementary_accounts_window(self):
         """Open a Toplevel window with Balance Sheet and Income Statement tabs."""
+        is_charity = self._entity_type == 'charity'
+
         win = tk.Toplevel(self.app)
         win.title("Supplementary Accounts Data")
         win.geometry("1050x620")
         win.minsize(700, 500)
         win.transient(self.app)
         win.grab_set()
+
+        # Select field definitions based on entity type
+        if is_charity:
+            bs_fields = CHARITY_BALANCE_SHEET_FIELDS
+            is_fields = CHARITY_INCOME_STATEMENT_FIELDS
+            is_tab_label = "Statement of Financial Activities"
+        else:
+            bs_fields = BALANCE_SHEET_FIELDS
+            is_fields = INCOME_STATEMENT_FIELDS
+            is_tab_label = "Income Statement"
 
         # --- shared year columns (max 5) ---
         year_columns = []   # list of {'period_end': StringVar, 'vars': {key: StringVar}}
@@ -823,7 +837,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         bs_outer = ttk.Frame(notebook)
         is_outer = ttk.Frame(notebook)
         notebook.add(bs_outer, text="Balance Sheet")
-        notebook.add(is_outer, text="Income Statement")
+        notebook.add(is_outer, text=is_tab_label)
 
         # Canvas + scrollbar per tab (with horizontal scrollbar for wide layouts)
         tab_grids = {}
@@ -887,7 +901,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         def _rebuild_grids():
             """Rebuild both tab grids to reflect the current year_columns."""
             validation_entries.clear()
-            for tab_name, fields in [('bs', BALANCE_SHEET_FIELDS), ('is', INCOME_STATEMENT_FIELDS)]:
+            for tab_name, fields in [('bs', bs_fields), ('is', is_fields)]:
                 grid = tab_grids[tab_name]
                 for w in grid.winfo_children():
                     w.destroy()
@@ -958,7 +972,44 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             n = len(year_columns)
             year_count_label.config(text=f"{n} year{'s' if n != 1 else ''}")
 
+        def _cc_extract_year(entry):
+            """Extract fiscal year from a CC API entry."""
+            for key in ('fin_period_end_date', 'ar_cycle_reference'):
+                val = entry.get(key)
+                if val:
+                    try:
+                        if isinstance(val, str) and len(val) >= 4:
+                            return int(val[:4])
+                        elif isinstance(val, (int, float)):
+                            return int(val)
+                    except (ValueError, TypeError):
+                        continue
+            return None
+
+        def _safe_f(val):
+            """Convert to float or None."""
+            if val is None:
+                return None
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return None
+
+        def _set_if(ycol, field_key, val):
+            """Set a year column var if the value is not None."""
+            fval = _safe_f(val)
+            if fval is not None:
+                formatted = f"{fval:,.0f}" if fval == int(fval) else f"{fval:,.2f}"
+                ycol['vars'][field_key] = tk.StringVar(value=formatted)
+
         def _auto_populate():
+            """Populate fields from iXBRL data (company) or CC API data (charity)."""
+            if is_charity:
+                _auto_populate_charity()
+            else:
+                _auto_populate_company()
+
+        def _auto_populate_company():
             """Populate fields from iXBRL data if available."""
             if not self.accounts_loaded or not self.financial_analyzer:
                 messagebox.showinfo(
@@ -980,7 +1031,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     'vars': {},
                 })
 
-            all_fields = BALANCE_SHEET_FIELDS + INCOME_STATEMENT_FIELDS
+            all_fields = bs_fields + is_fields
             for field_key, auto_col, _ in all_fields:
                 if field_key is None:
                     continue
@@ -996,6 +1047,120 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                         fval = float(val)
                         formatted = f"{fval:,.0f}" if fval == int(fval) else f"{fval:,.2f}"
                         year_columns[i]['vars'][field_key] = tk.StringVar(value=formatted)
+
+            _rebuild_grids()
+            _update_year_label()
+
+        def _auto_populate_charity():
+            """Populate fields from Charity Commission API data."""
+            fin_history = self.charity_data.get('financial_history') or []
+            assets_liab = self.charity_data.get('assets_liabilities') or []
+            overview = self.charity_data.get('overview') or {}
+
+            if not fin_history and not assets_liab:
+                messagebox.showinfo(
+                    "No Charity Data",
+                    "Fetch charity data first, then re-open this window.",
+                    parent=win,
+                )
+                return
+
+            # Sort financial history by period end date
+            sorted_fin = sorted(
+                fin_history,
+                key=lambda x: x.get('fin_period_end_date', '') or '',
+            )
+            # Index assets/liabilities by year
+            al_by_year = {}
+            for entry in (assets_liab if isinstance(assets_liab, list) else [assets_liab] if assets_liab else []):
+                yr_key = _cc_extract_year(entry)
+                if yr_key is not None:
+                    al_by_year[yr_key] = entry
+
+            # Determine years
+            years = []
+            for entry in sorted_fin:
+                yr = _cc_extract_year(entry)
+                if yr is not None and yr not in years:
+                    years.append(yr)
+            for yr in sorted(al_by_year.keys()):
+                if yr not in years:
+                    years.append(yr)
+            years = sorted(years)[:5]
+
+            year_columns.clear()
+            # Index financial data by year
+            fin_by_year = {}
+            for entry in sorted_fin:
+                yr = _cc_extract_year(entry)
+                if yr is not None:
+                    fin_by_year[yr] = entry
+
+            for yr in years:
+                pe_date = ''
+                fin = fin_by_year.get(yr, {})
+                pe_raw = fin.get('fin_period_end_date', '')
+                if pe_raw and len(str(pe_raw)) >= 10:
+                    pe_date = str(pe_raw)[:10]
+                elif yr:
+                    pe_date = f"{yr}-03-31"  # Default to fiscal year end
+
+                ycol = {'period_end': tk.StringVar(value=pe_date), 'vars': {}}
+
+                al = al_by_year.get(yr, {})
+
+                # Populate balance sheet fields from assets/liabilities
+                _set_if(ycol, 'TangibleAssets', al.get('assets_own_use'))
+                _set_if(ycol, 'LongTermInvestments', al.get('assets_long_term_investment'))
+                _set_if(ycol, 'CurrentAssets', al.get('assets_other_assets'))
+                _set_if(ycol, 'TotalLiabilities', al.get('assets_total_liabilities'))
+                _set_if(ycol, 'PensionAssets', al.get('defined_net_assets_pension'))
+
+                # Derive net assets
+                own = _safe_f(al.get('assets_own_use')) or 0
+                invest = _safe_f(al.get('assets_long_term_investment')) or 0
+                pension = _safe_f(al.get('defined_net_assets_pension')) or 0
+                other = _safe_f(al.get('assets_other_assets')) or 0
+                liab = _safe_f(al.get('assets_total_liabilities')) or 0
+                if any(al.get(k) is not None for k in
+                       ('assets_own_use', 'assets_long_term_investment',
+                        'assets_other_assets', 'assets_total_liabilities')):
+                    net = own + invest + pension + other - liab
+                    _set_if(ycol, 'NetAssets', net)
+                    _set_if(ycol, 'TotalCharityFunds', net)
+
+                # Employees from overview (single value, apply to most recent year)
+                if yr == years[-1] and overview.get('employees') is not None:
+                    _set_if(ycol, 'Employees', overview.get('employees'))
+
+                # Populate income statement fields from financial history
+                _set_if(ycol, 'TotalIncome', fin.get('inc_total'))
+                _set_if(ycol, 'IncCharitableActivities', fin.get('inc_charitable_activities'))
+                _set_if(ycol, 'IncDonationsLegacies', fin.get('inc_donations_and_legacies'))
+
+                # Combined: Other Trading + Investments
+                trading = _safe_f(fin.get('inc_other_trading_activities')) or 0
+                investment = _safe_f(fin.get('inc_investment')) or 0
+                if fin.get('inc_other_trading_activities') is not None or fin.get('inc_investment') is not None:
+                    _set_if(ycol, 'IncTradingInvestment', trading + investment)
+
+                _set_if(ycol, 'TotalExpenditure', fin.get('exp_total'))
+                _set_if(ycol, 'ExpCharitableActivities', fin.get('exp_charitable_activities'))
+                _set_if(ycol, 'ExpFundraising', fin.get('exp_raising_funds'))
+
+                # Combined: Governance + Other
+                governance = _safe_f(fin.get('exp_governance')) or 0
+                exp_other = _safe_f(fin.get('exp_other')) or 0
+                if fin.get('exp_governance') is not None or fin.get('exp_other') is not None:
+                    _set_if(ycol, 'ExpGovernanceOther', governance + exp_other)
+
+                # Net income
+                inc = _safe_f(fin.get('inc_total'))
+                exp = _safe_f(fin.get('exp_total'))
+                if inc is not None and exp is not None:
+                    _set_if(ycol, 'NetIncome', inc - exp)
+
+                year_columns.append(ycol)
 
             _rebuild_grids()
             _update_year_label()
@@ -1050,7 +1215,10 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         ttk.Button(btn_bar, text="Clear All", command=_clear_all).pack(
             side=tk.LEFT, padx=(0, 15))
 
-        if self.accounts_loaded:
+        if is_charity and self.charity_data:
+            ttk.Button(btn_bar, text="Auto-populate from CC API",
+                       command=_auto_populate).pack(side=tk.LEFT, padx=(0, 5))
+        elif not is_charity and self.accounts_loaded:
             ttk.Button(btn_bar, text="Auto-populate from iXBRL",
                        command=_auto_populate).pack(side=tk.LEFT, padx=(0, 5))
 
@@ -1083,11 +1251,15 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         _rebuild_grids()
         _update_year_label()
 
-        # Auto-populate if iXBRL loaded and no manual data yet
-        if self.accounts_loaded and not any(
+        # Auto-populate if data available and no manual data yet
+        has_data = any(
             any(v.get().strip() for v in yc['vars'].values()) for yc in year_columns
-        ):
-            _auto_populate()
+        )
+        if not has_data:
+            if is_charity and self.charity_data:
+                _auto_populate()
+            elif not is_charity and self.accounts_loaded:
+                _auto_populate()
 
     def _toggle_manual_input(self):
         """Show/hide the manual input form."""
@@ -1164,18 +1336,25 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             self.fetch_btn.config(text="Fetch Company Data")
 
         # Toggle Step 2: upload vs charity note
+        # The manual input toggle (grant details + supplementary accounts) stays
+        # visible for both modes — only the iXBRL upload frame is swapped.
         if is_charity:
             self._upload_frame.pack_forget()
+            self._charity_accounts_note.pack(fill=tk.X, pady=5, padx=10,
+                                             after=self._lookup_frame)
+            # Re-place the manual toggle after the charity note
             if hasattr(self, '_manual_toggle_widget'):
                 self._manual_toggle_widget.pack_forget()
                 self.manual_input_frame.pack_forget()
-            self._charity_accounts_note.pack(fill=tk.X, pady=5, padx=10,
-                                             after=self._lookup_frame)
+                self._manual_toggle_widget.pack(anchor='w', padx=10, pady=(5, 0),
+                                                after=self._charity_accounts_note)
         else:
             self._charity_accounts_note.pack_forget()
             self._upload_frame.pack(fill=tk.X, pady=5, padx=10,
                                     after=self._lookup_frame)
             if hasattr(self, '_manual_toggle_widget'):
+                self._manual_toggle_widget.pack_forget()
+                self.manual_input_frame.pack_forget()
                 self._manual_toggle_widget.pack(anchor='w', padx=10, pady=(5, 0),
                                                 after=self._upload_frame)
 
@@ -1195,6 +1374,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         # Clear previous data and reset
         self.company_data = {}
         self.charity_data = {}
+        self._manual_year_panels = []
+        if hasattr(self, '_supp_status_label'):
+            self._supp_status_label.config(text="No data entered.", foreground='grey')
         self.company_summary_text.config(state='normal')
         self.company_summary_text.delete('1.0', tk.END)
         self.company_summary_text.config(state='disabled')
@@ -1745,6 +1927,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                         financial_history=self.charity_data.get('financial_history'),
                         assets_liabilities=self.charity_data.get('assets_liabilities'),
                         overview=self.charity_data.get('overview'),
+                        manual_data=getattr(self, '_manual_data', None),
                     )
                     late_filing_detected = any(
                         f.get('severity') in ('Critical', 'Elevated')
