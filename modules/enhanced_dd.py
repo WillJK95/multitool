@@ -104,6 +104,19 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             'f3_nca_drop_pct': 0.25,
             # Cross-analysis: F4
             'f4_leverage_years': 3,
+            # Cross-analysis: ROE
+            'roe_negative_years_medium': 2,
+            'roe_negative_years_high': 3,
+            # Cross-analysis: Asset Turnover
+            'asset_turnover_decline_years': 2,
+            'asset_turnover_min': 0.3,
+            # Cross-analysis: Profit Margin
+            'profit_margin_negative_years_medium': 2,
+            'profit_margin_negative_years_high': 3,
+            'profit_margin_compression_pts': 10.0,
+            # Cross-analysis: Staff Cost Burden
+            'staff_cost_ratio_max': 0.75,
+            'staff_cost_ratio_critical': 0.90,
             # Composite warning
             'composite_high_count': 3,
         }
@@ -337,7 +350,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         win.transient(self)
         win.grab_set()
 
-        # Build local working-copy vars from current thresholds
+        # Keys stored as integers
         _INT_KEYS = {
             'revenue_decline_years', 'consecutive_loss_years', 'late_filings_count',
             'late_filings_period', 'director_churn_count', 'director_churn_months',
@@ -347,6 +360,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             'predictive_revenue_decline_pct', 'g2_lookback_years',
             'f1_erosion_high_years', 'f1_erosion_medium_years',
             'f4_leverage_years', 'composite_high_count',
+            'roe_negative_years_medium', 'roe_negative_years_high',
+            'asset_turnover_decline_years',
+            'profit_margin_negative_years_medium', 'profit_margin_negative_years_high',
         }
         local_vars = {}
         for key, val in self.thresholds.items():
@@ -363,16 +379,10 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             notebook.add(sf, text=title)
             return sf.scrollable_frame
 
-        def rule_section(parent, rule_id, title, description):
+        def rule_section(parent, title, description):
             outer = ttk.Frame(parent)
             outer.pack(fill='x', padx=6, pady=(8, 0))
-            hdr = ttk.Frame(outer)
-            hdr.pack(fill='x')
-            if rule_id:
-                id_lbl = ttk.Label(hdr, text=f" {rule_id} ", relief='solid',
-                                   padding=(4, 1), font=('TkDefaultFont', 8, 'bold'))
-                id_lbl.pack(side='left', padx=(0, 6))
-            ttk.Label(hdr, text=title, font=('TkDefaultFont', 9, 'bold')).pack(side='left')
+            ttk.Label(outer, text=title, font=('TkDefaultFont', 9, 'bold')).pack(anchor='w')
             frame = ttk.LabelFrame(outer, padding=(8, 4))
             frame.pack(fill='x', pady=(4, 0))
             desc = ttk.Label(frame, text=description, wraplength=720,
@@ -385,25 +395,31 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             row.pack(fill='x', pady=2)
             ttk.Label(row, text=label, width=50, anchor='w').pack(side='left')
             is_int = key in _INT_KEYS
-            fmt = None if is_int else '%.2f'
             sp_kwargs = dict(textvariable=local_vars[key], from_=from_, to=to,
                              increment=increment, width=8)
-            if fmt:
-                sp_kwargs['format'] = fmt
+            if not is_int:
+                sp_kwargs['format'] = '%.2f'
             ttk.Spinbox(row, **sp_kwargs).pack(side='left', padx=4)
             if note:
                 ttk.Label(row, text=note, foreground='grey').pack(side='left', padx=4)
 
-        # ── Tab 1: Core Checks ──────────────────────────────────────────────
-        tab1 = make_tab("Core Checks")
+        # ── Tab 1: Financial Analysis ────────────────────────────────────────
+        tab1 = make_tab("Financial Analysis")
 
-        s = rule_section(tab1, None, "Solvency — Net Asset Position",
+        s = rule_section(tab1, "Solvency — Net Asset Position",
             "Checks whether net assets are positive and stable. Negative net assets indicate "
             "technical insolvency. A large year-on-year decline also triggers a warning.")
         trow(s, "Net asset year-on-year decline to flag (%)", 'solvency_decline_pct',
              5, 80, 5, note="Flags if single-year decline exceeds this %")
 
-        s = rule_section(tab1, None, "Liquidity — Current & Quick Ratios",
+        s = rule_section(tab1, "Capital Erosion",
+            "Tracks whether net assets are declining year on year. Sustained erosion of the "
+            "equity base is a leading indicator of financial distress, particularly if driven "
+            "by operating losses rather than planned distributions.")
+        trow(s, "Consecutive net asset decline years — HIGH", 'f1_erosion_high_years', 2, 10, 1)
+        trow(s, "Consecutive net asset decline years — MEDIUM", 'f1_erosion_medium_years', 1, 8, 1)
+
+        s = rule_section(tab1, "Liquidity — Current & Quick Ratios",
             "Assesses the company's ability to meet short-term obligations. The current ratio "
             "compares all current assets to current liabilities; the quick ratio excludes "
             "inventory. Low ratios indicate difficulty paying debts as they fall due.")
@@ -413,37 +429,93 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         trow(s, "Cash as % of current liabilities — warn if below (%)", 'cash_pct_min',
              1, 50, 1, note="Flags very low cash relative to short-term debts")
 
-        s = rule_section(tab1, None, "Revenue & Profitability Trends",
-            "Detects sustained revenue decline or consecutive loss-making years. Occasional "
-            "losses can be acceptable; persistent trends are a warning sign.")
+        s = rule_section(tab1, "Working Capital Deterioration",
+            "Monitors the trend in net current assets (current assets minus current "
+            "liabilities). A single large drop or sustained multi-year decline signals "
+            "worsening short-term financial health.")
+        trow(s, "Single-year NCA drop proportion to flag", 'f3_nca_drop_pct', 0.05, 0.90, 0.05,
+             note="e.g. 0.25 = a 25% drop in one year triggers a flag")
+
+        s = rule_section(tab1, "Leverage Creep",
+            "Checks whether total long-term creditors have been rising consistently while net "
+            "assets are stagnant or declining. Increasing leverage in this context creates "
+            "refinancing and solvency risk.")
+        trow(s, "Consecutive creditor-increase years to flag", 'f4_leverage_years', 2, 8, 1)
+
+        s = rule_section(tab1, "Intangible Asset Bloat",
+            "Checks whether intangible assets (goodwill, IP, software) represent an unusually "
+            "large share of total assets. High intangible ratios can inflate the balance sheet; "
+            "these assets may not be realisable in a wind-down scenario.")
+        trow(s, "Intangibles as proportion of total assets — warn if above",
+             'f2_intangible_bloat_pct', 0.1, 1.0, 0.05,
+             note="e.g. 0.5 = intangibles > 50% of total assets")
+
+        s = rule_section(tab1, "Revenue & Profitability Trends",
+            "Detects sustained revenue decline or consecutive loss-making years, measured "
+            "against filed accounts. Occasional losses can be acceptable; persistent trends "
+            "are a warning sign.")
         trow(s, "Revenue cumulative decline % to flag", 'revenue_decline_pct', -80, -1, 1,
              note="e.g. -10 flags a 10% cumulative decline")
         trow(s, "Revenue decline measured over N years", 'revenue_decline_years', 1, 10, 1)
         trow(s, "Consecutive loss-making years to flag", 'consecutive_loss_years', 1, 10, 1)
 
-        s = rule_section(tab1, None, "Predictive Financial Outlook",
+        s = rule_section(tab1, "Return on Equity (ROE)",
+            "Measures how efficiently the company uses its capital base (net assets / "
+            "shareholders' equity) to generate profit. Sustained negative ROE means the "
+            "company is destroying value for its owners. Skipped if net assets are ≤ 0.")
+        trow(s, "Consecutive years of negative ROE — MEDIUM", 'roe_negative_years_medium', 1, 8, 1)
+        trow(s, "Consecutive years of negative ROE — HIGH", 'roe_negative_years_high', 2, 10, 1)
+
+        s = rule_section(tab1, "Asset Turnover Efficiency",
+            "Measures how effectively the company uses its total asset base to generate "
+            "revenue (Revenue ÷ Total Assets). A declining ratio suggests assets are becoming "
+            "progressively less productive. A very low absolute ratio may indicate dormant "
+            "or non-operational assets.")
+        trow(s, "Consecutive years of declining ratio to flag", 'asset_turnover_decline_years', 1, 8, 1)
+        trow(s, "Absolute ratio — warn if below (all years)", 'asset_turnover_min', 0.05, 2.0, 0.05,
+             note="e.g. 0.3 = revenue less than 30% of total assets")
+
+        s = rule_section(tab1, "Profit Margin Compression",
+            "Tracks the net profit margin (Profit/Loss ÷ Revenue) as a trend, separately from "
+            "absolute revenue movements. Margin compression — even with growing revenue — "
+            "signals rising cost pressure or pricing weakness.")
+        trow(s, "Consecutive years of negative margin — MEDIUM", 'profit_margin_negative_years_medium', 1, 8, 1)
+        trow(s, "Consecutive years of negative margin — HIGH", 'profit_margin_negative_years_high', 2, 10, 1)
+        trow(s, "Overall margin compression to flag (percentage points)", 'profit_margin_compression_pts',
+             2.0, 50.0, 1.0, note="e.g. 10 = margin fell by 10pp over available period")
+
+        s = rule_section(tab1, "Staff Cost Burden",
+            "Compares staff costs to revenue to assess operational fragility. A very high "
+            "ratio leaves little margin for other costs and makes the organisation vulnerable "
+            "to any revenue shortfall. Requires staff costs to be entered manually in "
+            "Supplementary Accounts Data.")
+        trow(s, "Staff costs as proportion of revenue — MEDIUM", 'staff_cost_ratio_max',
+             0.30, 0.99, 0.05, note="e.g. 0.75 = staff costs > 75% of revenue")
+        trow(s, "Staff costs as proportion of revenue — HIGH (critical)", 'staff_cost_ratio_critical',
+             0.50, 1.0, 0.05)
+
+        s = rule_section(tab1, "Predictive Financial Outlook",
             "Uses linear extrapolation of filed accounts to project key metrics one year "
             "forward. Flags when the trajectory points toward insolvency, worsening losses, "
             "or revenue collapse. Requires at least 2 years of accounts.")
         trow(s, "Projected profit/loss worsening % to flag", 'predictive_profit_decline_pct',
              5, 80, 5, note="Applied as: projected worsening exceeds this %")
-        trow(s, "Projected revenue decline % to flag", 'predictive_revenue_decline_pct',
-             5, 50, 5)
+        trow(s, "Projected revenue decline % to flag", 'predictive_revenue_decline_pct', 5, 50, 5)
 
-        s = rule_section(tab1, None, "Director & PSC Turnover",
+        s = rule_section(tab1, "Director & PSC Turnover",
             "Counts director appointments and resignations in a rolling window. High turnover "
             "can indicate governance instability or internal disputes. Exactly double the "
             "warning threshold triggers Critical severity.")
         trow(s, "Total director changes to flag", 'director_churn_count', 1, 20, 1)
         trow(s, "Rolling window for changes (months)", 'director_churn_months', 3, 60, 3)
 
-        s = rule_section(tab1, None, "Filing Compliance",
+        s = rule_section(tab1, "Filing Compliance",
             "Checks for late or missing annual returns and accounts. Persistent late filing "
             "indicates poor governance and may affect the reliability of financial information.")
         trow(s, "Late filings to flag", 'late_filings_count', 1, 10, 1)
         trow(s, "Late filings measured over N years", 'late_filings_period', 1, 10, 1)
 
-        s = rule_section(tab1, None, "Debt-to-Equity Ratio",
+        s = rule_section(tab1, "Debt-to-Equity Ratio",
             "Compares total debt to shareholders' equity. Retained for future use in the "
             "report — not currently used to generate a finding.")
         trow(s, "Debt-to-equity ratio — warn if above", 'debt_to_equity_max', 0.5, 10.0, 0.5)
@@ -451,7 +523,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         # ── Tab 2: Deep Investigation ────────────────────────────────────────
         tab2 = make_tab("Deep Investigation")
 
-        s = rule_section(tab2, None, "Director Insolvency History",
+        s = rule_section(tab2, "Director Insolvency History",
             "Checks whether current directors have previously been associated with companies "
             "that entered liquidation, administration, or dissolution. Multiple associations "
             "may indicate elevated risk or poor business judgment.")
@@ -460,18 +532,17 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         trow(s, "Insolvent companies per director — Critical threshold", 'insolvency_critical_count',
              2, 15, 1)
 
-        s = rule_section(tab2, None, "Phoenix Company Detection",
+        s = rule_section(tab2, "Phoenix Company Detection",
             "Compares the current company name against dissolved or liquidated companies "
             "associated with the same directors. A high name-similarity score suggests the "
             "company may be a phoenix of a previously failed entity.")
-        trow(s, "Name similarity % to flag as a phoenix match", 'phoenix_similarity_pct',
-             50, 99, 5)
+        trow(s, "Name similarity % to flag as a phoenix match", 'phoenix_similarity_pct', 50, 99, 5)
         trow(s, "Number of officers to check (top N)", 'phoenix_officer_count', 1, 20, 1)
 
         # ── Tab 3: Grants Analysis ───────────────────────────────────────────
         tab3 = make_tab("Grants Analysis")
 
-        s = rule_section(tab3, "G1", "Match-Funding Capacity & Liquidity",
+        s = rule_section(tab3, "Match-Funding Capacity & Liquidity",
             "Assesses whether the organisation has sufficient liquidity to manage a grant, "
             "particularly when payments are made in arrears or on a milestone basis. Compares "
             "cash at bank and net current assets to the proposed award amount.")
@@ -480,19 +551,16 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         trow(s, "NCA comfortable — OK if NCA > X × proposed award", 'g1_nca_comfortable_pct',
              0.10, 1.0, 0.10)
 
-        s = rule_section(tab3, "G2", "Grant Dependency Ratio  (standard mode only)",
+        s = rule_section(tab3, "Grant Dependency Ratio  (standard mode only)",
             "Compares total grant income in recent years to the organisation's net assets and "
             "annual revenue. High grant dependency creates fragility if grant income is "
             "disrupted. Not applied when Intermediate Grant Maker mode is selected.")
         trow(s, "Grant lookback period (years)", 'g2_lookback_years', 1, 10, 1)
-        trow(s, "Grant-to-net-assets ratio — HIGH threshold", 'g2_dependency_high',
-             0.5, 10.0, 0.5)
-        trow(s, "Grant-to-net-assets ratio — MEDIUM threshold", 'g2_dependency_medium',
-             0.1, 5.0, 0.1)
-        trow(s, "Grant-to-revenue ratio — escalate to MEDIUM if above", 'g2_revenue_ratio',
-             0.1, 2.0, 0.1)
+        trow(s, "Grant-to-net-assets ratio — HIGH threshold", 'g2_dependency_high', 0.5, 10.0, 0.5)
+        trow(s, "Grant-to-net-assets ratio — MEDIUM threshold", 'g2_dependency_medium', 0.1, 5.0, 0.1)
+        trow(s, "Grant-to-revenue ratio — escalate to MEDIUM if above", 'g2_revenue_ratio', 0.1, 2.0, 0.1)
 
-        s = rule_section(tab3, "G3", "Grant Management Experience  (IGM mode only)",
+        s = rule_section(tab3, "Grant Management Experience  (IGM mode only)",
             "Compares the proposed award to the largest grant the organisation has previously "
             "received, as a proxy for their experience managing grants at this scale. Only "
             "applied when the Intermediate Grant Maker option is selected.")
@@ -501,42 +569,10 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         trow(s, "Award above historical maximum — MEDIUM threshold (%)", 'g3_scale_medium_pct',
              10, 200, 10)
 
-        s = rule_section(tab3, None, "Composite Warning",
-            "When several cross-analysis rules each return a HIGH result, an additional "
-            "summary warning is added to the report to highlight the combined risk profile.")
-        trow(s, "Number of HIGH results to trigger composite warning", 'composite_high_count',
-             2, 6, 1)
-
-        # ── Tab 4: Financial Health ──────────────────────────────────────────
-        tab4 = make_tab("Financial Health")
-
-        s = rule_section(tab4, "F1", "Capital Erosion",
-            "Tracks whether net assets are declining year on year. Sustained erosion of the "
-            "equity base is a leading indicator of financial distress, particularly if driven "
-            "by operating losses rather than planned distributions.")
-        trow(s, "Consecutive net asset decline years — HIGH", 'f1_erosion_high_years', 2, 10, 1)
-        trow(s, "Consecutive net asset decline years — MEDIUM", 'f1_erosion_medium_years', 1, 8, 1)
-
-        s = rule_section(tab4, "F2", "Intangible Asset Bloat",
-            "Checks whether intangible assets (goodwill, IP, software) represent an unusually "
-            "large share of total assets. High intangible ratios can inflate the balance sheet; "
-            "these assets may not be realisable in a wind-down scenario.")
-        trow(s, "Intangibles as proportion of total assets — warn if above",
-             'f2_intangible_bloat_pct', 0.1, 1.0, 0.05,
-             note="e.g. 0.5 = intangibles > 50% of total assets")
-
-        s = rule_section(tab4, "F3", "Working Capital Deterioration",
-            "Monitors the trend in net current assets (current assets minus current "
-            "liabilities). A single large drop or sustained multi-year decline signals "
-            "worsening short-term financial health.")
-        trow(s, "Single-year NCA drop proportion to flag", 'f3_nca_drop_pct', 0.05, 0.90, 0.05,
-             note="e.g. 0.25 = a 25% drop in one year triggers a flag")
-
-        s = rule_section(tab4, "F4", "Leverage Creep",
-            "Checks whether total long-term creditors have been rising consistently while net "
-            "assets are stagnant or declining. Increasing leverage in this context creates "
-            "refinancing and solvency risk.")
-        trow(s, "Consecutive creditor-increase years to flag", 'f4_leverage_years', 2, 8, 1)
+        s = rule_section(tab3, "Composite Warning",
+            "When several checks each return a HIGH result, an additional summary warning is "
+            "added to the report to highlight the combined risk profile.")
+        trow(s, "Number of HIGH results to trigger composite warning", 'composite_high_count', 2, 10, 1)
 
         # ── Bottom buttons ───────────────────────────────────────────────────
         btn_frame = ttk.Frame(win)
@@ -559,7 +595,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             'g3_scale_medium_pct': 50.0, 'f1_erosion_high_years': 3,
             'f1_erosion_medium_years': 2, 'f2_intangible_bloat_pct': 0.5,
             'f3_nca_drop_pct': 0.25, 'f4_leverage_years': 3,
-            'composite_high_count': 3,
+            'composite_high_count': 3, 'roe_negative_years_medium': 2,
+            'roe_negative_years_high': 3, 'asset_turnover_decline_years': 2,
+            'asset_turnover_min': 0.3, 'profit_margin_negative_years_medium': 2,
+            'profit_margin_negative_years_high': 3, 'profit_margin_compression_pts': 10.0,
+            'staff_cost_ratio_max': 0.75, 'staff_cost_ratio_critical': 0.90,
         }
 
         def _reset():
