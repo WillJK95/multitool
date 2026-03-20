@@ -238,6 +238,49 @@ INCOME_STATEMENT_FIELDS = [
 
 PAYMENT_MECHANISMS = ['Unknown', 'Advance', 'Arrears', 'Milestone-based']
 
+# --- Charity EDD Thresholds ---
+# Default thresholds for charity-mode due diligence checks.  These override
+# the company defaults when the user selects "Charity" as the entity type.
+CHARITY_EDD_THRESHOLDS = {
+    # Reserves-to-expenditure ratio (< 3 months reserves = flag)
+    'reserves_to_expenditure_min': 0.25,
+    # Consecutive deficit years (exp > inc) before flagging
+    'consecutive_deficit_years': 3,
+    # Income decline % over 2 years to flag
+    'income_decline_pct': -15,
+    'income_decline_years': 2,
+    # Late filings
+    'late_filings_count': 2,
+    'late_filings_period': 5,
+    # Trustee count
+    'trustee_count_low': 3,
+    'trustee_count_high': 15,
+    # Fundraising cost ratio (exp_raising_funds / inc_total)
+    'fundraising_cost_ratio': 0.30,
+    # Government funding concentration
+    'govt_funding_concentration': 0.70,
+    # Income volatility (year-on-year change %)
+    'income_volatility_pct': 40,
+    # High earner proportionality (total high-earner cost band % of income)
+    'high_earner_income_pct': 0.25,
+    'high_earner_small_charity_threshold': 500_000,
+    # Broad area claim for small charities
+    'broad_area_country_count': 10,
+    'broad_area_income_threshold': 100_000,
+}
+
+# Standard charity policies expected to be held (per Charity Commission guidance)
+CHARITY_EXPECTED_POLICIES = [
+    'risk_management',
+    'safeguarding',
+    'complaints_handling',
+    'conflicts_of_interest',
+    'investing',
+    'paying_staff',
+    'volunteers',
+    'grant_making',
+]
+
 IXBRL_NAMESPACES = {
     'ix': 'http://www.xbrl.org/2013/inlineXBRL',
     'ixt': 'http://www.xbrl.org/inlineXBRL/transformation/2015-02-26',
