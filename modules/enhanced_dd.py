@@ -4284,7 +4284,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         # Summary table
         html_out += '''
         <table class="cross-analysis-summary">
-            <tr><th>Rule</th><th>Check</th><th>Risk</th><th>Confidence</th></tr>
+            <tr><th>Check</th><th>Risk</th><th>Confidence</th></tr>
         '''
         for r in report.results:
             risk_class = r.risk_flag.lower().replace('_', '-')
@@ -4292,7 +4292,6 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             emoji = risk_emoji.get(r.risk_flag, '')
             html_out += f'''
             <tr>
-                <td><span class="rule-id-badge">{html.escape(r.rule_id)}</span></td>
                 <td>{html.escape(r.title)}</td>
                 <td><span class="risk-{risk_class}">{emoji} {html.escape(r.risk_flag)}</span></td>
                 <td><span class="confidence-{conf_class}">{html.escape(r.confidence)}</span></td>
@@ -4312,7 +4311,6 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             html_out += f'''
             <div class="cross-rule-card {risk_class}">
                 <h3>
-                    <span class="rule-id-badge">{html.escape(r.rule_id)}</span>
                     {html.escape(r.title)}
                     <span class="risk-{risk_class}">{emoji} {html.escape(r.risk_flag)}</span>
                     <span class="confidence-{conf_class}">{html.escape(r.confidence)}</span>
@@ -4322,10 +4320,24 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
             # Trend data table
             if r.trend_data:
-                html_out += '<table class="trend-table"><tr><th>Year</th><th>Value (£)</th><th>YoY Change</th></tr>'
+                vfmt = getattr(r, 'value_format', 'currency')
+                if vfmt == 'percentage':
+                    col_header = 'Value (%)'
+                elif vfmt == 'multiplier':
+                    col_header = 'Value (\u00d7)'
+                else:
+                    col_header = 'Value (\u00a3)'
+                html_out += f'<table class="trend-table"><tr><th>Year</th><th>{col_header}</th><th>YoY Change</th></tr>'
                 for td in r.trend_data:
-                    change_str = f"{td['change_pct']:+.1f}%" if td.get('change_pct') is not None else '—'
-                    html_out += f"<tr><td>{td['year']}</td><td>£{td['value']:,.0f}</td><td>{change_str}</td></tr>"
+                    change_str = f"{td['change_pct']:+.1f}%" if td.get('change_pct') is not None else '\u2014'
+                    v = td['value']
+                    if vfmt == 'percentage':
+                        val_str = f"{v:.1f}%"
+                    elif vfmt == 'multiplier':
+                        val_str = f"{v:.2f}\u00d7"
+                    else:
+                        val_str = f"\u00a3{v:,.0f}"
+                    html_out += f"<tr><td>{td['year']}</td><td>{val_str}</td><td>{change_str}</td></tr>"
                 html_out += '</table>'
 
             html_out += f'''
@@ -4387,8 +4399,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             if limited_rules:
                 html_output += f'{len(limited_rules)} ran with limited data. '
             if skipped_rules:
-                rule_ids = ', '.join(r.rule_id for r in skipped_rules)
-                html_output += f'{len(skipped_rules)} skipped due to insufficient data ({rule_ids}). '
+                html_output += f'{len(skipped_rules)} skipped due to insufficient data. '
             html_output += '</li>'
 
         html_output += '<li><strong>Scope Limitations:</strong> This report does not include: site visits, management interviews, verification of trading activity, credit reference checks, industry benchmarking, assessment of directors\' personal financial positions, or review of legal proceedings beyond what appears in the public registry.</li>'

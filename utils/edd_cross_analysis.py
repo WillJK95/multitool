@@ -24,6 +24,7 @@ class CrossAnalysisResult:
     narrative: str
     recommendation: str
     trend_data: List[Dict] = field(default_factory=list)
+    value_format: str = 'currency'  # 'currency', 'percentage', 'multiplier'
 
 
 @dataclass
@@ -1177,6 +1178,7 @@ def rule_roe_trend(unified: UnifiedFinancialData, thresholds: CrossAnalysisThres
             "Capital efficiency does not raise concerns."
         ),
         trend_data=trend_data,
+        value_format='percentage',
     )
 
 
@@ -1261,6 +1263,7 @@ def rule_asset_turnover(unified: UnifiedFinancialData, thresholds: CrossAnalysis
             "Asset utilisation does not raise concerns."
         ),
         trend_data=trend_data,
+        value_format='multiplier',
     )
 
 
@@ -1360,6 +1363,7 @@ def rule_profit_margin(unified: UnifiedFinancialData, thresholds: CrossAnalysisT
             "Profit margin does not raise concerns."
         ),
         trend_data=trend_data,
+        value_format='percentage',
     )
 
 
@@ -1455,6 +1459,7 @@ def rule_staff_cost_burden(unified: UnifiedFinancialData, thresholds: CrossAnaly
             "Staff cost burden does not raise concerns."
         ),
         trend_data=trend_data,
+        value_format='percentage',
     )
 
 
