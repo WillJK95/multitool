@@ -324,10 +324,9 @@ CHARITY_EXPECTED_POLICIES = [
     'safeguarding',
     'complaints_handling',
     'conflicts_of_interest',
-    'investing',
+    'investment',
     'paying_staff',
     'volunteers',
-    'grant_making',
 ]
 
 IXBRL_NAMESPACES = {

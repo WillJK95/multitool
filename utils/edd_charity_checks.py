@@ -647,7 +647,7 @@ def check_policies(charity_data: dict, thresholds: dict) -> List[dict]:
     # Normalise policy names from the API response
     held_policies = set()
     for p in policies:
-        name = (p.get('policy_name') or '').lower().replace(' ', '_').replace('-', '_')
+        name = (p.get('policy_desc') or '').lower().replace(' ', '_').replace('-', '_')
         held_policies.add(name)
 
     missing = []
@@ -811,7 +811,7 @@ def check_area_of_operation(charity_data: dict, thresholds: dict) -> List[dict]:
         return findings
 
     # Check for overseas-only
-    area_names = [str(a.get('geographic_area_description', '')).lower() for a in areas]
+    area_names = [str(a.get('area_of_operation', '')).lower() for a in areas]
     uk_keywords = ['england', 'wales', 'scotland', 'northern ireland', 'united kingdom', 'uk']
     has_uk = any(kw in name for name in area_names for kw in uk_keywords)
 
