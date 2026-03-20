@@ -37,6 +37,37 @@ class CrossAnalysisReport:
     accounts_type: Optional[str] = None
 
 
+@dataclass
+class CrossAnalysisThresholds:
+    """Configurable thresholds for all cross-analysis rules.
+
+    All fields have sensible defaults matching the previously hard-coded values.
+    Pass a customised instance to ``run_cross_analysis`` to override.
+    """
+    # G1: Match-Funding Capacity
+    g1_cash_buffer_pct: float = 0.25       # Cash < this * award → MEDIUM flag
+    g1_nca_comfortable_pct: float = 0.5   # NCA > this * award → LOW (comfortable)
+    # G2: Grant Dependency
+    g2_lookback_years: int = 3
+    g2_dependency_high: float = 2.0
+    g2_dependency_medium: float = 1.0
+    g2_revenue_ratio: float = 0.5
+    # G3: Grant Management Experience
+    g3_scale_high_pct: float = 100.0      # Award > historical max by this % → HIGH
+    g3_scale_medium_pct: float = 50.0     # Award > historical max by this % → MEDIUM
+    # F1: Capital Erosion
+    f1_erosion_high_years: int = 3
+    f1_erosion_medium_years: int = 2
+    # F2: Intangible Asset Bloat
+    f2_intangible_bloat_pct: float = 0.5
+    # F3: Working Capital Deterioration
+    f3_nca_drop_pct: float = 0.25
+    # F4: Leverage Creep
+    f4_leverage_years: int = 3
+    # Composite warning
+    composite_high_count: int = 3
+
+
 # ---------------------------------------------------------------------------
 # Unified data layer
 # ---------------------------------------------------------------------------
@@ -266,7 +297,10 @@ def rule_g1_match_funding_capacity(
     unified: UnifiedFinancialData,
     proposed_award: float,
     payment_mechanism: str,
+    thresholds: CrossAnalysisThresholds = None,
 ) -> CrossAnalysisResult:
+    if thresholds is None:
+        thresholds = CrossAnalysisThresholds()
     """G1: Match-Funding Capacity and Liquidity."""
     title = "Match-Funding Capacity & Liquidity"
 
@@ -316,19 +350,19 @@ def rule_g1_match_funding_capacity(
             f"the company may struggle to bridge funding gaps between milestones."
         )
 
-    if cash is not None and cash < 0.25 * proposed_award and mechanism_lower in ('arrears', 'milestone-based'):
+    if cash is not None and cash < thresholds.g1_cash_buffer_pct * proposed_award and mechanism_lower in ('arrears', 'milestone-based'):
         new_flag = "MEDIUM"
         if risk_flag != "HIGH":
             risk_flag = new_flag
         narratives.append(
-            f"Cash at bank (£{cash:,.0f}) is less than 25% of the proposed award "
+            f"Cash at bank (£{cash:,.0f}) is less than {thresholds.g1_cash_buffer_pct*100:.0f}% of the proposed award "
             f"(£{proposed_award:,.0f}). Limited cash buffer relative to award size."
         )
 
-    if nca is not None and nca > 0 and nca > 0.5 * proposed_award and risk_flag not in ("HIGH", "MEDIUM"):
+    if nca is not None and nca > 0 and nca > thresholds.g1_nca_comfortable_pct * proposed_award and risk_flag not in ("HIGH", "MEDIUM"):
         risk_flag = "LOW"
         narratives.append(
-            f"Net current assets (£{nca:,.0f}) exceed 50% of the proposed award "
+            f"Net current assets (£{nca:,.0f}) exceed {thresholds.g1_nca_comfortable_pct*100:.0f}% of the proposed award "
             f"(£{proposed_award:,.0f}), suggesting adequate liquidity."
         )
 
@@ -363,7 +397,10 @@ def rule_g1_match_funding_capacity(
 def rule_g2_grant_dependency(
     unified: UnifiedFinancialData,
     grants_data: Optional[List[Dict]],
+    thresholds: CrossAnalysisThresholds = None,
 ) -> CrossAnalysisResult:
+    if thresholds is None:
+        thresholds = CrossAnalysisThresholds()
     """G2: Grant-Dependency Ratio."""
     title = "Grant-Dependency Ratio"
 
@@ -384,9 +421,9 @@ def rule_g2_grant_dependency(
             recommendation="Upload accounts to enable this analysis.",
         )
 
-    # Sum grants in last 3 years
+    # Sum grants in last N years
     now = datetime.now()
-    three_years_ago = now.replace(year=now.year - 3)
+    three_years_ago = now.replace(year=now.year - thresholds.g2_lookback_years)
     total_grants_3yr = 0.0
     grant_count_3yr = 0
 
@@ -423,21 +460,19 @@ def rule_g2_grant_dependency(
     elif net_assets > 0:
         grant_dependency_ratio = total_grants_3yr / net_assets
         narratives.append(
-            f"Total grants received in the last 3 years: £{total_grants_3yr:,.0f} "
+            f"Total grants received in the last {thresholds.g2_lookback_years} years: £{total_grants_3yr:,.0f} "
             f"({grant_count_3yr} grants). Net assets: £{net_assets:,.0f}. "
             f"Grant dependency ratio: {grant_dependency_ratio:.2f}."
         )
 
-        if grant_dependency_ratio > 2.0:
+        if grant_dependency_ratio > thresholds.g2_dependency_high:
             risk_flag = "HIGH"
             narratives.append(
                 "Cumulative grant funding significantly exceeds the net asset base."
             )
-        elif grant_dependency_ratio > 1.0:
+        elif grant_dependency_ratio > thresholds.g2_dependency_medium:
             risk_flag = "MEDIUM"
             narratives.append("Grant funding exceeds net assets.")
-        elif grant_dependency_ratio < 0.5:
-            risk_flag = "LOW"
 
     # Turnover enrichment
     turnover = unified.get_metric('Revenue') or unified.get_metric('Turnover')
@@ -447,7 +482,7 @@ def rule_g2_grant_dependency(
             f"Grant-to-revenue ratio: {grant_revenue_ratio:.2f} "
             f"(grants as proportion of annual turnover of £{turnover:,.0f})."
         )
-        if grant_revenue_ratio > 0.5:
+        if grant_revenue_ratio > thresholds.g2_revenue_ratio:
             if risk_flag == "LOW":
                 risk_flag = "MEDIUM"
             narratives.append(
@@ -517,7 +552,9 @@ def _build_trend_data(series: Dict[int, float]) -> List[Dict]:
     return trend
 
 
-def rule_f1_capital_erosion(unified: UnifiedFinancialData) -> CrossAnalysisResult:
+def rule_f1_capital_erosion(unified: UnifiedFinancialData, thresholds: CrossAnalysisThresholds = None) -> CrossAnalysisResult:
+    if thresholds is None:
+        thresholds = CrossAnalysisThresholds()
     """F1: Profitability Proxy — Capital Erosion."""
     title = "Capital Erosion (Profitability Proxy)"
 
@@ -557,13 +594,13 @@ def rule_f1_capital_erosion(unified: UnifiedFinancialData) -> CrossAnalysisResul
         )
 
     # Consecutive decline
-    if decline_count >= 3:
+    if decline_count >= thresholds.f1_erosion_high_years:
         risk_flag = "HIGH"
         narratives.append(
             f"Capital and reserves have declined for {decline_count} consecutive years, "
             "indicating sustained erosion from persistent losses or aggressive extraction."
         )
-    elif decline_count >= 2:
+    elif decline_count >= thresholds.f1_erosion_medium_years:
         if risk_flag != "HIGH":
             risk_flag = "MEDIUM"
         narratives.append(
@@ -574,7 +611,7 @@ def rule_f1_capital_erosion(unified: UnifiedFinancialData) -> CrossAnalysisResul
     share_cap_series = unified.get_metric_series('ShareCapital')
     if share_cap_series and len(share_cap_series) >= 2:
         sc_increase = _consecutive_increase_count(share_cap_series)
-        if sc_increase >= 1 and decline_count >= 2:
+        if sc_increase >= 1 and decline_count >= thresholds.f1_erosion_medium_years:
             narratives.append(
                 "Note: Called-up share capital has increased during this period. "
                 "Capital erosion may be partially masked by new equity issuance."
@@ -600,7 +637,9 @@ def rule_f1_capital_erosion(unified: UnifiedFinancialData) -> CrossAnalysisResul
     )
 
 
-def rule_f2_intangible_asset_bloat(unified: UnifiedFinancialData) -> CrossAnalysisResult:
+def rule_f2_intangible_asset_bloat(unified: UnifiedFinancialData, thresholds: CrossAnalysisThresholds = None) -> CrossAnalysisResult:
+    if thresholds is None:
+        thresholds = CrossAnalysisThresholds()
     """F2: Intangible Asset Bloat."""
     title = "Intangible Asset Bloat"
 
@@ -643,12 +682,12 @@ def rule_f2_intangible_asset_bloat(unified: UnifiedFinancialData) -> CrossAnalys
             f"(£{intangibles:,.0f})."
         )
 
-    # Intangibles > 50% of total assets
-    if total_assets and total_assets > 0 and intangibles > 0.5 * total_assets:
+    # Intangibles > threshold % of total assets
+    if total_assets and total_assets > 0 and intangibles > thresholds.f2_intangible_bloat_pct * total_assets:
         if risk_flag != "HIGH":
             risk_flag = "MEDIUM"
         narratives.append(
-            f"Intangible assets (£{intangibles:,.0f}) exceed 50% of total assets "
+            f"Intangible assets (£{intangibles:,.0f}) exceed {thresholds.f2_intangible_bloat_pct*100:.0f}% of total assets "
             f"(£{total_assets:,.0f}). Realisable value in distress would be significantly lower."
         )
 
@@ -687,7 +726,9 @@ def rule_f2_intangible_asset_bloat(unified: UnifiedFinancialData) -> CrossAnalys
     )
 
 
-def rule_f3_working_capital_deterioration(unified: UnifiedFinancialData) -> CrossAnalysisResult:
+def rule_f3_working_capital_deterioration(unified: UnifiedFinancialData, thresholds: CrossAnalysisThresholds = None) -> CrossAnalysisResult:
+    if thresholds is None:
+        thresholds = CrossAnalysisThresholds()
     """F3: Working Capital Deterioration."""
     title = "Working Capital Deterioration"
 
@@ -728,19 +769,19 @@ def rule_f3_working_capital_deterioration(unified: UnifiedFinancialData) -> Cros
     prior_year = years_sorted[-2] if len(years_sorted) >= 2 else None
     prior_nca = nca_series[prior_year] if prior_year is not None else None
 
-    # Single-year significant drop: latest year dropped >25% from prior year
+    # Single-year significant drop: latest year dropped > threshold from prior year
     single_year_large_drop = (
         prior_nca is not None
         and prior_nca != 0
-        and ((latest_nca - prior_nca) / abs(prior_nca)) < -0.25
+        and ((latest_nca - prior_nca) / abs(prior_nca)) < -thresholds.f3_nca_drop_pct
     )
 
-    # Peak-to-latest deterioration: latest NCA is >25% below the historical peak
+    # Peak-to-latest deterioration: latest NCA is > threshold below the historical peak
     peak_to_latest_deterioration = (
         peak_nca != 0
         and peak_nca > 0
         and latest_nca < peak_nca
-        and ((latest_nca - peak_nca) / abs(peak_nca)) < -0.25
+        and ((latest_nca - peak_nca) / abs(peak_nca)) < -thresholds.f3_nca_drop_pct
     )
 
     # Basic version
@@ -824,7 +865,9 @@ def rule_f3_working_capital_deterioration(unified: UnifiedFinancialData) -> Cros
     )
 
 
-def rule_f4_leverage_creep(unified: UnifiedFinancialData) -> CrossAnalysisResult:
+def rule_f4_leverage_creep(unified: UnifiedFinancialData, thresholds: CrossAnalysisThresholds = None) -> CrossAnalysisResult:
+    if thresholds is None:
+        thresholds = CrossAnalysisThresholds()
     """F4: Leverage Creep."""
     title = "Leverage Creep"
 
@@ -855,14 +898,14 @@ def rule_f4_leverage_creep(unified: UnifiedFinancialData) -> CrossAnalysisResult
         na_increase = _consecutive_increase_count(net_assets_series)
         na_stagnant_declining = na_decline >= 1 or na_increase == 0
 
-    if increase_count >= 3 and na_stagnant_declining:
+    if increase_count >= thresholds.f4_leverage_years and na_stagnant_declining:
         risk_flag = "MEDIUM"
         narratives.append(
             f"Long-term creditors have increased for {increase_count} consecutive years "
             "while net assets are stagnant or declining. This indicates increasing "
             "long-term indebtedness without corresponding asset growth."
         )
-    elif increase_count >= 3:
+    elif increase_count >= thresholds.f4_leverage_years:
         risk_flag = "MEDIUM"
         narratives.append(
             f"Long-term creditors have increased for {increase_count} consecutive years."
@@ -921,7 +964,10 @@ def rule_f4_leverage_creep(unified: UnifiedFinancialData) -> CrossAnalysisResult
 def rule_g3_grant_management_experience(
     grants_data: Optional[List[Dict]],
     proposed_award: float,
+    thresholds: CrossAnalysisThresholds = None,
 ) -> CrossAnalysisResult:
+    if thresholds is None:
+        thresholds = CrossAnalysisThresholds()
     """G3: Grant Management Experience (IGM mode only).
 
     Compares the proposed award to the largest grant the organisation has
@@ -969,7 +1015,7 @@ def rule_g3_grant_management_experience(
     largest_historical = max(amounts)
     excess_pct = ((proposed_award - largest_historical) / largest_historical) * 100
 
-    if excess_pct >= 100:
+    if excess_pct >= thresholds.g3_scale_high_pct:
         risk_flag = "HIGH"
         narrative = (
             f"The proposed award (£{proposed_award:,.0f}) is more than double the largest grant "
@@ -983,7 +1029,7 @@ def rule_g3_grant_management_experience(
             "infrastructure to manage a grant of this scale. Strongly consider phased or milestone-"
             "based payments, enhanced monitoring conditions, and a capacity review prior to award."
         )
-    elif excess_pct >= 50:
+    elif excess_pct >= thresholds.g3_scale_medium_pct:
         risk_flag = "MEDIUM"
         narrative = (
             f"The proposed award (£{proposed_award:,.0f}) is {excess_pct:.0f}% larger than the "
@@ -1026,32 +1072,36 @@ def run_cross_analysis(
     company_age_months: Optional[float] = None,
     accounts_type: Optional[str] = None,
     igm_mode: bool = False,
+    thresholds: CrossAnalysisThresholds = None,
 ) -> CrossAnalysisReport:
     """Run all cross-analysis rules and assemble the report.
 
     When ``igm_mode`` is True the grant-dependency rule (G2) is replaced by
     the grant management experience rule (G3), which is more appropriate for
     organisations that are themselves grant-giving bodies.
+    Pass a ``CrossAnalysisThresholds`` instance to override default thresholds.
     """
+    if thresholds is None:
+        thresholds = CrossAnalysisThresholds()
 
     if igm_mode:
-        grant_rule = rule_g3_grant_management_experience(grants_data, proposed_award)
+        grant_rule = rule_g3_grant_management_experience(grants_data, proposed_award, thresholds)
     else:
-        grant_rule = rule_g2_grant_dependency(unified, grants_data)
+        grant_rule = rule_g2_grant_dependency(unified, grants_data, thresholds)
 
     results = [
-        rule_g1_match_funding_capacity(unified, proposed_award, payment_mechanism),
+        rule_g1_match_funding_capacity(unified, proposed_award, payment_mechanism, thresholds),
         grant_rule,
-        rule_f1_capital_erosion(unified),
-        rule_f2_intangible_asset_bloat(unified),
-        rule_f3_working_capital_deterioration(unified),
-        rule_f4_leverage_creep(unified),
+        rule_f1_capital_erosion(unified, thresholds),
+        rule_f2_intangible_asset_bloat(unified, thresholds),
+        rule_f3_working_capital_deterioration(unified, thresholds),
+        rule_f4_leverage_creep(unified, thresholds),
     ]
 
-    # Composite warning: 3+ HIGH flags
+    # Composite warning
     high_count = sum(1 for r in results if r.risk_flag == "HIGH")
     composite_warning = None
-    if high_count >= 3:
+    if high_count >= thresholds.composite_high_count:
         composite_warning = (
             f"Multiple high-risk indicators detected across {high_count} checks. "
             "This company warrants detailed manual review before any award decision."

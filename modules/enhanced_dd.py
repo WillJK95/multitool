@@ -45,6 +45,7 @@ from ..utils.edd_visualizations import (
 )
 from ..utils.edd_cross_analysis import (
     UnifiedFinancialData,
+    CrossAnalysisThresholds,
     run_cross_analysis,
 )
 
@@ -56,18 +57,55 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self.financial_analyzer = None
         self.accounts_loaded = False
         
-        # Default thresholds
+        # Default thresholds (used by all check methods and cross-analysis rules)
         self.thresholds = {
+            # Solvency
+            'solvency_decline_pct': 30,
+            # Liquidity
             'current_ratio_min': 1.0,
+            'current_ratio_critical': 0.5,
             'quick_ratio_min': 0.5,
+            'cash_pct_min': 10,
             'debt_to_equity_max': 2.0,
+            # Revenue trends
             'revenue_decline_pct': -10,
             'revenue_decline_years': 2,
             'consecutive_loss_years': 2,
+            # Predictive outlook
+            'predictive_profit_decline_pct': 20,
+            'predictive_revenue_decline_pct': 15,
+            # Governance / filing
             'late_filings_count': 2,
             'late_filings_period': 5,
             'director_churn_count': 3,
             'director_churn_months': 12,
+            # Deep investigation
+            'insolvency_company_count': 3,
+            'insolvency_critical_count': 5,
+            'phoenix_similarity_pct': 80,
+            'phoenix_officer_count': 5,
+            # Cross-analysis: G1
+            'g1_cash_buffer_pct': 0.25,
+            'g1_nca_comfortable_pct': 0.5,
+            # Cross-analysis: G2
+            'g2_lookback_years': 3,
+            'g2_dependency_high': 2.0,
+            'g2_dependency_medium': 1.0,
+            'g2_revenue_ratio': 0.5,
+            # Cross-analysis: G3
+            'g3_scale_high_pct': 100.0,
+            'g3_scale_medium_pct': 50.0,
+            # Cross-analysis: F1
+            'f1_erosion_high_years': 3,
+            'f1_erosion_medium_years': 2,
+            # Cross-analysis: F2
+            'f2_intangible_bloat_pct': 0.5,
+            # Cross-analysis: F3
+            'f3_nca_drop_pct': 0.25,
+            # Cross-analysis: F4
+            'f4_leverage_years': 3,
+            # Composite warning
+            'composite_high_count': 3,
         }
         
         self._build_ui()
@@ -193,21 +231,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 grants_var.set(True)
         igm_var.trace_add('write', _on_igm_toggle)
 
-        # Advanced settings (collapsible)
-        self.show_advanced = tk.BooleanVar(value=False)
-        advanced_toggle = ttk.Checkbutton(
+        ttk.Button(
             config_frame,
-            text="▶ Show Advanced Threshold Settings",
-            variable=self.show_advanced,
-            command=self._toggle_advanced_settings
-        )
-        advanced_toggle.pack(anchor='w', pady=(10, 0))
-        
-        self.advanced_frame = ttk.Frame(config_frame)
-        # Will be packed/unpacked by toggle
-        
-        self._build_advanced_settings()
-        
+            text="Rule Details & Thresholds...",
+            command=self._open_rules_window,
+        ).pack(anchor='w', pady=(8, 0))
+
         # Industry context
         context_frame = ttk.Frame(config_frame)
         context_frame.pack(fill=tk.X, pady=5)
@@ -292,64 +321,264 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         
         return True, "All accounts match the selected company"
 
-    def _build_advanced_settings(self):
-        """Build the advanced threshold configuration UI."""
-        # Financial ratios
-        ratios_frame = ttk.LabelFrame(self.advanced_frame, text="Financial Ratios", padding=5)
-        ratios_frame.pack(fill=tk.X, pady=2)
-        
-        self.threshold_vars = {}
-        
-        ratio_configs = [
-            ('current_ratio_min', 'Current Ratio (warn if below):', 1.0),
-            ('quick_ratio_min', 'Quick Ratio (warn if below):', 0.5),
-            ('debt_to_equity_max', 'Debt-to-Equity (warn if above):', 2.0),
-        ]
-        
-        for key, label, default in ratio_configs:
-            frame = ttk.Frame(ratios_frame)
-            frame.pack(fill=tk.X, pady=2)
-            ttk.Label(frame, text=label, width=30).pack(side=tk.LEFT)
-            var = tk.DoubleVar(value=default)
-            self.threshold_vars[key] = var
-            ttk.Entry(frame, textvariable=var, width=10).pack(side=tk.LEFT)
-        
-        # Trend analysis
-        trends_frame = ttk.LabelFrame(self.advanced_frame, text="Trend Analysis", padding=5)
-        trends_frame.pack(fill=tk.X, pady=2)
-        
-        trend_configs = [
-            ('revenue_decline_pct', 'Revenue decline % (flag if worse than):', -10),
-            ('revenue_decline_years', 'Over this many years:', 2),
-            ('consecutive_loss_years', 'Consecutive loss years (flag if ≥):', 2),
-        ]
-        
-        for key, label, default in trend_configs:
-            frame = ttk.Frame(trends_frame)
-            frame.pack(fill=tk.X, pady=2)
-            ttk.Label(frame, text=label, width=35).pack(side=tk.LEFT)
-            var = tk.IntVar(value=default) if 'years' in key else tk.DoubleVar(value=default)
-            self.threshold_vars[key] = var
-            ttk.Entry(frame, textvariable=var, width=10).pack(side=tk.LEFT)
-        
-        # Governance
-        governance_frame = ttk.LabelFrame(self.advanced_frame, text="Governance", padding=5)
-        governance_frame.pack(fill=tk.X, pady=2)
-        
-        gov_configs = [
-            ('late_filings_count', 'Late filings (flag if ≥):', 2),
-            ('late_filings_period', 'In last N years:', 5),
-            ('director_churn_count', 'Director changes (flag if ≥):', 3),
-            ('director_churn_months', 'In last N months:', 12),
-        ]
-        
-        for key, label, default in gov_configs:
-            frame = ttk.Frame(governance_frame)
-            frame.pack(fill=tk.X, pady=2)
-            ttk.Label(frame, text=label, width=30).pack(side=tk.LEFT)
-            var = tk.IntVar(value=default)
-            self.threshold_vars[key] = var
-            ttk.Entry(frame, textvariable=var, width=10).pack(side=tk.LEFT)
+    def _open_rules_window(self):
+        """Open the Rule Details & Thresholds modal window."""
+        from ..ui.scrollable_frame import ScrollableFrame
+
+        if hasattr(self, '_rules_window') and self._rules_window.winfo_exists():
+            self._rules_window.lift()
+            return
+
+        win = tk.Toplevel(self)
+        self._rules_window = win
+        win.title("Rule Details & Thresholds")
+        win.geometry("820x660")
+        win.minsize(640, 500)
+        win.transient(self)
+        win.grab_set()
+
+        # Build local working-copy vars from current thresholds
+        _INT_KEYS = {
+            'revenue_decline_years', 'consecutive_loss_years', 'late_filings_count',
+            'late_filings_period', 'director_churn_count', 'director_churn_months',
+            'insolvency_company_count', 'insolvency_critical_count',
+            'phoenix_similarity_pct', 'phoenix_officer_count', 'cash_pct_min',
+            'solvency_decline_pct', 'predictive_profit_decline_pct',
+            'predictive_revenue_decline_pct', 'g2_lookback_years',
+            'f1_erosion_high_years', 'f1_erosion_medium_years',
+            'f4_leverage_years', 'composite_high_count',
+        }
+        local_vars = {}
+        for key, val in self.thresholds.items():
+            if key in _INT_KEYS:
+                local_vars[key] = tk.IntVar(value=int(val))
+            else:
+                local_vars[key] = tk.DoubleVar(value=float(val))
+
+        notebook = ttk.Notebook(win)
+        notebook.pack(fill='both', expand=True, padx=10, pady=(10, 0))
+
+        def make_tab(title):
+            sf = ScrollableFrame(notebook)
+            notebook.add(sf, text=title)
+            return sf.scrollable_frame
+
+        def rule_section(parent, rule_id, title, description):
+            outer = ttk.Frame(parent)
+            outer.pack(fill='x', padx=6, pady=(8, 0))
+            hdr = ttk.Frame(outer)
+            hdr.pack(fill='x')
+            if rule_id:
+                id_lbl = ttk.Label(hdr, text=f" {rule_id} ", relief='solid',
+                                   padding=(4, 1), font=('TkDefaultFont', 8, 'bold'))
+                id_lbl.pack(side='left', padx=(0, 6))
+            ttk.Label(hdr, text=title, font=('TkDefaultFont', 9, 'bold')).pack(side='left')
+            frame = ttk.LabelFrame(outer, padding=(8, 4))
+            frame.pack(fill='x', pady=(4, 0))
+            desc = ttk.Label(frame, text=description, wraplength=720,
+                             justify='left', foreground='grey')
+            desc.pack(anchor='w', pady=(0, 6))
+            return frame
+
+        def trow(parent, label, key, from_, to, increment, note=''):
+            row = ttk.Frame(parent)
+            row.pack(fill='x', pady=2)
+            ttk.Label(row, text=label, width=50, anchor='w').pack(side='left')
+            is_int = key in _INT_KEYS
+            fmt = None if is_int else '%.2f'
+            sp_kwargs = dict(textvariable=local_vars[key], from_=from_, to=to,
+                             increment=increment, width=8)
+            if fmt:
+                sp_kwargs['format'] = fmt
+            ttk.Spinbox(row, **sp_kwargs).pack(side='left', padx=4)
+            if note:
+                ttk.Label(row, text=note, foreground='grey').pack(side='left', padx=4)
+
+        # ── Tab 1: Core Checks ──────────────────────────────────────────────
+        tab1 = make_tab("Core Checks")
+
+        s = rule_section(tab1, None, "Solvency — Net Asset Position",
+            "Checks whether net assets are positive and stable. Negative net assets indicate "
+            "technical insolvency. A large year-on-year decline also triggers a warning.")
+        trow(s, "Net asset year-on-year decline to flag (%)", 'solvency_decline_pct',
+             5, 80, 5, note="Flags if single-year decline exceeds this %")
+
+        s = rule_section(tab1, None, "Liquidity — Current & Quick Ratios",
+            "Assesses the company's ability to meet short-term obligations. The current ratio "
+            "compares all current assets to current liabilities; the quick ratio excludes "
+            "inventory. Low ratios indicate difficulty paying debts as they fall due.")
+        trow(s, "Current ratio — warn threshold (Elevated)", 'current_ratio_min', 0.1, 3.0, 0.1)
+        trow(s, "Current ratio — critical threshold (below = Critical severity)", 'current_ratio_critical', 0.1, 1.5, 0.1)
+        trow(s, "Quick ratio — warn threshold", 'quick_ratio_min', 0.1, 2.0, 0.1)
+        trow(s, "Cash as % of current liabilities — warn if below (%)", 'cash_pct_min',
+             1, 50, 1, note="Flags very low cash relative to short-term debts")
+
+        s = rule_section(tab1, None, "Revenue & Profitability Trends",
+            "Detects sustained revenue decline or consecutive loss-making years. Occasional "
+            "losses can be acceptable; persistent trends are a warning sign.")
+        trow(s, "Revenue cumulative decline % to flag", 'revenue_decline_pct', -80, -1, 1,
+             note="e.g. -10 flags a 10% cumulative decline")
+        trow(s, "Revenue decline measured over N years", 'revenue_decline_years', 1, 10, 1)
+        trow(s, "Consecutive loss-making years to flag", 'consecutive_loss_years', 1, 10, 1)
+
+        s = rule_section(tab1, None, "Predictive Financial Outlook",
+            "Uses linear extrapolation of filed accounts to project key metrics one year "
+            "forward. Flags when the trajectory points toward insolvency, worsening losses, "
+            "or revenue collapse. Requires at least 2 years of accounts.")
+        trow(s, "Projected profit/loss worsening % to flag", 'predictive_profit_decline_pct',
+             5, 80, 5, note="Applied as: projected worsening exceeds this %")
+        trow(s, "Projected revenue decline % to flag", 'predictive_revenue_decline_pct',
+             5, 50, 5)
+
+        s = rule_section(tab1, None, "Director & PSC Turnover",
+            "Counts director appointments and resignations in a rolling window. High turnover "
+            "can indicate governance instability or internal disputes. Exactly double the "
+            "warning threshold triggers Critical severity.")
+        trow(s, "Total director changes to flag", 'director_churn_count', 1, 20, 1)
+        trow(s, "Rolling window for changes (months)", 'director_churn_months', 3, 60, 3)
+
+        s = rule_section(tab1, None, "Filing Compliance",
+            "Checks for late or missing annual returns and accounts. Persistent late filing "
+            "indicates poor governance and may affect the reliability of financial information.")
+        trow(s, "Late filings to flag", 'late_filings_count', 1, 10, 1)
+        trow(s, "Late filings measured over N years", 'late_filings_period', 1, 10, 1)
+
+        s = rule_section(tab1, None, "Debt-to-Equity Ratio",
+            "Compares total debt to shareholders' equity. Retained for future use in the "
+            "report — not currently used to generate a finding.")
+        trow(s, "Debt-to-equity ratio — warn if above", 'debt_to_equity_max', 0.5, 10.0, 0.5)
+
+        # ── Tab 2: Deep Investigation ────────────────────────────────────────
+        tab2 = make_tab("Deep Investigation")
+
+        s = rule_section(tab2, None, "Director Insolvency History",
+            "Checks whether current directors have previously been associated with companies "
+            "that entered liquidation, administration, or dissolution. Multiple associations "
+            "may indicate elevated risk or poor business judgment.")
+        trow(s, "Insolvent companies per director — warn threshold", 'insolvency_company_count',
+             1, 10, 1)
+        trow(s, "Insolvent companies per director — Critical threshold", 'insolvency_critical_count',
+             2, 15, 1)
+
+        s = rule_section(tab2, None, "Phoenix Company Detection",
+            "Compares the current company name against dissolved or liquidated companies "
+            "associated with the same directors. A high name-similarity score suggests the "
+            "company may be a phoenix of a previously failed entity.")
+        trow(s, "Name similarity % to flag as a phoenix match", 'phoenix_similarity_pct',
+             50, 99, 5)
+        trow(s, "Number of officers to check (top N)", 'phoenix_officer_count', 1, 20, 1)
+
+        # ── Tab 3: Grants Analysis ───────────────────────────────────────────
+        tab3 = make_tab("Grants Analysis")
+
+        s = rule_section(tab3, "G1", "Match-Funding Capacity & Liquidity",
+            "Assesses whether the organisation has sufficient liquidity to manage a grant, "
+            "particularly when payments are made in arrears or on a milestone basis. Compares "
+            "cash at bank and net current assets to the proposed award amount.")
+        trow(s, "Cash buffer — warn if cash < X × proposed award", 'g1_cash_buffer_pct',
+             0.05, 0.75, 0.05, note="e.g. 0.25 = cash must be ≥25% of award")
+        trow(s, "NCA comfortable — OK if NCA > X × proposed award", 'g1_nca_comfortable_pct',
+             0.10, 1.0, 0.10)
+
+        s = rule_section(tab3, "G2", "Grant Dependency Ratio  (standard mode only)",
+            "Compares total grant income in recent years to the organisation's net assets and "
+            "annual revenue. High grant dependency creates fragility if grant income is "
+            "disrupted. Not applied when Intermediate Grant Maker mode is selected.")
+        trow(s, "Grant lookback period (years)", 'g2_lookback_years', 1, 10, 1)
+        trow(s, "Grant-to-net-assets ratio — HIGH threshold", 'g2_dependency_high',
+             0.5, 10.0, 0.5)
+        trow(s, "Grant-to-net-assets ratio — MEDIUM threshold", 'g2_dependency_medium',
+             0.1, 5.0, 0.1)
+        trow(s, "Grant-to-revenue ratio — escalate to MEDIUM if above", 'g2_revenue_ratio',
+             0.1, 2.0, 0.1)
+
+        s = rule_section(tab3, "G3", "Grant Management Experience  (IGM mode only)",
+            "Compares the proposed award to the largest grant the organisation has previously "
+            "received, as a proxy for their experience managing grants at this scale. Only "
+            "applied when the Intermediate Grant Maker option is selected.")
+        trow(s, "Award above historical maximum — HIGH threshold (%)", 'g3_scale_high_pct',
+             50, 500, 10, note="e.g. 100 = more than double the largest previous grant")
+        trow(s, "Award above historical maximum — MEDIUM threshold (%)", 'g3_scale_medium_pct',
+             10, 200, 10)
+
+        s = rule_section(tab3, None, "Composite Warning",
+            "When several cross-analysis rules each return a HIGH result, an additional "
+            "summary warning is added to the report to highlight the combined risk profile.")
+        trow(s, "Number of HIGH results to trigger composite warning", 'composite_high_count',
+             2, 6, 1)
+
+        # ── Tab 4: Financial Health ──────────────────────────────────────────
+        tab4 = make_tab("Financial Health")
+
+        s = rule_section(tab4, "F1", "Capital Erosion",
+            "Tracks whether net assets are declining year on year. Sustained erosion of the "
+            "equity base is a leading indicator of financial distress, particularly if driven "
+            "by operating losses rather than planned distributions.")
+        trow(s, "Consecutive net asset decline years — HIGH", 'f1_erosion_high_years', 2, 10, 1)
+        trow(s, "Consecutive net asset decline years — MEDIUM", 'f1_erosion_medium_years', 1, 8, 1)
+
+        s = rule_section(tab4, "F2", "Intangible Asset Bloat",
+            "Checks whether intangible assets (goodwill, IP, software) represent an unusually "
+            "large share of total assets. High intangible ratios can inflate the balance sheet; "
+            "these assets may not be realisable in a wind-down scenario.")
+        trow(s, "Intangibles as proportion of total assets — warn if above",
+             'f2_intangible_bloat_pct', 0.1, 1.0, 0.05,
+             note="e.g. 0.5 = intangibles > 50% of total assets")
+
+        s = rule_section(tab4, "F3", "Working Capital Deterioration",
+            "Monitors the trend in net current assets (current assets minus current "
+            "liabilities). A single large drop or sustained multi-year decline signals "
+            "worsening short-term financial health.")
+        trow(s, "Single-year NCA drop proportion to flag", 'f3_nca_drop_pct', 0.05, 0.90, 0.05,
+             note="e.g. 0.25 = a 25% drop in one year triggers a flag")
+
+        s = rule_section(tab4, "F4", "Leverage Creep",
+            "Checks whether total long-term creditors have been rising consistently while net "
+            "assets are stagnant or declining. Increasing leverage in this context creates "
+            "refinancing and solvency risk.")
+        trow(s, "Consecutive creditor-increase years to flag", 'f4_leverage_years', 2, 8, 1)
+
+        # ── Bottom buttons ───────────────────────────────────────────────────
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(fill='x', padx=10, pady=8)
+
+        _DEFAULTS = {
+            'solvency_decline_pct': 30, 'current_ratio_min': 1.0,
+            'current_ratio_critical': 0.5, 'quick_ratio_min': 0.5,
+            'cash_pct_min': 10, 'debt_to_equity_max': 2.0,
+            'revenue_decline_pct': -10, 'revenue_decline_years': 2,
+            'consecutive_loss_years': 2, 'predictive_profit_decline_pct': 20,
+            'predictive_revenue_decline_pct': 15, 'late_filings_count': 2,
+            'late_filings_period': 5, 'director_churn_count': 3,
+            'director_churn_months': 12, 'insolvency_company_count': 3,
+            'insolvency_critical_count': 5, 'phoenix_similarity_pct': 80,
+            'phoenix_officer_count': 5, 'g1_cash_buffer_pct': 0.25,
+            'g1_nca_comfortable_pct': 0.5, 'g2_lookback_years': 3,
+            'g2_dependency_high': 2.0, 'g2_dependency_medium': 1.0,
+            'g2_revenue_ratio': 0.5, 'g3_scale_high_pct': 100.0,
+            'g3_scale_medium_pct': 50.0, 'f1_erosion_high_years': 3,
+            'f1_erosion_medium_years': 2, 'f2_intangible_bloat_pct': 0.5,
+            'f3_nca_drop_pct': 0.25, 'f4_leverage_years': 3,
+            'composite_high_count': 3,
+        }
+
+        def _reset():
+            for k, v in _DEFAULTS.items():
+                if k in local_vars:
+                    local_vars[k].set(v)
+
+        def _apply():
+            for key, var in local_vars.items():
+                try:
+                    self.thresholds[key] = var.get()
+                except Exception:
+                    pass
+            win.destroy()
+
+        ttk.Button(btn_frame, text="Reset to Defaults", command=_reset).pack(side='left')
+        ttk.Button(btn_frame, text="Cancel", command=win.destroy).pack(side='right', padx=(4, 0))
+        ttk.Button(btn_frame, text="Apply & Close", command=_apply,
+                   bootstyle='success').pack(side='right')
     
     def _build_manual_input_form(self):
         """Build the manual input form for grant details and supplementary accounts data."""
@@ -806,21 +1035,6 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         return years_data
 
-    def _toggle_advanced_settings(self):
-        """Show/hide advanced settings panel."""
-        if self.show_advanced.get():
-            self.advanced_frame.pack(fill=tk.X, pady=5)
-            # Update checkbox text
-            for widget in self.content_frame.winfo_children():
-                if isinstance(widget, ttk.LabelFrame) and "Configure Analysis" in str(widget):
-                    for child in widget.winfo_children():
-                        if isinstance(child, ttk.Checkbutton):
-                            if self.show_advanced.get():
-                                child.config(text="▼ Hide Advanced Threshold Settings")
-                            break
-        else:
-            self.advanced_frame.pack_forget()
-    
     def fetch_company_profile(self):
         """Fetch comprehensive company data from API."""
         cnum_raw = self.company_num_var.get().strip()
@@ -973,11 +1187,6 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self.generate_btn.config(state='disabled')
         self.cancel_flag.clear()
 
-        # Update thresholds from UI
-        if self.show_advanced.get():
-            for key, var in self.threshold_vars.items():
-                self.thresholds[key] = var.get()
-
         # Collect manual input on main thread (thread-safe)
         self._manual_data = self._collect_manual_input()
         self._proposed_award = 0.0
@@ -990,6 +1199,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 log_message(f"Invalid proposed award amount: {raw_award}")
         self._payment_mechanism = self.payment_mechanism_var.get() or 'Unknown'
         self._igm_mode = self.check_vars.get('igm_mode', tk.BooleanVar(value=False)).get()
+        # Build cross-analysis thresholds snapshot from current self.thresholds dict
+        _ca_keys = set(CrossAnalysisThresholds.__dataclass_fields__)
+        self._ca_thresholds = CrossAnalysisThresholds(
+            **{k: self.thresholds[k] for k in _ca_keys if k in self.thresholds}
+        )
 
         threading.Thread(target=self._generate_report_thread, daemon=True).start()
     
@@ -1089,6 +1303,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                         company_age_months=company_age_months,
                         accounts_type=accounts_type,
                         igm_mode=self._igm_mode,
+                        thresholds=self._ca_thresholds,
                     )
                 except Exception as e:
                     log_message(f"Error running cross-analysis: {e}")
@@ -1475,7 +1690,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 if 'NetAssets' in previous:
                     change_pct = ((net_assets - previous['NetAssets']) / abs(previous['NetAssets'])) * 100
                     
-                    if net_assets > 0 and change_pct < -30:
+                    if net_assets > 0 and change_pct < -self.thresholds['solvency_decline_pct']:
                         findings.append({
                             'category': 'Financial',
                             'severity': 'Elevated',
@@ -1506,7 +1721,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             threshold = self.thresholds['current_ratio_min']
             
             if current_ratio < threshold:
-                severity = 'Critical' if current_ratio < 0.5 else 'Elevated'
+                severity = 'Critical' if current_ratio < self.thresholds['current_ratio_critical'] else 'Elevated'
                 
                 narrative = f"The current ratio (current assets ÷ current liabilities) stands at {current_ratio:.2f} in {int(latest['Year'])}. "
                 narrative += f"A ratio below {threshold} indicates potential difficulty meeting short-term obligations. "
@@ -1545,7 +1760,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             if pd.notna(cash) and pd.notna(liabilities) and liabilities > 0:
                 cash_pct = (cash / liabilities) * 100
                 
-                if cash_pct < 10:
+                if cash_pct < self.thresholds['cash_pct_min']:
                     findings.append({
                         'category': 'Financial',
                         'severity': 'Elevated',
@@ -1761,13 +1976,13 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             if metric == 'NetAssets' and predicted_value < 0 and last_actual >= 0:
                 concerns.append(f"Net assets projected to turn negative (£{predicted_value:,.0f}) in {next_year}, indicating potential balance sheet insolvency")
             
-            if metric == 'ProfitLoss' and predicted_value < 0 and pct_change < -20:
+            if metric == 'ProfitLoss' and predicted_value < 0 and pct_change < -self.thresholds['predictive_profit_decline_pct']:
                 concerns.append(f"Losses projected to worsen to £{abs(predicted_value):,.0f} in {next_year}")
-            
+
             if metric == 'CashBankInHand' and predicted_value < 0:
                 concerns.append(f"Cash position projected to turn negative in {next_year}, suggesting potential cash flow crisis")
-            
-            if metric == 'Revenue' and pct_change < -15:
+
+            if metric == 'Revenue' and pct_change < -self.thresholds['predictive_revenue_decline_pct']:
                 concerns.append(f"Revenue projected to decline by {abs(pct_change):.0f}% to £{predicted_value:,.0f} in {next_year}")
         
         # Generate findings based on predictions
@@ -1978,7 +2193,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 if any(term in company_status for term in ['liquidation', 'dissolved', 'administration']):
                     insolvent_companies.append(company_name)
             
-            if len(insolvent_companies) >= 3:
+            if len(insolvent_companies) >= self.thresholds['insolvency_company_count']:
                 directors_with_issues.append({
                     'name': officer.get('name'),
                     'count': len(insolvent_companies),
@@ -1986,7 +2201,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 })
         
         if directors_with_issues:
-            severity = 'Critical' if any(d['count'] >= 5 for d in directors_with_issues) else 'Elevated'
+            severity = 'Critical' if any(d['count'] >= self.thresholds['insolvency_critical_count'] for d in directors_with_issues) else 'Elevated'
             
             details = []
             for director in directors_with_issues[:3]:  # Show top 3
@@ -2063,7 +2278,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         # Get appointments for key directors
         similar_dissolved_companies = []
         
-        for officer in officers['items'][:5]:  # Check top 5 officers
+        for officer in officers['items'][:self.thresholds['phoenix_officer_count']]:
             if self.cancel_flag.is_set():
                 break
             
@@ -2090,7 +2305,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     if company_normalised:
                         similarity = WRatio(current_normalised, company_normalised)
                         
-                        if similarity >= 80:  # High similarity threshold
+                        if similarity >= self.thresholds['phoenix_similarity_pct']:
                             similar_dissolved_companies.append({
                                 'name': company_name,
                                 'name_normalised': company_normalised,
