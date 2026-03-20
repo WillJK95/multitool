@@ -915,6 +915,105 @@ def rule_f4_leverage_creep(unified: UnifiedFinancialData) -> CrossAnalysisResult
 
 
 # ---------------------------------------------------------------------------
+# IGM-specific rule
+# ---------------------------------------------------------------------------
+
+def rule_g3_grant_management_experience(
+    grants_data: Optional[List[Dict]],
+    proposed_award: float,
+) -> CrossAnalysisResult:
+    """G3: Grant Management Experience (IGM mode only).
+
+    Compares the proposed award to the largest grant the organisation has
+    previously received, as a proxy for their experience managing grants at
+    this scale.
+    """
+    title = "Grant Management Experience"
+
+    if not proposed_award or proposed_award <= 0:
+        return CrossAnalysisResult(
+            rule_id="G3", title=title,
+            risk_flag="NOT_ASSESSED", confidence="SKIPPED",
+            narrative="No proposed award amount provided. This rule requires a proposed grant amount.",
+            recommendation="Enter the proposed award amount to enable this analysis.",
+        )
+
+    if not grants_data:
+        return CrossAnalysisResult(
+            rule_id="G3", title=title,
+            risk_flag="NOT_ASSESSED", confidence="SKIPPED",
+            narrative=(
+                "No grants data available from GrantNav. Cannot assess grant management experience. "
+                "This rule requires historical grants data to compare against the proposed award."
+            ),
+            recommendation="Ensure grants data is enabled and the organisation appears in GrantNav.",
+        )
+
+    amounts = []
+    for grant in grants_data:
+        try:
+            amount = float(grant.get('amountAwarded', 0))
+            if amount > 0:
+                amounts.append(amount)
+        except (ValueError, TypeError):
+            pass
+
+    if not amounts:
+        return CrossAnalysisResult(
+            rule_id="G3", title=title,
+            risk_flag="NOT_ASSESSED", confidence="SKIPPED",
+            narrative="Grants data found but no valid award amounts could be parsed.",
+            recommendation="Review grants data manually to assess grant management track record.",
+        )
+
+    largest_historical = max(amounts)
+    excess_pct = ((proposed_award - largest_historical) / largest_historical) * 100
+
+    if excess_pct >= 100:
+        risk_flag = "HIGH"
+        narrative = (
+            f"The proposed award (£{proposed_award:,.0f}) is more than double the largest grant "
+            f"this organisation has previously received (£{largest_historical:,.0f} — a "
+            f"{excess_pct:.0f}% increase). Managing grants at this scale represents a significant "
+            f"step-change and may exceed the organisation's current governance, financial controls, "
+            f"and operational capacity."
+        )
+        recommendation = (
+            "Assess whether the organisation has the staffing, financial controls, and reporting "
+            "infrastructure to manage a grant of this scale. Strongly consider phased or milestone-"
+            "based payments, enhanced monitoring conditions, and a capacity review prior to award."
+        )
+    elif excess_pct >= 50:
+        risk_flag = "MEDIUM"
+        narrative = (
+            f"The proposed award (£{proposed_award:,.0f}) is {excess_pct:.0f}% larger than the "
+            f"largest grant this organisation has previously received (£{largest_historical:,.0f}). "
+            f"While the organisation has relevant grant management experience, this represents a "
+            f"material increase in scale and associated responsibility."
+        )
+        recommendation = (
+            "Verify that the organisation has sufficient staffing, financial controls, and reporting "
+            "capacity to manage a grant of this size. Consider milestone-based payments to manage "
+            "delivery risk proportionate to the increased scale."
+        )
+    else:
+        risk_flag = "LOW"
+        narrative = (
+            f"The proposed award (£{proposed_award:,.0f}) is within a comparable range to the "
+            f"largest grant this organisation has previously received (£{largest_historical:,.0f}). "
+            f"The organisation appears to have relevant experience managing grants at this scale."
+        )
+        recommendation = "Grant scale is consistent with the organisation's prior grant management experience."
+
+    return CrossAnalysisResult(
+        rule_id="G3", title=title,
+        risk_flag=risk_flag, confidence="AUTO",
+        narrative=narrative,
+        recommendation=recommendation,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -926,12 +1025,23 @@ def run_cross_analysis(
     late_filing_detected: bool = False,
     company_age_months: Optional[float] = None,
     accounts_type: Optional[str] = None,
+    igm_mode: bool = False,
 ) -> CrossAnalysisReport:
-    """Run all cross-analysis rules and assemble the report."""
+    """Run all cross-analysis rules and assemble the report.
+
+    When ``igm_mode`` is True the grant-dependency rule (G2) is replaced by
+    the grant management experience rule (G3), which is more appropriate for
+    organisations that are themselves grant-giving bodies.
+    """
+
+    if igm_mode:
+        grant_rule = rule_g3_grant_management_experience(grants_data, proposed_award)
+    else:
+        grant_rule = rule_g2_grant_dependency(unified, grants_data)
 
     results = [
         rule_g1_match_funding_capacity(unified, proposed_award, payment_mechanism),
-        rule_g2_grant_dependency(unified, grants_data),
+        grant_rule,
         rule_f1_capital_erosion(unified),
         rule_f2_intangible_asset_bloat(unified),
         rule_f3_working_capital_deterioration(unified),
@@ -947,18 +1057,19 @@ def run_cross_analysis(
             "This company warrants detailed manual review before any award decision."
         )
 
-    # Special pattern: G1 + G2 + F1 all HIGH
+    # Special pattern: G1 + G2 + F1 all HIGH (only relevant in standard mode)
     pattern_warnings = []
-    g1_high = any(r.rule_id == "G1" and r.risk_flag == "HIGH" for r in results)
-    g2_high = any(r.rule_id == "G2" and r.risk_flag == "HIGH" for r in results)
-    f1_high = any(r.rule_id == "F1" and r.risk_flag == "HIGH" for r in results)
-    if g1_high and g2_high and f1_high:
-        pattern_warnings.append(
-            "Critical pattern detected: The combination of insufficient match-funding capacity (G1), "
-            "high grant dependency (G2), and sustained capital erosion (F1) represents a particularly "
-            "concerning risk profile. This company may be unable to deliver grant-funded activities "
-            "without significant financial distress."
-        )
+    if not igm_mode:
+        g1_high = any(r.rule_id == "G1" and r.risk_flag == "HIGH" for r in results)
+        g2_high = any(r.rule_id == "G2" and r.risk_flag == "HIGH" for r in results)
+        f1_high = any(r.rule_id == "F1" and r.risk_flag == "HIGH" for r in results)
+        if g1_high and g2_high and f1_high:
+            pattern_warnings.append(
+                "Critical pattern detected: The combination of insufficient match-funding capacity (G1), "
+                "high grant dependency (G2), and sustained capital erosion (F1) represents a particularly "
+                "concerning risk profile. This company may be unable to deliver grant-funded activities "
+                "without significant financial distress."
+            )
 
     # Filing quality caveat
     filing_quality_caveat = None

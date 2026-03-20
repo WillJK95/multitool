@@ -121,87 +121,77 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             self.content_frame, text="Step 3: Configure Analysis", padding=10
         )
         config_frame.pack(fill=tk.X, pady=5, padx=10)
-        
-        # Tier 1 checks (always available)
-        tier1_frame = ttk.LabelFrame(config_frame, text="Core Checks", padding=5)
-        tier1_frame.pack(fill=tk.X, pady=2)
-        
+
         self.check_vars = {}
-        self.check_widgets = {}  # Store widget references
-        
-        tier1_checks = [
-            ('solvency', 'Net asset position (requires accounts)', True),
-            ('liquidity', 'Liquidity ratios (requires accounts)', True),
-            ('filing_status', 'Filing compliance & late submissions', True),
-            ('company_status', 'Company status warnings', True),
-        ]
-        
-        for key, label, default in tier1_checks:
-            var = tk.BooleanVar(value=default)
-            self.check_vars[key] = var
-            widget = ttk.Checkbutton(tier1_frame, text=label, variable=var)
-            widget.pack(anchor='w')
-            self.check_widgets[key] = widget
-        
-        # Tier 2 checks
-        tier2_frame = ttk.LabelFrame(config_frame, text="Enhanced Checks", padding=5)
-        tier2_frame.pack(fill=tk.X, pady=2)
-        
-        tier2_checks = [
-            ('director_churn', 'Director/PSC turnover analysis', True),
-            ('revenue_trends', 'Revenue & profitability trends (requires accounts)', True),
-            ('predictive_outlook', 'Predictive financial outlook (requires accounts)', True),
-            ('default_address', 'Companies House default address check', True),
-            ('accounting_changes', 'Accounting date & filing category changes', True),
-            ('offshore_pscs', 'Offshore PSC analysis', True),
-        ]
-        
-        for key, label, default in tier2_checks:
-            var = tk.BooleanVar(value=default)
-            self.check_vars[key] = var
-            widget = ttk.Checkbutton(tier2_frame, text=label, variable=var)
-            widget.pack(anchor='w')
-            self.check_widgets[key] = widget
-        
-        # Tier 3 checks (expensive)
-        tier3_frame = ttk.LabelFrame(config_frame, text="Deep Investigation (Slower)", padding=5)
-        tier3_frame.pack(fill=tk.X, pady=2)
-        
-        tier3_checks = [
-            ('director_history', 'Director insolvency history (many API calls)', False),
-            ('phoenix_check', 'Phoenix company name matching', False),
-        ]
-        
-        for key, label, default in tier3_checks:
-            var = tk.BooleanVar(value=default)
-            self.check_vars[key] = var
-            widget = ttk.Checkbutton(tier3_frame, text=label, variable=var)
-            widget.pack(anchor='w')
-            self.check_widgets[key] = widget
+        self.check_widgets = {}
 
-        # Additional Data Sources
-        extra_frame = ttk.LabelFrame(config_frame, text="Additional Data Sources", padding=5)
-        extra_frame.pack(fill=tk.X, pady=2)
+        # All standard checks always run — hardcode as True BooleanVars (no UI controls)
+        for key in (
+            'solvency', 'liquidity', 'filing_status', 'company_status',
+            'director_churn', 'revenue_trends', 'predictive_outlook',
+            'default_address', 'accounting_changes', 'offshore_pscs',
+            'filing_patterns',
+        ):
+            self.check_vars[key] = tk.BooleanVar(value=True)
 
-        extra_checks = [
-            ('filing_patterns', 'Filing history pattern analysis', True),
-            ('grants_lookup', 'Include grants received (360Giving GrantNav)', False),
-            ('cross_analysis', 'Financial & grant cross-analysis', False),
-            ('ownership_graph', 'Corporate ownership structure graph (API calls per corporate PSC)', False),
-        ]
+        # Deep investigation: one var shared by both slow checks (off by default)
+        deep_var = tk.BooleanVar(value=False)
+        self.check_vars['director_history'] = deep_var
+        self.check_vars['phoenix_check'] = deep_var
 
-        for key, label, default in extra_checks:
-            var = tk.BooleanVar(value=default)
-            self.check_vars[key] = var
-            widget = ttk.Checkbutton(extra_frame, text=label, variable=var)
-            widget.pack(anchor='w')
-            self.check_widgets[key] = widget
+        # Grants: one var shared by lookup + cross-analysis (off by default)
+        grants_var = tk.BooleanVar(value=False)
+        self.check_vars['grants_lookup'] = grants_var
+        self.check_vars['cross_analysis'] = grants_var
 
-        # Auto-enable grants when cross-analysis is toggled on
-        def _on_cross_analysis_toggle(*_args):
-            if self.check_vars['cross_analysis'].get():
-                self.check_vars['grants_lookup'].set(True)
-        self.check_vars['cross_analysis'].trace_add('write', _on_cross_analysis_toggle)
+        # IGM mode and ownership graph
+        igm_var = tk.BooleanVar(value=False)
+        self.check_vars['igm_mode'] = igm_var
+        ownership_var = tk.BooleanVar(value=False)
+        self.check_vars['ownership_graph'] = ownership_var
+
+        ttk.Label(
+            config_frame,
+            text="All standard due diligence checks run automatically. Select additional options:"
+        ).pack(anchor='w', pady=(0, 6))
+
+        grants_cb = ttk.Checkbutton(
+            config_frame,
+            text="Include grants data (360Giving GrantNav) and financial cross-analysis",
+            variable=grants_var,
+        )
+        grants_cb.pack(anchor='w')
+        self.check_widgets['grants_lookup'] = grants_cb
+
+        igm_cb = ttk.Checkbutton(
+            config_frame,
+            text="Intermediate grant maker (IGM) — adjusts rules for grant-giving organisations",
+            variable=igm_var,
+        )
+        igm_cb.pack(anchor='w')
+        self.check_widgets['igm_mode'] = igm_cb
+
+        ownership_cb = ttk.Checkbutton(
+            config_frame,
+            text="Corporate ownership structure graph (makes additional API calls per corporate PSC)",
+            variable=ownership_var,
+        )
+        ownership_cb.pack(anchor='w')
+        self.check_widgets['ownership_graph'] = ownership_cb
+
+        deep_cb = ttk.Checkbutton(
+            config_frame,
+            text="Deep investigation — director insolvency history & phoenix check (slow)",
+            variable=deep_var,
+        )
+        deep_cb.pack(anchor='w')
+        self.check_widgets['director_history'] = deep_cb
+
+        # Enabling IGM mode auto-enables grants (G3 rule needs grants data)
+        def _on_igm_toggle(*_args):
+            if igm_var.get():
+                grants_var.set(True)
+        igm_var.trace_add('write', _on_igm_toggle)
 
         # Advanced settings (collapsible)
         self.show_advanced = tk.BooleanVar(value=False)
@@ -999,6 +989,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             except ValueError:
                 log_message(f"Invalid proposed award amount: {raw_award}")
         self._payment_mechanism = self.payment_mechanism_var.get() or 'Unknown'
+        self._igm_mode = self.check_vars.get('igm_mode', tk.BooleanVar(value=False)).get()
 
         threading.Thread(target=self._generate_report_thread, daemon=True).start()
     
@@ -1097,6 +1088,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                         late_filing_detected=late_filing_detected,
                         company_age_months=company_age_months,
                         accounts_type=accounts_type,
+                        igm_mode=self._igm_mode,
                     )
                 except Exception as e:
                     log_message(f"Error running cross-analysis: {e}")
@@ -2543,12 +2535,13 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         for label, value in profile_items:
             html_output += f'<div class="profile-item"><strong>{label}</strong>{value}</div>'
 
-        # Previous company names
+        # Previous company names — oldest first (ascending by ceased_on date)
         previous_names = profile.get('previous_company_names', [])
         if previous_names:
+            sorted_names = sorted(previous_names, key=lambda p: p.get('ceased_on', '') or '')
             names_html = '; '.join(
                 html.escape(f"{p.get('name', 'Unknown')} (until {format_display_date(p.get('ceased_on', ''))})")
-                for p in previous_names
+                for p in sorted_names
             )
             html_output += f'<div class="profile-item"><strong>Previous Names</strong>{names_html}</div>'
 
@@ -2914,6 +2907,18 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
     def _generate_ownership_section(self):
         """Generate the corporate ownership structure section HTML."""
+        ownership_data = getattr(self, '_ownership_data', None)
+        # Check was not enabled — omit section entirely
+        if ownership_data is None:
+            return ''
+        # Check was enabled but no PSCs found
+        if not ownership_data:
+            return '''
+        <div class="section">
+            <h2>Corporate Ownership Structure</h2>
+            <p>No Persons with Significant Control (PSCs) detected. Consult Companies House directly for further information.</p>
+        </div>
+        '''
         if not getattr(self, '_ownership_b64', None):
             return ''
         return f'''
