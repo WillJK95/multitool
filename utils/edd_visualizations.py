@@ -454,6 +454,33 @@ def fetch_grants_for_company(company_number: str) -> list:
     return all_grants
 
 
+def fetch_grants_for_org(org_id: str) -> list:
+    """Fetch all grants for an organisation from GrantNav API.
+
+    Unlike fetch_grants_for_company, this accepts a pre-formatted org identifier
+    (e.g. 'GB-CHC-12345' for charities or 'GB-COH-12345678' for companies)
+    without applying clean_company_number().
+    """
+    if not org_id:
+        return []
+
+    encoded_id = urllib.parse.quote(org_id)
+    url = f"{GRANTNAV_API_BASE_URL}/org/{encoded_id}/grants_received?limit=1000"
+
+    all_grants = []
+    while url:
+        data, error = grantnav_get_data(url)
+        if error or not data:
+            break
+        results = data.get("results", [])
+        if not results:
+            break
+        all_grants.extend(item.get("data", {}) for item in results if isinstance(item, dict))
+        url = data.get("next")
+
+    return all_grants
+
+
 def generate_grants_report_html(grants_data: list) -> str:
     """Generate HTML section for grants data in the EDD report."""
     if not grants_data:

@@ -134,18 +134,6 @@ def check_charity_status(charity_data: dict, thresholds: dict) -> List[dict]:
         except (ValueError, TypeError):
             pass
 
-    # Positive: active and in good standing
-    if reg_status == 'R' and not details.get('insolvent') and not details.get('in_administration'):
-        findings.append({
-            'category': 'Governance',
-            'severity': 'Positive',
-            'title': 'Charity Active and Registered',
-            'narrative': (
-                f"{charity_name} is currently registered and active on the "
-                "Charity Commission register with no adverse status flags."
-            ),
-            'recommendation': '',
-        })
 
     return findings
 
@@ -234,7 +222,7 @@ def check_accounts_qualified(charity_data: dict, thresholds: dict) -> List[dict]
     # Sort by date, check most recent
     sorted_info = sorted(
         account_info,
-        key=lambda x: x.get('fin_period_end_date', '') or '',
+        key=lambda x: x.get('financial_period_end_date', '') or '',
         reverse=True,
     )
 
@@ -315,7 +303,7 @@ def check_net_assets(charity_data: dict, thresholds: dict) -> List[dict]:
     # Use the most recent period
     sorted_al = sorted(
         (assets_liabilities if isinstance(assets_liabilities, list) else [assets_liabilities]),
-        key=lambda x: x.get('fin_period_end_date', '') or '',
+        key=lambda x: x.get('financial_period_end_date', '') or '',
         reverse=True,
     )
 
@@ -369,7 +357,7 @@ def check_reserves_ratio(charity_data: dict, thresholds: dict) -> List[dict]:
     # Get latest expenditure
     sorted_fin = sorted(
         fin_history,
-        key=lambda x: x.get('fin_period_end_date', '') or '',
+        key=lambda x: x.get('financial_period_end_date', '') or '',
         reverse=True,
     )
     latest_exp = _safe_float(sorted_fin[0].get('exp_total')) if sorted_fin else None
@@ -379,7 +367,7 @@ def check_reserves_ratio(charity_data: dict, thresholds: dict) -> List[dict]:
     # Get latest net assets (reserves proxy)
     sorted_al = sorted(
         (assets_liabilities if isinstance(assets_liabilities, list) else [assets_liabilities]),
-        key=lambda x: x.get('fin_period_end_date', '') or '',
+        key=lambda x: x.get('financial_period_end_date', '') or '',
         reverse=True,
     )
     al = sorted_al[0] if sorted_al else {}
@@ -423,7 +411,7 @@ def check_income_expenditure_trends(charity_data: dict, thresholds: dict) -> Lis
 
     sorted_fin = sorted(
         fin_history,
-        key=lambda x: x.get('fin_period_end_date', '') or '',
+        key=lambda x: x.get('financial_period_end_date', '') or '',
     )
 
     # Check consecutive deficit years
@@ -496,7 +484,7 @@ def check_income_volatility(charity_data: dict, thresholds: dict) -> List[dict]:
 
     sorted_fin = sorted(
         fin_history,
-        key=lambda x: x.get('fin_period_end_date', '') or '',
+        key=lambda x: x.get('financial_period_end_date', '') or '',
     )
 
     volatility_pct = thresholds.get('income_volatility_pct', 40)
@@ -508,7 +496,7 @@ def check_income_volatility(charity_data: dict, thresholds: dict) -> List[dict]:
         if prev_inc and curr_inc and prev_inc > 0:
             change = abs((curr_inc - prev_inc) / prev_inc) * 100
             if change > volatility_pct:
-                yr = sorted_fin[i].get('fin_period_end_date', '')[:4]
+                yr = sorted_fin[i].get('financial_period_end_date', '')[:4]
                 volatile_years.append((yr, change))
 
     if volatile_years:
@@ -541,7 +529,7 @@ def check_fundraising_cost_ratio(charity_data: dict, thresholds: dict) -> List[d
 
     sorted_fin = sorted(
         fin_history,
-        key=lambda x: x.get('fin_period_end_date', '') or '',
+        key=lambda x: x.get('financial_period_end_date', '') or '',
         reverse=True,
     )
 
@@ -581,7 +569,7 @@ def check_government_funding_concentration(charity_data: dict, thresholds: dict)
 
     sorted_fin = sorted(
         fin_history,
-        key=lambda x: x.get('fin_period_end_date', '') or '',
+        key=lambda x: x.get('financial_period_end_date', '') or '',
         reverse=True,
     )
 

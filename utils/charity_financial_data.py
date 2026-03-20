@@ -86,8 +86,8 @@ class CharityFinancialData:
     @staticmethod
     def _extract_year(entry: dict) -> Optional[int]:
         """Extract fiscal year from a CC API response entry."""
-        # Try fin_period_end_date first (financial history), then date field
-        for key in ('fin_period_end_date', 'ar_cycle_reference', 'fin_period_end'):
+        # Try financial_period_end_date first (financial history), then date field
+        for key in ('financial_period_end_date', 'fin_period_end_date', 'ar_cycle_reference', 'fin_period_end'):
             val = entry.get(key)
             if val:
                 try:

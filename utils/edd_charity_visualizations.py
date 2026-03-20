@@ -45,7 +45,7 @@ def generate_charity_chart_html(charity_data: dict) -> str:
 
     sorted_fin = sorted(
         fin_history,
-        key=lambda x: x.get('fin_period_end_date', '') or '',
+        key=lambda x: x.get('financial_period_end_date', '') or '',
     )
 
     try:
@@ -170,7 +170,7 @@ def generate_charity_chart_html(charity_data: dict) -> str:
         # ── Chart 3: Assets & Liabilities ────────────────────────────
         sorted_al = sorted(
             (assets_liabilities if isinstance(assets_liabilities, list) else [assets_liabilities]),
-            key=lambda x: x.get('fin_period_end_date', '') or '',
+            key=lambda x: x.get('financial_period_end_date', '') or '',
         )
 
         al_years = []
@@ -423,7 +423,7 @@ def generate_charity_limitations_html(charity_data: dict, grants_enabled: bool) 
 
 def _extract_year(entry: dict) -> Optional[int]:
     """Extract fiscal year from a CC API response entry."""
-    for key in ('fin_period_end_date', 'ar_cycle_reference'):
+    for key in ('financial_period_end_date', 'ar_cycle_reference'):
         val = entry.get(key)
         if val:
             try:

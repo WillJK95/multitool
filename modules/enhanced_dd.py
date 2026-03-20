@@ -55,6 +55,7 @@ from ..utils.helpers import log_message, clean_company_number
 from ..utils.edd_visualizations import (
     generate_company_timeline,
     fetch_grants_for_company,
+    fetch_grants_for_org,
     generate_grants_report_html,
     trace_ownership_chain,
     generate_static_ownership_graph,
@@ -974,7 +975,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         def _cc_extract_year(entry):
             """Extract fiscal year from a CC API entry."""
-            for key in ('fin_period_end_date', 'ar_cycle_reference'):
+            for key in ('financial_period_end_date', 'fin_period_end_date', 'ar_cycle_reference'):
                 val = entry.get(key)
                 if val:
                     try:
@@ -1068,7 +1069,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Sort financial history by period end date
             sorted_fin = sorted(
                 fin_history,
-                key=lambda x: x.get('fin_period_end_date', '') or '',
+                key=lambda x: x.get('financial_period_end_date', '') or x.get('fin_period_end_date', '') or '',
             )
             # Index assets/liabilities by year
             al_by_year = {}
@@ -1099,7 +1100,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             for yr in years:
                 pe_date = ''
                 fin = fin_by_year.get(yr, {})
-                pe_raw = fin.get('fin_period_end_date', '')
+                pe_raw = fin.get('financial_period_end_date') or fin.get('fin_period_end_date', '')
                 if pe_raw and len(str(pe_raw)) >= 10:
                     pe_date = str(pe_raw)[:10]
                 elif yr:
@@ -1179,6 +1180,79 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     parent=win,
                 )
                 return
+
+            # --- Sum validation for charity supplementary accounts ---
+            if is_charity:
+                discrepancies = []
+                for ycol in year_columns:
+                    pe = ycol['period_end'].get() or '?'
+                    vd = ycol['vars']
+
+                    def _val(key):
+                        v = vd.get(key)
+                        if v is None:
+                            return None
+                        txt = v.get().strip().replace(',', '') if isinstance(v, tk.StringVar) else ''
+                        if not txt:
+                            return None
+                        try:
+                            return float(txt)
+                        except (ValueError, TypeError):
+                            return None
+
+                    # Income check
+                    inc_parts = [_val('IncCharitableActivities'),
+                                 _val('IncDonationsLegacies'),
+                                 _val('IncTradingInvestment')]
+                    inc_total = _val('TotalIncome')
+                    if inc_total is not None and any(p is not None for p in inc_parts):
+                        inc_sum = sum(p for p in inc_parts if p is not None)
+                        if abs(inc_sum - inc_total) > 1:
+                            discrepancies.append(
+                                f"  {pe}: Income constituents sum to "
+                                f"\u00a3{inc_sum:,.0f} but Total Income is "
+                                f"\u00a3{inc_total:,.0f}")
+
+                    # Expenditure check
+                    exp_parts = [_val('ExpCharitableActivities'),
+                                 _val('ExpFundraising'),
+                                 _val('ExpGovernanceOther')]
+                    exp_total = _val('TotalExpenditure')
+                    if exp_total is not None and any(p is not None for p in exp_parts):
+                        exp_sum = sum(p for p in exp_parts if p is not None)
+                        if abs(exp_sum - exp_total) > 1:
+                            discrepancies.append(
+                                f"  {pe}: Expenditure constituents sum to "
+                                f"\u00a3{exp_sum:,.0f} but Total Expenditure is "
+                                f"\u00a3{exp_total:,.0f}")
+
+                    # Net assets check
+                    tangible = _val('TangibleAssets')
+                    lt_inv = _val('LongTermInvestments')
+                    cur_assets = _val('CurrentAssets')
+                    liabilities = _val('TotalLiabilities')
+                    pension = _val('PensionAssets')
+                    net_assets = _val('NetAssets')
+                    asset_parts = [tangible, lt_inv, cur_assets, pension]
+                    if net_assets is not None and any(p is not None for p in asset_parts + [liabilities]):
+                        asset_sum = sum(p for p in asset_parts if p is not None)
+                        liab_val = liabilities if liabilities is not None else 0
+                        calc_net = asset_sum - liab_val
+                        if abs(calc_net - net_assets) > 1:
+                            discrepancies.append(
+                                f"  {pe}: Assets minus liabilities = "
+                                f"\u00a3{calc_net:,.0f} but Net Assets is "
+                                f"\u00a3{net_assets:,.0f}")
+
+                if discrepancies:
+                    msg = ("The following totals don't match their constituent "
+                           "values:\n\n" + "\n".join(discrepancies) +
+                           "\n\nThis may be due to rounding or other income/"
+                           "expenditure categories not captured here.\n\n"
+                           "Save anyway?")
+                    if not messagebox.askokcancel("Sum Mismatch", msg,
+                                                 parent=win):
+                        return
 
             self._manual_year_panels = []
             filled_count = 0
@@ -1913,8 +1987,20 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             if self.check_vars.get('grants_lookup', tk.BooleanVar(value=False)).get():
                 self.safe_update(self.status_var.set, "Fetching grants data from GrantNav...")
                 try:
-                    # Use charity number prefixed with GB-CHC-
-                    self._grants_data = fetch_grants_for_company(f"GB-CHC-{reg_num}")
+                    # Fetch by charity identifier
+                    grants = fetch_grants_for_org(f"GB-CHC-{reg_num}")
+                    # Also try linked company number if available
+                    linked_co = self.charity_data.get('details', {}).get(
+                        'company_number') or ''
+                    linked_co = linked_co.strip()
+                    if linked_co:
+                        co_grants = fetch_grants_for_company(linked_co)
+                        if co_grants:
+                            seen_ids = {g.get('id') for g in grants if g.get('id')}
+                            for g in co_grants:
+                                if g.get('id') not in seen_ids:
+                                    grants.append(g)
+                    self._grants_data = grants
                 except Exception as e:
                     log_message(f"Error fetching grants data for charity: {e}")
 
@@ -4216,7 +4302,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         # Individual rule cards
         for r in report.results:
-            if r.confidence == 'SKIPPED':
+            if r.risk_flag == 'NOT_ASSESSED':
                 continue
 
             risk_class = r.risk_flag.lower().replace('_', '-')
