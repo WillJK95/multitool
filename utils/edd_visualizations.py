@@ -806,12 +806,9 @@ def generate_static_ownership_graph(
     labels = {n: G.nodes[n].get('label', n) for n in G.nodes()}
 
     # Offset label positions above nodes so they do not overlap the node circle.
-    # Use a minimum absolute offset so that even flat/compressed layouts remain
-    # readable (the relative-only approach produced near-zero offsets on shallow
-    # graphs where all nodes share the same Y coordinate).
     y_vals = [p[1] for p in pos.values()]
     y_range = max(y_vals) - min(y_vals) if len(y_vals) > 1 else 100
-    label_offset = max(y_range * 0.12, 30)
+    label_offset = y_range * 0.06
     label_pos = {node: (x, y + label_offset) for node, (x, y) in pos.items()}
 
     nx.draw_networkx_nodes(G, pos, ax=ax, node_color=node_colors,
