@@ -64,6 +64,19 @@ class CrossAnalysisThresholds:
     f3_nca_drop_pct: float = 0.25
     # F4: Leverage Creep
     f4_leverage_years: int = 3
+    # Return on Equity
+    roe_negative_years_medium: int = 2
+    roe_negative_years_high: int = 3
+    # Asset Turnover Efficiency
+    asset_turnover_decline_years: int = 2
+    asset_turnover_min: float = 0.3
+    # Profit Margin Compression
+    profit_margin_negative_years_medium: int = 2
+    profit_margin_negative_years_high: int = 3
+    profit_margin_compression_pts: float = 10.0
+    # Staff Cost Burden
+    staff_cost_ratio_max: float = 0.75
+    staff_cost_ratio_critical: float = 0.90
     # Composite warning
     composite_high_count: int = 3
 
@@ -1060,6 +1073,392 @@ def rule_g3_grant_management_experience(
 
 
 # ---------------------------------------------------------------------------
+# New rules: income-statement / efficiency checks
+# ---------------------------------------------------------------------------
+
+def rule_roe_trend(unified: UnifiedFinancialData, thresholds: CrossAnalysisThresholds = None) -> CrossAnalysisResult:
+    """ROE: Return on Equity trend."""
+    title = "Return on Equity (ROE)"
+    if thresholds is None:
+        thresholds = CrossAnalysisThresholds()
+
+    profit_series = unified.get_metric_series('ProfitLoss')
+    na_series = unified.get_metric_series('NetAssets')
+
+    # Need at least 2 matched years
+    shared_years = sorted(set(profit_series) & set(na_series))
+    if len(shared_years) < 2:
+        return CrossAnalysisResult(
+            rule_id="ROE", title=title,
+            risk_flag="NOT_ASSESSED",
+            confidence="SKIPPED" if not shared_years else "LIMITED",
+            narrative=(
+                "Insufficient data to calculate Return on Equity. "
+                "At least 2 years of both profit/loss and net assets figures are required."
+            ),
+            recommendation="Upload multi-year iXBRL accounts or enter data manually to enable this analysis.",
+        )
+
+    roe_series = {}
+    skipped = []
+    for yr in shared_years:
+        na = na_series[yr]
+        pl = profit_series[yr]
+        if na is None or na <= 0:
+            skipped.append(yr)
+            continue
+        roe_series[yr] = (pl / na) * 100  # as %
+
+    if len(roe_series) < 2:
+        return CrossAnalysisResult(
+            rule_id="ROE", title=title,
+            risk_flag="NOT_ASSESSED", confidence="LIMITED",
+            narrative=(
+                "ROE cannot be computed for most years because net assets are zero or negative. "
+                "This is consistent with findings from the Solvency and Capital Erosion checks."
+            ),
+            recommendation="Address underlying solvency issues before interpreting ROE.",
+        )
+
+    confidence = 'ENRICHED' if unified.has_manual('PreTaxProfitLoss') else 'AUTO'
+    trend_data = _build_trend_data(roe_series)
+    latest_year = max(roe_series)
+
+    # Count consecutive years of negative ROE (most recent years)
+    years_sorted = sorted(roe_series)
+    neg_streak = 0
+    for yr in reversed(years_sorted):
+        if roe_series[yr] < 0:
+            neg_streak += 1
+        else:
+            break
+
+    narratives = []
+    risk_flag = "LOW"
+
+    if neg_streak >= thresholds.roe_negative_years_high:
+        risk_flag = "HIGH"
+        narratives.append(
+            f"Return on equity has been negative for {neg_streak} consecutive years, "
+            "indicating sustained destruction of shareholder value."
+        )
+    elif neg_streak >= thresholds.roe_negative_years_medium:
+        risk_flag = "MEDIUM"
+        narratives.append(
+            f"Return on equity has been negative for {neg_streak} consecutive years "
+            f"({', '.join(str(y) for y in years_sorted[-neg_streak:])})."
+        )
+    else:
+        latest_roe = roe_series[latest_year]
+        # Check declining trend even if positive
+        decline_count = _consecutive_decline_count(roe_series)
+        if decline_count >= 2 and latest_roe > 0:
+            narratives.append(
+                f"Return on equity is positive ({latest_roe:.1f}% in {latest_year}) but "
+                f"has declined for {decline_count} consecutive years, indicating eroding capital efficiency."
+            )
+            risk_flag = "MEDIUM"
+
+    if not narratives:
+        latest_roe = roe_series[latest_year]
+        narratives.append(
+            f"Return on equity is {latest_roe:.1f}% in {latest_year}. "
+            "Capital is being used productively."
+        )
+
+    return CrossAnalysisResult(
+        rule_id="ROE", title=title,
+        risk_flag=risk_flag, confidence=confidence,
+        narrative=" ".join(narratives),
+        recommendation=(
+            "Investigate the causes of poor capital returns. Assess whether management "
+            "has a credible plan to restore profitability."
+            if risk_flag in ("HIGH", "MEDIUM") else
+            "Capital efficiency does not raise concerns."
+        ),
+        trend_data=trend_data,
+    )
+
+
+def rule_asset_turnover(unified: UnifiedFinancialData, thresholds: CrossAnalysisThresholds = None) -> CrossAnalysisResult:
+    """ATR: Asset Turnover Efficiency."""
+    title = "Asset Turnover Efficiency"
+    if thresholds is None:
+        thresholds = CrossAnalysisThresholds()
+
+    rev_series = unified.get_metric_series('Revenue')
+    ta_series = unified.get_metric_series('TotalAssets')
+
+    shared_years = sorted(set(rev_series) & set(ta_series))
+    if len(shared_years) < 2:
+        return CrossAnalysisResult(
+            rule_id="ATR", title=title,
+            risk_flag="NOT_ASSESSED",
+            confidence="SKIPPED" if not shared_years else "LIMITED",
+            narrative=(
+                "Insufficient data to calculate asset turnover. "
+                "Revenue and total assets figures are required for at least 2 years."
+            ),
+            recommendation="Upload multi-year iXBRL accounts to enable this analysis.",
+        )
+
+    atr_series = {}
+    for yr in shared_years:
+        ta = ta_series[yr]
+        rev = rev_series[yr]
+        if ta and ta > 0 and rev is not None:
+            atr_series[yr] = rev / ta
+
+    if len(atr_series) < 2:
+        return CrossAnalysisResult(
+            rule_id="ATR", title=title,
+            risk_flag="NOT_ASSESSED", confidence="LIMITED",
+            narrative="Asset turnover could not be computed for sufficient years (total assets may be zero or missing).",
+            recommendation="Review the completeness of uploaded accounts.",
+        )
+
+    confidence = 'AUTO'
+    trend_data = _build_trend_data(atr_series)
+    decline_count = _consecutive_decline_count(atr_series)
+    latest_year = max(atr_series)
+    latest_atr = atr_series[latest_year]
+
+    narratives = []
+    risk_flag = "LOW"
+
+    if decline_count >= thresholds.asset_turnover_decline_years:
+        risk_flag = "MEDIUM"
+        narratives.append(
+            f"Asset turnover has declined for {decline_count} consecutive years "
+            f"(currently {latest_atr:.2f}× in {latest_year}), suggesting the asset base "
+            "is becoming progressively less efficient at generating revenue."
+        )
+
+    if latest_atr < thresholds.asset_turnover_min:
+        if risk_flag != "HIGH":
+            risk_flag = "MEDIUM"
+        narratives.append(
+            f"Asset turnover of {latest_atr:.2f}× is very low, indicating the company "
+            "generates little revenue relative to its total asset base. This may signal "
+            "dormant or non-productive assets."
+        )
+
+    if not narratives:
+        narratives.append(
+            f"Asset turnover is {latest_atr:.2f}× in {latest_year}. "
+            "Revenue generation relative to assets does not raise concerns."
+        )
+
+    return CrossAnalysisResult(
+        rule_id="ATR", title=title,
+        risk_flag=risk_flag, confidence=confidence,
+        narrative=" ".join(narratives),
+        recommendation=(
+            "Request a breakdown of the asset base and assess whether fixed assets are "
+            "being actively used. Low or declining turnover may warrant a review of asset "
+            "utilisation and business model viability."
+            if risk_flag in ("HIGH", "MEDIUM") else
+            "Asset utilisation does not raise concerns."
+        ),
+        trend_data=trend_data,
+    )
+
+
+def rule_profit_margin(unified: UnifiedFinancialData, thresholds: CrossAnalysisThresholds = None) -> CrossAnalysisResult:
+    """PMG: Profit Margin Compression."""
+    title = "Profit Margin Compression"
+    if thresholds is None:
+        thresholds = CrossAnalysisThresholds()
+
+    profit_series = unified.get_metric_series('ProfitLoss')
+    rev_series = unified.get_metric_series('Revenue')
+
+    shared_years = sorted(set(profit_series) & set(rev_series))
+    if len(shared_years) < 2:
+        return CrossAnalysisResult(
+            rule_id="PMG", title=title,
+            risk_flag="NOT_ASSESSED",
+            confidence="SKIPPED" if not shared_years else "LIMITED",
+            narrative=(
+                "Insufficient data to calculate profit margin trend. "
+                "Profit/loss and revenue figures are required for at least 2 years."
+            ),
+            recommendation="Upload multi-year iXBRL accounts or enter data manually to enable this analysis.",
+        )
+
+    margin_series = {}
+    for yr in shared_years:
+        rev = rev_series[yr]
+        pl = profit_series[yr]
+        if rev and rev > 0 and pl is not None:
+            margin_series[yr] = (pl / rev) * 100  # as %
+
+    if len(margin_series) < 2:
+        return CrossAnalysisResult(
+            rule_id="PMG", title=title,
+            risk_flag="NOT_ASSESSED", confidence="LIMITED",
+            narrative="Profit margin could not be computed for sufficient years (revenue may be zero or missing).",
+            recommendation="Review the completeness of uploaded accounts.",
+        )
+
+    confidence = 'ENRICHED' if unified.has_manual('PreTaxProfitLoss') or unified.has_manual('Turnover') else 'AUTO'
+    trend_data = _build_trend_data(margin_series)
+    years_sorted = sorted(margin_series)
+    latest_year = years_sorted[-1]
+    latest_margin = margin_series[latest_year]
+
+    # Count consecutive negative-margin years
+    neg_streak = 0
+    for yr in reversed(years_sorted):
+        if margin_series[yr] < 0:
+            neg_streak += 1
+        else:
+            break
+
+    # Measure overall compression (first available vs latest)
+    earliest_margin = margin_series[years_sorted[0]]
+    compression_pts = earliest_margin - latest_margin  # positive = margin fell
+
+    narratives = []
+    risk_flag = "LOW"
+
+    if neg_streak >= thresholds.profit_margin_negative_years_high:
+        risk_flag = "HIGH"
+        narratives.append(
+            f"Profit margin has been negative for {neg_streak} consecutive years, "
+            "indicating that the company is loss-making on a sustained basis."
+        )
+    elif neg_streak >= thresholds.profit_margin_negative_years_medium:
+        risk_flag = "MEDIUM"
+        narratives.append(
+            f"Profit margin has been negative for {neg_streak} consecutive years "
+            f"({', '.join(str(y) for y in years_sorted[-neg_streak:])})."
+        )
+    elif compression_pts >= thresholds.profit_margin_compression_pts:
+        risk_flag = "MEDIUM"
+        narratives.append(
+            f"Profit margin has compressed by {compression_pts:.1f} percentage points "
+            f"from {earliest_margin:.1f}% ({years_sorted[0]}) to {latest_margin:.1f}% ({latest_year}). "
+            "Sustained margin compression, even with positive margins, suggests rising cost pressure "
+            "or pricing weakness."
+        )
+
+    if not narratives:
+        narratives.append(
+            f"Profit margin is {latest_margin:.1f}% in {latest_year}. "
+            "Margin does not show signs of significant compression."
+        )
+
+    return CrossAnalysisResult(
+        rule_id="PMG", title=title,
+        risk_flag=risk_flag, confidence=confidence,
+        narrative=" ".join(narratives),
+        recommendation=(
+            "Investigate the drivers of margin deterioration (cost inflation, revenue mix, "
+            "pricing pressure). Request a management explanation and forward projections."
+            if risk_flag in ("HIGH", "MEDIUM") else
+            "Profit margin does not raise concerns."
+        ),
+        trend_data=trend_data,
+    )
+
+
+def rule_staff_cost_burden(unified: UnifiedFinancialData, thresholds: CrossAnalysisThresholds = None) -> CrossAnalysisResult:
+    """SCB: Staff Cost Burden."""
+    title = "Staff Cost Burden"
+    if thresholds is None:
+        thresholds = CrossAnalysisThresholds()
+
+    staff_costs = unified.get_metric('StaffCosts')
+    revenue = unified.get_metric('Revenue')
+
+    if staff_costs is None:
+        return CrossAnalysisResult(
+            rule_id="SCB", title=title,
+            risk_flag="NOT_ASSESSED", confidence="SKIPPED",
+            narrative=(
+                "Staff costs not available — this field requires manual entry in the "
+                "Supplementary Accounts Data section. This rule is most relevant for "
+                "service-sector organisations where labour is the primary cost."
+            ),
+            recommendation="Enter staff costs in the Supplementary Accounts section to enable this analysis.",
+        )
+
+    if revenue is None or revenue <= 0:
+        return CrossAnalysisResult(
+            rule_id="SCB", title=title,
+            risk_flag="NOT_ASSESSED", confidence="SKIPPED",
+            narrative="Revenue data not available; staff cost ratio cannot be calculated.",
+            recommendation="Ensure revenue figures are available in accounts or entered manually.",
+        )
+
+    ratio = staff_costs / revenue
+    confidence = 'ENRICHED'
+
+    # Also check trend in staff cost ratio if multi-year data available
+    staff_series = unified.get_metric_series('StaffCosts')
+    rev_series = unified.get_metric_series('Revenue')
+    ratio_series = {}
+    shared_years = sorted(set(staff_series) & set(rev_series))
+    for yr in shared_years:
+        s = staff_series[yr]
+        r = rev_series[yr]
+        if s is not None and r and r > 0:
+            ratio_series[yr] = s / r
+
+    trend_data = _build_trend_data({yr: v * 100 for yr, v in ratio_series.items()}) if ratio_series else None
+
+    narratives = []
+    risk_flag = "LOW"
+
+    if ratio > thresholds.staff_cost_ratio_critical:
+        risk_flag = "HIGH"
+        narratives.append(
+            f"Staff costs (£{staff_costs:,.0f}) represent {ratio*100:.0f}% of revenue "
+            f"(£{revenue:,.0f}). At this level the organisation is highly exposed to any "
+            "revenue shortfall — even a modest decline would push it into operating losses."
+        )
+    elif ratio > thresholds.staff_cost_ratio_max:
+        risk_flag = "MEDIUM"
+        narratives.append(
+            f"Staff costs (£{staff_costs:,.0f}) represent {ratio*100:.0f}% of revenue "
+            f"(£{revenue:,.0f}). A high staff cost ratio leaves limited margin for other "
+            "operational costs and creates vulnerability to revenue volatility."
+        )
+
+    # Rising trend check
+    if len(ratio_series) >= 2:
+        rise_count = _consecutive_increase_count(ratio_series)
+        if rise_count >= 2:
+            narratives.append(
+                f"The staff cost ratio has been rising for {rise_count} consecutive years, "
+                "indicating that wage growth is outpacing revenue growth."
+            )
+            if risk_flag == "LOW":
+                risk_flag = "MEDIUM"
+
+    if not narratives:
+        narratives.append(
+            f"Staff costs represent {ratio*100:.0f}% of revenue. "
+            "This does not raise immediate concerns."
+        )
+
+    return CrossAnalysisResult(
+        rule_id="SCB", title=title,
+        risk_flag=risk_flag, confidence=confidence,
+        narrative=" ".join(narratives),
+        recommendation=(
+            "Assess whether the organisation has flexibility to reduce staff costs if "
+            "revenue falls. Consider whether grant conditions could be met if revenues "
+            "decline and payroll cannot be adjusted quickly."
+            if risk_flag in ("HIGH", "MEDIUM") else
+            "Staff cost burden does not raise concerns."
+        ),
+        trend_data=trend_data,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -1096,6 +1495,10 @@ def run_cross_analysis(
         rule_f2_intangible_asset_bloat(unified, thresholds),
         rule_f3_working_capital_deterioration(unified, thresholds),
         rule_f4_leverage_creep(unified, thresholds),
+        rule_roe_trend(unified, thresholds),
+        rule_asset_turnover(unified, thresholds),
+        rule_profit_margin(unified, thresholds),
+        rule_staff_cost_burden(unified, thresholds),
     ]
 
     # Composite warning
