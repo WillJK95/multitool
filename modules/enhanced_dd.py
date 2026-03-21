@@ -24,6 +24,20 @@ from rapidfuzz.fuzz import WRatio
 from ..utils.financial_analyzer import FinancialAnalyzer, iXBRLParser
 from ..ui.tooltip import Tooltip
 from ..api.companies_house import ch_get_data
+from ..api.charity_commission import (
+    cc_get_charity_details_v2,
+    cc_get_financial_history,
+    cc_get_assets_liabilities,
+    cc_get_overview,
+    cc_get_account_ar_info,
+    cc_get_governing_document,
+    cc_get_registration_history,
+    cc_get_regulatory_report,
+    cc_get_policy_information,
+    cc_get_other_regulators,
+    cc_get_other_names,
+    cc_get_area_of_operation,
+)
 from ..constants import (
     CONFIG_DIR,
     FILING_TYPE_CATEGORIES,
@@ -31,13 +45,17 @@ from ..constants import (
     MANUAL_INPUT_FIELDS_TIER2,
     BALANCE_SHEET_FIELDS,
     INCOME_STATEMENT_FIELDS,
+    CHARITY_BALANCE_SHEET_FIELDS,
+    CHARITY_INCOME_STATEMENT_FIELDS,
     PAYMENT_MECHANISMS,
+    CHARITY_EDD_THRESHOLDS,
 )
 from .base import InvestigationModuleBase
 from ..utils.helpers import log_message, clean_company_number
 from ..utils.edd_visualizations import (
     generate_company_timeline,
     fetch_grants_for_company,
+    fetch_grants_for_org,
     generate_grants_report_html,
     trace_ownership_chain,
     generate_static_ownership_graph,
@@ -48,14 +66,44 @@ from ..utils.edd_cross_analysis import (
     CrossAnalysisThresholds,
     run_cross_analysis,
 )
+from ..utils.edd_charity_checks import (
+    check_charity_status,
+    check_reporting_status,
+    check_regulatory_reports,
+    check_accounts_qualified,
+    check_accounts_submission_pattern,
+    check_net_assets,
+    check_reserves_ratio,
+    check_income_expenditure_trends,
+    check_income_volatility,
+    check_fundraising_cost_ratio,
+    check_government_funding_concentration,
+    check_trustee_remuneration,
+    check_policies,
+    check_trustee_count,
+    check_contact_transparency,
+    check_default_address as check_charity_default_address,
+    check_area_of_operation,
+    check_professional_fundraiser,
+)
+from ..utils.edd_charity_visualizations import (
+    generate_charity_chart_html,
+    generate_charity_profile_html,
+    generate_charity_limitations_html,
+)
+from ..utils.charity_financial_data import CharityFinancialData
 
 class EnhancedDueDiligence(InvestigationModuleBase):
-    def __init__(self, parent_app, api_key, back_callback, ch_token_bucket):
+    def __init__(self, parent_app, api_key, back_callback, ch_token_bucket,
+                 charity_api_key=None):
         super().__init__(parent_app, back_callback, api_key, help_key=None)
         self.ch_token_bucket = ch_token_bucket
+        self.charity_api_key = charity_api_key
         self.company_data = {}
+        self.charity_data = {}
         self.financial_analyzer = None
         self.accounts_loaded = False
+        self._entity_type = 'company'  # 'company' or 'charity'
         
         # Default thresholds (used by all check methods and cross-analysis rules)
         self.thresholds = {
@@ -124,30 +172,46 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self._build_ui()
     
     def _build_ui(self):
-        # Step 1: Company Lookup
-        lookup_frame = ttk.LabelFrame(
+        # Step 1: Entity Lookup
+        self._lookup_frame = ttk.LabelFrame(
             self.content_frame, text="Step 1: Enter Company Number", padding=10
         )
-        lookup_frame.pack(fill=tk.X, pady=5, padx=10)
-        
-        input_frame = ttk.Frame(lookup_frame)
+        self._lookup_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        # Entity type selector
+        entity_row = ttk.Frame(self._lookup_frame)
+        entity_row.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(entity_row, text="Entity Type:").pack(side=tk.LEFT, padx=(0, 10))
+        self.entity_type_var = tk.StringVar(value='company')
+        ttk.Radiobutton(
+            entity_row, text="Company", variable=self.entity_type_var,
+            value='company', command=self._on_entity_type_changed,
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Radiobutton(
+            entity_row, text="Charity", variable=self.entity_type_var,
+            value='charity', command=self._on_entity_type_changed,
+        ).pack(side=tk.LEFT)
+
+        input_frame = ttk.Frame(self._lookup_frame)
         input_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(input_frame, text="Company Number:").pack(side=tk.LEFT, padx=(0, 5))
+        self._input_label = ttk.Label(input_frame, text="Company Number:")
+        self._input_label.pack(side=tk.LEFT, padx=(0, 5))
         self.company_num_var = tk.StringVar()
         company_entry = ttk.Entry(input_frame, textvariable=self.company_num_var, width=15)
         company_entry.pack(side=tk.LEFT, padx=5)
         self.fetch_btn = ttk.Button(
-            input_frame, text="Fetch Company Data", command=self.fetch_company_profile
+            input_frame, text="Fetch Company Data", command=self.fetch_entity_profile
         )
         self.fetch_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.company_summary_text = tk.Text(lookup_frame, height=6, wrap=tk.WORD, state='disabled')
+
+        self.company_summary_text = tk.Text(self._lookup_frame, height=6, wrap=tk.WORD, state='disabled')
         self.company_summary_text.pack(fill=tk.X, pady=5)
-        
-        # Step 2: Upload Accounts
-        upload_frame = ttk.LabelFrame(
+
+        # Step 2: Upload Accounts (hidden for charity)
+        self._upload_frame = ttk.LabelFrame(
             self.content_frame, text="Step 2: Upload iXBRL Accounts (Optional)", padding=10
         )
+        upload_frame = self._upload_frame
         upload_frame.pack(fill=tk.X, pady=5, padx=10)
         
         buttons_frame = ttk.Frame(upload_frame)
@@ -163,6 +227,18 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         
         self.accounts_status_label = ttk.Label(upload_frame, text="No accounts loaded.")
         self.accounts_status_label.pack(side=tk.LEFT, padx=10)
+
+        # Charity mode note (replaces upload frame when charity selected)
+        self._charity_accounts_note = ttk.LabelFrame(
+            self.content_frame, text="Step 2: Financial Data", padding=10
+        )
+        ttk.Label(
+            self._charity_accounts_note,
+            text="Financial data for charities is retrieved automatically from the "
+                 "Charity Commission API. No accounts upload is required.",
+            wraplength=600,
+        ).pack(anchor='w')
+        # Not packed by default — shown only for charity mode
 
         # Step 2b: Manual Input Form (collapsible)
         self._build_manual_input_form()
@@ -708,12 +784,24 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
     def _open_supplementary_accounts_window(self):
         """Open a Toplevel window with Balance Sheet and Income Statement tabs."""
+        is_charity = self._entity_type == 'charity'
+
         win = tk.Toplevel(self.app)
         win.title("Supplementary Accounts Data")
         win.geometry("1050x620")
         win.minsize(700, 500)
         win.transient(self.app)
         win.grab_set()
+
+        # Select field definitions based on entity type
+        if is_charity:
+            bs_fields = CHARITY_BALANCE_SHEET_FIELDS
+            is_fields = CHARITY_INCOME_STATEMENT_FIELDS
+            is_tab_label = "Statement of Financial Activities"
+        else:
+            bs_fields = BALANCE_SHEET_FIELDS
+            is_fields = INCOME_STATEMENT_FIELDS
+            is_tab_label = "Income Statement"
 
         # --- shared year columns (max 5) ---
         year_columns = []   # list of {'period_end': StringVar, 'vars': {key: StringVar}}
@@ -750,7 +838,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         bs_outer = ttk.Frame(notebook)
         is_outer = ttk.Frame(notebook)
         notebook.add(bs_outer, text="Balance Sheet")
-        notebook.add(is_outer, text="Income Statement")
+        notebook.add(is_outer, text=is_tab_label)
 
         # Canvas + scrollbar per tab (with horizontal scrollbar for wide layouts)
         tab_grids = {}
@@ -814,7 +902,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         def _rebuild_grids():
             """Rebuild both tab grids to reflect the current year_columns."""
             validation_entries.clear()
-            for tab_name, fields in [('bs', BALANCE_SHEET_FIELDS), ('is', INCOME_STATEMENT_FIELDS)]:
+            for tab_name, fields in [('bs', bs_fields), ('is', is_fields)]:
                 grid = tab_grids[tab_name]
                 for w in grid.winfo_children():
                     w.destroy()
@@ -885,7 +973,44 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             n = len(year_columns)
             year_count_label.config(text=f"{n} year{'s' if n != 1 else ''}")
 
+        def _cc_extract_year(entry):
+            """Extract fiscal year from a CC API entry."""
+            for key in ('financial_period_end_date', 'fin_period_end_date', 'ar_cycle_reference'):
+                val = entry.get(key)
+                if val:
+                    try:
+                        if isinstance(val, str) and len(val) >= 4:
+                            return int(val[:4])
+                        elif isinstance(val, (int, float)):
+                            return int(val)
+                    except (ValueError, TypeError):
+                        continue
+            return None
+
+        def _safe_f(val):
+            """Convert to float or None."""
+            if val is None:
+                return None
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return None
+
+        def _set_if(ycol, field_key, val):
+            """Set a year column var if the value is not None."""
+            fval = _safe_f(val)
+            if fval is not None:
+                formatted = f"{fval:,.0f}" if fval == int(fval) else f"{fval:,.2f}"
+                ycol['vars'][field_key] = tk.StringVar(value=formatted)
+
         def _auto_populate():
+            """Populate fields from iXBRL data (company) or CC API data (charity)."""
+            if is_charity:
+                _auto_populate_charity()
+            else:
+                _auto_populate_company()
+
+        def _auto_populate_company():
             """Populate fields from iXBRL data if available."""
             if not self.accounts_loaded or not self.financial_analyzer:
                 messagebox.showinfo(
@@ -907,7 +1032,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     'vars': {},
                 })
 
-            all_fields = BALANCE_SHEET_FIELDS + INCOME_STATEMENT_FIELDS
+            all_fields = bs_fields + is_fields
             for field_key, auto_col, _ in all_fields:
                 if field_key is None:
                     continue
@@ -927,6 +1052,120 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             _rebuild_grids()
             _update_year_label()
 
+        def _auto_populate_charity():
+            """Populate fields from Charity Commission API data."""
+            fin_history = self.charity_data.get('financial_history') or []
+            assets_liab = self.charity_data.get('assets_liabilities') or []
+            overview = self.charity_data.get('overview') or {}
+
+            if not fin_history and not assets_liab:
+                messagebox.showinfo(
+                    "No Charity Data",
+                    "Fetch charity data first, then re-open this window.",
+                    parent=win,
+                )
+                return
+
+            # Sort financial history by period end date
+            sorted_fin = sorted(
+                fin_history,
+                key=lambda x: x.get('financial_period_end_date', '') or x.get('fin_period_end_date', '') or '',
+            )
+            # Index assets/liabilities by year
+            al_by_year = {}
+            for entry in (assets_liab if isinstance(assets_liab, list) else [assets_liab] if assets_liab else []):
+                yr_key = _cc_extract_year(entry)
+                if yr_key is not None:
+                    al_by_year[yr_key] = entry
+
+            # Determine years
+            years = []
+            for entry in sorted_fin:
+                yr = _cc_extract_year(entry)
+                if yr is not None and yr not in years:
+                    years.append(yr)
+            for yr in sorted(al_by_year.keys()):
+                if yr not in years:
+                    years.append(yr)
+            years = sorted(years)[:5]
+
+            year_columns.clear()
+            # Index financial data by year
+            fin_by_year = {}
+            for entry in sorted_fin:
+                yr = _cc_extract_year(entry)
+                if yr is not None:
+                    fin_by_year[yr] = entry
+
+            for yr in years:
+                pe_date = ''
+                fin = fin_by_year.get(yr, {})
+                pe_raw = fin.get('financial_period_end_date') or fin.get('fin_period_end_date', '')
+                if pe_raw and len(str(pe_raw)) >= 10:
+                    pe_date = str(pe_raw)[:10]
+                elif yr:
+                    pe_date = f"{yr}-03-31"  # Default to fiscal year end
+
+                ycol = {'period_end': tk.StringVar(value=pe_date), 'vars': {}}
+
+                al = al_by_year.get(yr, {})
+
+                # Populate balance sheet fields from assets/liabilities
+                _set_if(ycol, 'TangibleAssets', al.get('assets_own_use'))
+                _set_if(ycol, 'LongTermInvestments', al.get('assets_long_term_investment'))
+                _set_if(ycol, 'CurrentAssets', al.get('assets_other_assets'))
+                _set_if(ycol, 'TotalLiabilities', al.get('assets_total_liabilities'))
+                _set_if(ycol, 'PensionAssets', al.get('defined_net_assets_pension'))
+
+                # Derive net assets
+                own = _safe_f(al.get('assets_own_use')) or 0
+                invest = _safe_f(al.get('assets_long_term_investment')) or 0
+                pension = _safe_f(al.get('defined_net_assets_pension')) or 0
+                other = _safe_f(al.get('assets_other_assets')) or 0
+                liab = _safe_f(al.get('assets_total_liabilities')) or 0
+                if any(al.get(k) is not None for k in
+                       ('assets_own_use', 'assets_long_term_investment',
+                        'assets_other_assets', 'assets_total_liabilities')):
+                    net = own + invest + pension + other - liab
+                    _set_if(ycol, 'NetAssets', net)
+                    _set_if(ycol, 'TotalCharityFunds', net)
+
+                # Employees from overview (single value, apply to most recent year)
+                if yr == years[-1] and overview.get('employees') is not None:
+                    _set_if(ycol, 'Employees', overview.get('employees'))
+
+                # Populate income statement fields from financial history
+                _set_if(ycol, 'TotalIncome', fin.get('inc_total'))
+                _set_if(ycol, 'IncCharitableActivities', fin.get('inc_charitable_activities'))
+                _set_if(ycol, 'IncDonationsLegacies', fin.get('inc_donations_and_legacies'))
+
+                # Combined: Other Trading + Investments
+                trading = _safe_f(fin.get('inc_other_trading_activities')) or 0
+                investment = _safe_f(fin.get('inc_investment')) or 0
+                if fin.get('inc_other_trading_activities') is not None or fin.get('inc_investment') is not None:
+                    _set_if(ycol, 'IncTradingInvestment', trading + investment)
+
+                _set_if(ycol, 'TotalExpenditure', fin.get('exp_total'))
+                _set_if(ycol, 'ExpCharitableActivities', fin.get('exp_charitable_activities'))
+                _set_if(ycol, 'ExpFundraising', fin.get('exp_raising_funds'))
+
+                # Combined: Governance + Other
+                governance = _safe_f(fin.get('exp_governance')) or 0
+                exp_other = _safe_f(fin.get('exp_other')) or 0
+                if fin.get('exp_governance') is not None or fin.get('exp_other') is not None:
+                    _set_if(ycol, 'ExpGovernanceOther', governance + exp_other)
+
+                # Net income
+                inc = _safe_f(fin.get('inc_total'))
+                exp = _safe_f(fin.get('exp_total'))
+                if inc is not None and exp is not None:
+                    _set_if(ycol, 'NetIncome', inc - exp)
+
+                year_columns.append(ycol)
+
+            _rebuild_grids()
+            _update_year_label()
+
         def _save_and_close():
             """Validate, persist data to self._manual_year_panels, close."""
             invalid = []
@@ -941,6 +1180,79 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     parent=win,
                 )
                 return
+
+            # --- Sum validation for charity supplementary accounts ---
+            if is_charity:
+                discrepancies = []
+                for ycol in year_columns:
+                    pe = ycol['period_end'].get() or '?'
+                    vd = ycol['vars']
+
+                    def _val(key):
+                        v = vd.get(key)
+                        if v is None:
+                            return None
+                        txt = v.get().strip().replace(',', '') if isinstance(v, tk.StringVar) else ''
+                        if not txt:
+                            return None
+                        try:
+                            return float(txt)
+                        except (ValueError, TypeError):
+                            return None
+
+                    # Income check
+                    inc_parts = [_val('IncCharitableActivities'),
+                                 _val('IncDonationsLegacies'),
+                                 _val('IncTradingInvestment')]
+                    inc_total = _val('TotalIncome')
+                    if inc_total is not None and any(p is not None for p in inc_parts):
+                        inc_sum = sum(p for p in inc_parts if p is not None)
+                        if abs(inc_sum - inc_total) > 1:
+                            discrepancies.append(
+                                f"  {pe}: Income constituents sum to "
+                                f"\u00a3{inc_sum:,.0f} but Total Income is "
+                                f"\u00a3{inc_total:,.0f}")
+
+                    # Expenditure check
+                    exp_parts = [_val('ExpCharitableActivities'),
+                                 _val('ExpFundraising'),
+                                 _val('ExpGovernanceOther')]
+                    exp_total = _val('TotalExpenditure')
+                    if exp_total is not None and any(p is not None for p in exp_parts):
+                        exp_sum = sum(p for p in exp_parts if p is not None)
+                        if abs(exp_sum - exp_total) > 1:
+                            discrepancies.append(
+                                f"  {pe}: Expenditure constituents sum to "
+                                f"\u00a3{exp_sum:,.0f} but Total Expenditure is "
+                                f"\u00a3{exp_total:,.0f}")
+
+                    # Net assets check
+                    tangible = _val('TangibleAssets')
+                    lt_inv = _val('LongTermInvestments')
+                    cur_assets = _val('CurrentAssets')
+                    liabilities = _val('TotalLiabilities')
+                    pension = _val('PensionAssets')
+                    net_assets = _val('NetAssets')
+                    asset_parts = [tangible, lt_inv, cur_assets, pension]
+                    if net_assets is not None and any(p is not None for p in asset_parts + [liabilities]):
+                        asset_sum = sum(p for p in asset_parts if p is not None)
+                        liab_val = liabilities if liabilities is not None else 0
+                        calc_net = asset_sum - liab_val
+                        if abs(calc_net - net_assets) > 1:
+                            discrepancies.append(
+                                f"  {pe}: Assets minus liabilities = "
+                                f"\u00a3{calc_net:,.0f} but Net Assets is "
+                                f"\u00a3{net_assets:,.0f}")
+
+                if discrepancies:
+                    msg = ("The following totals don't match their constituent "
+                           "values:\n\n" + "\n".join(discrepancies) +
+                           "\n\nThis may be due to rounding or other income/"
+                           "expenditure categories not captured here.\n\n"
+                           "Save anyway?")
+                    if not messagebox.askokcancel("Sum Mismatch", msg,
+                                                 parent=win):
+                        return
 
             self._manual_year_panels = []
             filled_count = 0
@@ -977,7 +1289,10 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         ttk.Button(btn_bar, text="Clear All", command=_clear_all).pack(
             side=tk.LEFT, padx=(0, 15))
 
-        if self.accounts_loaded:
+        if is_charity and self.charity_data:
+            ttk.Button(btn_bar, text="Auto-populate from CC API",
+                       command=_auto_populate).pack(side=tk.LEFT, padx=(0, 5))
+        elif not is_charity and self.accounts_loaded:
             ttk.Button(btn_bar, text="Auto-populate from iXBRL",
                        command=_auto_populate).pack(side=tk.LEFT, padx=(0, 5))
 
@@ -1010,11 +1325,15 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         _rebuild_grids()
         _update_year_label()
 
-        # Auto-populate if iXBRL loaded and no manual data yet
-        if self.accounts_loaded and not any(
+        # Auto-populate if data available and no manual data yet
+        has_data = any(
             any(v.get().strip() for v in yc['vars'].values()) for yc in year_columns
-        ):
-            _auto_populate()
+        )
+        if not has_data:
+            if is_charity and self.charity_data:
+                _auto_populate()
+            elif not is_charity and self.accounts_loaded:
+                _auto_populate()
 
     def _toggle_manual_input(self):
         """Show/hide the manual input form."""
@@ -1075,18 +1394,203 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         return years_data
 
+    def _on_entity_type_changed(self):
+        """Update UI when entity type radio button changes."""
+        is_charity = self.entity_type_var.get() == 'charity'
+        self._entity_type = 'charity' if is_charity else 'company'
+
+        # Update Step 1 labels
+        if is_charity:
+            self._lookup_frame.config(text="Step 1: Enter Charity Registration Number")
+            self._input_label.config(text="Registration Number:")
+            self.fetch_btn.config(text="Fetch Charity Data")
+        else:
+            self._lookup_frame.config(text="Step 1: Enter Company Number")
+            self._input_label.config(text="Company Number:")
+            self.fetch_btn.config(text="Fetch Company Data")
+
+        # Toggle Step 2: upload vs charity note
+        # The manual input toggle (grant details + supplementary accounts) stays
+        # visible for both modes — only the iXBRL upload frame is swapped.
+        if is_charity:
+            self._upload_frame.pack_forget()
+            self._charity_accounts_note.pack(fill=tk.X, pady=5, padx=10,
+                                             after=self._lookup_frame)
+            # Re-place the manual toggle after the charity note
+            if hasattr(self, '_manual_toggle_widget'):
+                self._manual_toggle_widget.pack_forget()
+                self.manual_input_frame.pack_forget()
+                self._manual_toggle_widget.pack(anchor='w', padx=10, pady=(5, 0),
+                                                after=self._charity_accounts_note)
+        else:
+            self._charity_accounts_note.pack_forget()
+            self._upload_frame.pack(fill=tk.X, pady=5, padx=10,
+                                    after=self._lookup_frame)
+            if hasattr(self, '_manual_toggle_widget'):
+                self._manual_toggle_widget.pack_forget()
+                self.manual_input_frame.pack_forget()
+                self._manual_toggle_widget.pack(anchor='w', padx=10, pady=(5, 0),
+                                                after=self._upload_frame)
+
+        # Update Step 3 checkbox labels
+        if 'ownership_graph' in self.check_widgets:
+            text = ("Linked charities & subsidiary structure"
+                    if is_charity
+                    else "Corporate ownership structure graph (makes additional API calls per corporate PSC)")
+            self.check_widgets['ownership_graph'].config(text=text)
+
+        if 'director_history' in self.check_widgets:
+            text = ("Deep investigation — trustee cross-charity analysis & linked charity check (slow)"
+                    if is_charity
+                    else "Deep investigation — director insolvency history & phoenix check (slow)")
+            self.check_widgets['director_history'].config(text=text)
+
+        # Clear previous data and reset
+        self.company_data = {}
+        self.charity_data = {}
+        self._manual_year_panels = []
+        if hasattr(self, '_supp_status_label'):
+            self._supp_status_label.config(text="No data entered.", foreground='grey')
+        self.company_summary_text.config(state='normal')
+        self.company_summary_text.delete('1.0', tk.END)
+        self.company_summary_text.config(state='disabled')
+        self.generate_btn.config(state='disabled')
+        self.status_var.set(f"Ready. Enter a {'charity registration number' if is_charity else 'company number'} to begin.")
+
+    def fetch_entity_profile(self):
+        """Dispatch to company or charity fetch based on entity type."""
+        if self._entity_type == 'charity':
+            self._fetch_charity_profile()
+        else:
+            self.fetch_company_profile()
+
+    def _fetch_charity_profile(self):
+        """Validate and start charity data fetch."""
+        reg_num = self.company_num_var.get().strip()
+        if not reg_num:
+            messagebox.showerror("Input Error", "Please enter a charity registration number.")
+            return
+
+        # Validate: numeric only, 1-7 digits
+        if not reg_num.isdigit() or len(reg_num) > 7:
+            messagebox.showerror(
+                "Input Error",
+                "Charity registration number must be numeric (1-7 digits)."
+            )
+            return
+
+        if not self.charity_api_key:
+            messagebox.showerror(
+                "API Key Missing",
+                "A Charity Commission API key is required. "
+                "Configure it via File → Manage API Keys."
+            )
+            return
+
+        self.fetch_btn.config(state='disabled')
+        self.status_var.set(f"Fetching charity data for {reg_num}...")
+        threading.Thread(
+            target=self._fetch_charity_thread, args=(reg_num,), daemon=True
+        ).start()
+
+    def _fetch_charity_thread(self, reg_num):
+        """Background thread to fetch all charity data from CC API."""
+        try:
+            api_key = self.charity_api_key
+
+            # Core profile
+            details, error = cc_get_charity_details_v2(api_key, reg_num)
+            if error or not details:
+                raise ValueError(
+                    f"Could not fetch charity {reg_num}. "
+                    f"Please check the registration number. ({error})"
+                )
+
+            # Financial history (5-year income/expenditure)
+            self.safe_update(self.status_var.set, "Fetching financial history...")
+            fin_history, _ = cc_get_financial_history(api_key, reg_num)
+
+            # Assets & liabilities
+            self.safe_update(self.status_var.set, "Fetching assets & liabilities...")
+            assets_liab, _ = cc_get_assets_liabilities(api_key, reg_num)
+
+            # Overview (annual return data)
+            self.safe_update(self.status_var.set, "Fetching overview data...")
+            overview, _ = cc_get_overview(api_key, reg_num)
+
+            # Accounts submission info
+            account_ar, _ = cc_get_account_ar_info(api_key, reg_num)
+
+            # Governing document
+            gov_doc, _ = cc_get_governing_document(api_key, reg_num)
+
+            # Registration history
+            reg_history, _ = cc_get_registration_history(api_key, reg_num)
+
+            self.charity_data = {
+                'details': details,
+                'financial_history': fin_history,
+                'assets_liabilities': assets_liab,
+                'overview': overview or {},
+                'account_ar_info': account_ar,
+                'governing_document': gov_doc or {},
+                'registration_history': reg_history,
+            }
+
+            self.after(100, self._display_charity_summary)
+            self.safe_update(self.status_var.set, "Charity data loaded successfully.")
+            self.safe_update(self.generate_btn.config, {'state': 'normal'})
+
+        except Exception as e:
+            log_message(f"Error fetching charity data: {e}")
+            self.safe_update(messagebox.showerror, "Error", str(e))
+            self.safe_update(self.status_var.set, "Error fetching charity data.")
+        finally:
+            self.safe_update(self.fetch_btn.config, {'state': 'normal'})
+
+    def _display_charity_summary(self):
+        """Display basic charity info in the summary box."""
+        details = self.charity_data.get('details', {})
+        overview = self.charity_data.get('overview', {})
+
+        status_map = {'R': 'Registered', 'RM': 'Removed'}
+        status = status_map.get(details.get('reg_status', ''), details.get('reg_status', 'N/A'))
+
+        summary = f"Charity Name: {details.get('charity_name', 'N/A')}\n"
+        summary += f"Registration Number: {details.get('reg_charity_number', 'N/A')}\n"
+        summary += f"Status: {status}\n"
+        summary += f"Registered: {format_display_date(details.get('date_of_registration', ''))}\n"
+
+        addr_parts = []
+        for i in range(1, 6):
+            part = details.get(f'address_line_{i}') or details.get(f'address_line{i}')
+            if part:
+                addr_parts.append(str(part).strip())
+        postcode = details.get('address_post_code', '')
+        if postcode:
+            addr_parts.append(str(postcode).strip())
+        summary += f"Address: {', '.join(addr_parts) if addr_parts else 'N/A'}\n"
+
+        trustees = overview.get('trustees', 'N/A')
+        summary += f"Active Trustees: {trustees}"
+
+        self.company_summary_text.config(state='normal')
+        self.company_summary_text.delete('1.0', tk.END)
+        self.company_summary_text.insert('1.0', summary)
+        self.company_summary_text.config(state='disabled')
+
     def fetch_company_profile(self):
         """Fetch comprehensive company data from API."""
         cnum_raw = self.company_num_var.get().strip()
         if not cnum_raw:
             messagebox.showerror("Input Error", "Please enter a company number.")
             return
-        
+
         cnum = clean_company_number(cnum_raw)
-        
+
         self.fetch_btn.config(state='disabled')
         self.status_var.set(f"Fetching data for {cnum}...")
-        
+
         threading.Thread(target=self._fetch_company_thread, args=(cnum,), daemon=True).start()
     
     def _fetch_company_thread(self, cnum):
@@ -1249,6 +1753,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
     
     def _generate_report_thread(self):
         """Main report generation logic."""
+        if self._entity_type == 'charity':
+            return self._generate_charity_report_thread()
         try:
             self.safe_update(self.status_var.set, "Analyzing company data...")
             
@@ -1406,6 +1912,551 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         finally:
         # Add this finally block
             self.safe_update(self._finish_report_generation)
+    # --- Charity Report Generation ---
+
+    def _generate_charity_report_thread(self):
+        """Generate a full EDD report for a charity."""
+        try:
+            self.safe_update(self.status_var.set, "Analyzing charity data...")
+
+            # Merge default thresholds with charity-specific overrides
+            charity_thresholds = dict(self.thresholds)
+            charity_thresholds.update(CHARITY_EDD_THRESHOLDS)
+
+            # Fetch additional data needed for report generation
+            api_key = self.charity_api_key
+            reg_num = self.charity_data['details'].get('reg_charity_number', '')
+
+            # Regulatory reports
+            self.safe_update(self.status_var.set, "Fetching regulatory reports...")
+            reg_reports, _ = cc_get_regulatory_report(api_key, reg_num)
+            self.charity_data['regulatory_reports'] = reg_reports
+
+            # Policy information
+            self.safe_update(self.status_var.set, "Fetching policy information...")
+            policies, _ = cc_get_policy_information(api_key, reg_num)
+            self.charity_data['policies'] = policies
+
+            # Other regulators
+            other_regs, _ = cc_get_other_regulators(api_key, reg_num)
+            self.charity_data['other_regulators'] = other_regs
+
+            # Other names
+            other_names, _ = cc_get_other_names(api_key, reg_num)
+            self.charity_data['other_names'] = other_names
+
+            # Areas of operation
+            areas, _ = cc_get_area_of_operation(api_key, reg_num)
+            self.charity_data['area_of_operation'] = areas
+
+            # Run all charity checks
+            self.safe_update(self.status_var.set, "Running charity risk checks...")
+            findings = []
+
+            check_funcs = [
+                check_charity_status,
+                check_reporting_status,
+                check_regulatory_reports,
+                check_accounts_qualified,
+                check_accounts_submission_pattern,
+                check_net_assets,
+                check_reserves_ratio,
+                check_income_expenditure_trends,
+                check_income_volatility,
+                check_fundraising_cost_ratio,
+                check_government_funding_concentration,
+                check_trustee_remuneration,
+                check_policies,
+                check_trustee_count,
+                check_contact_transparency,
+                check_charity_default_address,
+                check_area_of_operation,
+                check_professional_fundraiser,
+            ]
+
+            for check_fn in check_funcs:
+                if self.cancel_flag.is_set():
+                    return
+                try:
+                    findings.extend(check_fn(self.charity_data, charity_thresholds))
+                except Exception as e:
+                    log_message(f"Error in charity check {check_fn.__name__}: {e}")
+
+            # Fetch grants data if enabled
+            self._grants_data = None
+            if self.check_vars.get('grants_lookup', tk.BooleanVar(value=False)).get():
+                self.safe_update(self.status_var.set, "Fetching grants data from GrantNav...")
+                try:
+                    # Fetch by charity identifier
+                    grants = fetch_grants_for_org(f"GB-CHC-{reg_num}")
+                    # Also try linked company number if available
+                    linked_co = self.charity_data.get('details', {}).get(
+                        'company_number') or ''
+                    linked_co = linked_co.strip()
+                    if linked_co:
+                        co_grants = fetch_grants_for_company(linked_co)
+                        if co_grants:
+                            seen_ids = {g.get('id') for g in grants if g.get('id')}
+                            for g in co_grants:
+                                if g.get('id') not in seen_ids:
+                                    grants.append(g)
+                    self._grants_data = grants
+                except Exception as e:
+                    log_message(f"Error fetching grants data for charity: {e}")
+
+            # Cross-analysis rules
+            self._cross_analysis_report = None
+            if self.check_vars.get('cross_analysis', tk.BooleanVar(value=False)).get():
+                self.safe_update(self.status_var.set, "Running cross-analysis rules...")
+                try:
+                    charity_financial = CharityFinancialData(
+                        financial_history=self.charity_data.get('financial_history'),
+                        assets_liabilities=self.charity_data.get('assets_liabilities'),
+                        overview=self.charity_data.get('overview'),
+                        manual_data=getattr(self, '_manual_data', None),
+                    )
+                    late_filing_detected = any(
+                        f.get('severity') in ('Critical', 'Elevated')
+                        and 'late' in f.get('title', '').lower()
+                        for f in findings
+                    )
+                    # Charity age
+                    charity_age_months = None
+                    reg_date_str = self.charity_data.get('details', {}).get(
+                        'date_of_registration', '')
+                    if reg_date_str:
+                        try:
+                            reg_date = datetime.strptime(reg_date_str[:10], '%Y-%m-%d')
+                            charity_age_months = (datetime.now() - reg_date).days / 30.0
+                        except ValueError:
+                            pass
+
+                    self._cross_analysis_report = run_cross_analysis(
+                        unified=charity_financial,
+                        grants_data=self._grants_data,
+                        proposed_award=self._proposed_award,
+                        payment_mechanism=self._payment_mechanism,
+                        late_filing_detected=late_filing_detected,
+                        company_age_months=charity_age_months,
+                        accounts_type=None,
+                        igm_mode=self._igm_mode,
+                        thresholds=self._ca_thresholds,
+                    )
+                except Exception as e:
+                    log_message(f"Error running cross-analysis for charity: {e}")
+
+            # Generate report HTML
+            self.safe_update(self.status_var.set, "Generating report...")
+            html_content = self._build_charity_report_html(findings)
+
+            # Save and open
+            filename = os.path.join(
+                CONFIG_DIR,
+                f"DD_Report_Charity_{reg_num}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+            )
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+
+            self.safe_update(self.status_var.set, "Report generated! Opening in browser...")
+            webbrowser.open(f"file://{os.path.realpath(filename)}")
+
+        except Exception as e:
+            error_details = traceback.format_exc()
+            log_message(f"Error generating charity report: {e}\n{error_details}")
+            self.safe_update(messagebox.showerror, "Error",
+                             f"Report generation failed: {e}")
+        finally:
+            self.safe_update(self._finish_report_generation)
+
+    def _build_charity_report_html(self, findings):
+        """Generate the full HTML report for a charity."""
+        details = self.charity_data.get('details', {})
+        charity_name = html.escape(details.get('charity_name', 'Unknown Charity'))
+        reg_number = html.escape(str(details.get('reg_charity_number', 'N/A')))
+
+        # Categorize findings
+        critical = [f for f in findings if f['severity'] == 'Critical']
+        elevated = [f for f in findings if f['severity'] == 'Elevated']
+        moderate = [f for f in findings if f['severity'] == 'Moderate']
+        positive = [f for f in findings if f['severity'] == 'Positive']
+
+        # Generate charity-specific charts
+        chart_html = generate_charity_chart_html(self.charity_data)
+
+        # Reuse the same CSS from the company report
+        html_output = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Due Diligence Report - {charity_name}</title>
+    <style>
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }}
+        .header {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+        }}
+        .header h1 {{ margin: 0 0 10px 0; }}
+        .header p {{ margin: 5px 0; opacity: 0.9; }}
+        .section {{
+            background: white;
+            padding: 25px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        .section h2 {{
+            color: #333;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+            margin-top: 0;
+        }}
+        .finding {{
+            margin: 20px 0;
+            padding: 15px;
+            border-left: 4px solid #ccc;
+            background: #f9f9f9;
+        }}
+        .finding.critical {{ border-left-color: #dc3545; background: #fff5f5; }}
+        .finding.elevated {{ border-left-color: #fd7e14; background: #fff9f5; }}
+        .finding.moderate {{ border-left-color: #ffc107; background: #fffef5; }}
+        .finding.positive {{ border-left-color: #28a745; background: #f5fff5; }}
+        .finding h3 {{ margin: 0 0 10px 0; color: #333; }}
+        .finding .severity {{
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-right: 10px;
+        }}
+        .severity.critical {{ background: #dc3545; color: white; }}
+        .severity.elevated {{ background: #fd7e14; color: white; }}
+        .severity.moderate {{ background: #ffc107; color: #333; }}
+        .severity.positive {{ background: #28a745; color: white; }}
+        .recommendation {{
+            margin-top: 10px;
+            padding: 10px;
+            background: white;
+            border-left: 3px solid #667eea;
+            font-style: italic;
+        }}
+        .company-profile {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }}
+        .profile-item {{
+            padding: 10px;
+            background: #f9f9f9;
+            border-radius: 5px;
+        }}
+        .profile-item strong {{
+            display: block;
+            color: #667eea;
+            margin-bottom: 5px;
+        }}
+        .executive-summary {{
+            font-size: 16px;
+            line-height: 1.6;
+            padding: 20px;
+            background: #f0f4ff;
+            border-radius: 5px;
+            border-left: 4px solid #667eea;
+        }}
+        .chart-container {{
+            margin: 20px 0;
+            text-align: center;
+        }}
+        .chart-container img {{
+            max-width: 100%;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }}
+        .grants-summary {{
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin: 20px 0;
+        }}
+        .grants-stat {{
+            padding: 15px;
+            background: #f0f4ff;
+            border-radius: 5px;
+            text-align: center;
+            font-size: 18px;
+        }}
+        .grants-stat strong {{
+            display: block;
+            color: #667eea;
+            font-size: 12px;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+        }}
+        .grants-table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+            font-size: 13px;
+        }}
+        .grants-table th {{
+            background: #667eea;
+            color: white;
+            padding: 10px;
+            text-align: left;
+        }}
+        .grants-table td {{
+            padding: 8px 10px;
+            border-bottom: 1px solid #eee;
+        }}
+        .grants-table tr:hover td {{ background: #f5f7ff; }}
+        .cross-analysis-summary {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }}
+        .cross-analysis-summary th {{
+            background: #667eea;
+            color: white;
+            padding: 10px;
+            text-align: left;
+            font-size: 13px;
+        }}
+        .cross-analysis-summary td {{
+            padding: 8px 10px;
+            border-bottom: 1px solid #eee;
+            font-size: 13px;
+        }}
+        .risk-high {{ background: #dc3545; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
+        .risk-medium {{ background: #ffc107; color: #333; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
+        .risk-low {{ background: #28a745; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
+        .risk-not-assessed {{ background: #6c757d; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
+        .confidence-auto {{ background: #667eea; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
+        .confidence-enriched {{ background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
+        .confidence-limited {{ background: #fd7e14; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
+        .confidence-skipped {{ background: #6c757d; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
+        .composite-warning {{
+            background: #fff5f5;
+            border: 2px solid #dc3545;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            font-weight: bold;
+            color: #dc3545;
+        }}
+        .pattern-warning {{
+            background: #fff9f5;
+            border: 2px solid #fd7e14;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            font-weight: bold;
+            color: #856404;
+        }}
+        .cross-rule-card {{
+            margin: 20px 0;
+            padding: 15px;
+            border-left: 4px solid #ccc;
+            background: #f9f9f9;
+        }}
+        .cross-rule-card.high {{ border-left-color: #dc3545; background: #fff5f5; }}
+        .cross-rule-card.medium {{ border-left-color: #ffc107; background: #fffef5; }}
+        .cross-rule-card.low {{ border-left-color: #28a745; background: #f5fff5; }}
+        .cross-rule-card.not-assessed {{ border-left-color: #6c757d; background: #f9f9f9; }}
+        .rule-id-badge {{
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-right: 8px;
+        }}
+        .quality-caveat {{
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 5px;
+            padding: 10px;
+            margin: 10px 0;
+            font-size: 13px;
+        }}
+        .grant-detail {{
+            margin: 15px 0;
+            padding: 15px;
+            background: #f9f9f9;
+            border-left: 3px solid #667eea;
+            border-radius: 0 5px 5px 0;
+        }}
+        .grant-detail h4 {{ margin: 0 0 5px 0; color: #333; }}
+        .grant-meta {{ font-size: 12px; color: #666; margin: 0 0 10px 0; }}
+        .trend-table {{
+            width: auto;
+            border-collapse: collapse;
+            margin: 10px 0;
+            font-size: 12px;
+        }}
+        .trend-table th {{
+            background: #f0f4ff;
+            padding: 6px 12px;
+            text-align: right;
+            border: 1px solid #ddd;
+        }}
+        .trend-table td {{
+            padding: 6px 12px;
+            text-align: right;
+            border: 1px solid #eee;
+        }}
+        @media print {{
+            body {{ background: white; }}
+            .section {{ box-shadow: none; border: 1px solid #ddd; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Enhanced Due Diligence Report</h1>
+        <p><strong>{charity_name}</strong></p>
+        <p>Charity Registration Number: {reg_number}</p>
+        <p>Report Generated: {datetime.now().strftime('%d %B %Y at %H:%M')}</p>
+    </div>
+
+    <div class="section">
+        <h2>1. Executive Summary</h2>
+        <div class="executive-summary">
+            {self._generate_charity_executive_summary(critical, elevated, moderate, charity_name)}
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>2. Charity Profile</h2>
+        {generate_charity_profile_html(self.charity_data)}
+    </div>
+
+    {self._generate_findings_section('Critical Risk Indicators', critical)}
+    {self._generate_findings_section('Elevated Risk Indicators', elevated)}
+    {self._generate_findings_section('Moderate Risk Indicators', moderate)}
+
+    {chart_html}
+
+    {self._generate_grants_section()}
+
+    {self._generate_cross_analysis_section()}
+
+    {self._generate_charity_positive_indicators_html(positive)}
+
+    <div class="section">
+        <h2>Data Limitations & Disclaimers</h2>
+        {generate_charity_limitations_html(self.charity_data, self._grants_data is not None)}
+    </div>
+
+    <div class="section" style="background: #f0f4ff; text-align: center;">
+        <p style="margin: 0; color: #666;">
+            Report generated by Data Investigation Multi-Tool<br>
+            This report is based on publicly available information and should not be the sole basis for decision-making.
+        </p>
+    </div>
+</body>
+</html>
+"""
+        return html_output
+
+    def _generate_charity_executive_summary(self, critical, elevated, moderate, charity_name):
+        """Generate executive summary for a charity report."""
+        total_concerns = len(critical) + len(elevated) + len(moderate)
+
+        if total_concerns == 0:
+            summary = (
+                f"Based on the analysis performed, {html.escape(charity_name)} shows no "
+                "significant risk indicators in the areas examined. However, this assessment "
+                "is based on available public information and should be supplemented with "
+                "additional due diligence as appropriate for your specific requirements."
+            )
+        else:
+            summary = (
+                f"Based on available data, {charity_name} shows "
+                f"<strong>{total_concerns} concerning indicator(s)</strong> that warrant "
+                "further investigation"
+            )
+
+            if critical:
+                key_issues = [f['title'] for f in critical[:2]]
+                summary += f", particularly around: <strong>{', '.join(key_issues)}</strong>"
+
+            summary += ".<br><br>"
+
+            if critical:
+                summary += (
+                    f"<strong>Critical findings ({len(critical)}):</strong> "
+                    "These are severe red flags that require immediate attention and may "
+                    "indicate the charity is unsuitable for the intended funding "
+                    "relationship.<br><br>"
+                )
+            if elevated:
+                summary += (
+                    f"<strong>Elevated risk findings ({len(elevated)}):</strong> "
+                    "These indicators suggest heightened risk that should be investigated "
+                    "further before proceeding.<br><br>"
+                )
+            if moderate:
+                summary += (
+                    f"<strong>Moderate concerns ({len(moderate)}):</strong> "
+                    "These factors should be considered and may require additional "
+                    "information or monitoring."
+                )
+
+        # Cross-analysis summary
+        report = getattr(self, '_cross_analysis_report', None)
+        if report:
+            high_count = sum(1 for r in report.results if r.risk_flag == 'HIGH')
+            medium_count = sum(1 for r in report.results if r.risk_flag == 'MEDIUM')
+            assessed = sum(
+                1 for r in report.results
+                if r.risk_flag != 'NOT_ASSESSED' and r.confidence != 'SKIPPED'
+            )
+            if assessed > 0:
+                summary += f"<br><br><strong>Cross-analysis ({assessed} rules assessed):</strong> "
+                if high_count > 0:
+                    summary += f"{high_count} high-risk and {medium_count} medium-risk indicator(s) identified. "
+                elif medium_count > 0:
+                    summary += f"{medium_count} medium-risk indicator(s) identified. "
+                else:
+                    summary += "No high or medium-risk indicators identified. "
+                summary += "See the Financial &amp; Grant Cross-Analysis section for details."
+
+        return summary
+
+    def _generate_charity_positive_indicators_html(self, positive_findings):
+        """Generate positive indicators section for charity report."""
+        html_output = '<div class="section"><h2>Positive Indicators</h2>'
+
+        if positive_findings:
+            for finding in positive_findings:
+                html_output += f'''
+                <div class="finding positive">
+                    <h3>{html.escape(finding['title'])}</h3>
+                    <p>{html.escape(finding['narrative'])}</p>
+                </div>
+                '''
+        else:
+            html_output += (
+                '<p>No specific positive indicators were identified in the analysis '
+                'performed. This does not indicate problems, but rather reflects the '
+                'focus of due diligence on identifying risks.</p>'
+            )
+
+        html_output += '</div>'
+        return html_output
+
     # --- Risk Check Functions ---
     
     def _check_company_status(self):
@@ -3233,7 +4284,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         # Summary table
         html_out += '''
         <table class="cross-analysis-summary">
-            <tr><th>Rule</th><th>Check</th><th>Risk</th><th>Confidence</th></tr>
+            <tr><th>Check</th><th>Risk</th><th>Confidence</th></tr>
         '''
         for r in report.results:
             risk_class = r.risk_flag.lower().replace('_', '-')
@@ -3241,7 +4292,6 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             emoji = risk_emoji.get(r.risk_flag, '')
             html_out += f'''
             <tr>
-                <td><span class="rule-id-badge">{html.escape(r.rule_id)}</span></td>
                 <td>{html.escape(r.title)}</td>
                 <td><span class="risk-{risk_class}">{emoji} {html.escape(r.risk_flag)}</span></td>
                 <td><span class="confidence-{conf_class}">{html.escape(r.confidence)}</span></td>
@@ -3251,7 +4301,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         # Individual rule cards
         for r in report.results:
-            if r.confidence == 'SKIPPED':
+            if r.risk_flag == 'NOT_ASSESSED':
                 continue
 
             risk_class = r.risk_flag.lower().replace('_', '-')
@@ -3261,7 +4311,6 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             html_out += f'''
             <div class="cross-rule-card {risk_class}">
                 <h3>
-                    <span class="rule-id-badge">{html.escape(r.rule_id)}</span>
                     {html.escape(r.title)}
                     <span class="risk-{risk_class}">{emoji} {html.escape(r.risk_flag)}</span>
                     <span class="confidence-{conf_class}">{html.escape(r.confidence)}</span>
@@ -3271,10 +4320,24 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
             # Trend data table
             if r.trend_data:
-                html_out += '<table class="trend-table"><tr><th>Year</th><th>Value (£)</th><th>YoY Change</th></tr>'
+                vfmt = getattr(r, 'value_format', 'currency')
+                if vfmt == 'percentage':
+                    col_header = 'Value (%)'
+                elif vfmt == 'multiplier':
+                    col_header = 'Value (\u00d7)'
+                else:
+                    col_header = 'Value (\u00a3)'
+                html_out += f'<table class="trend-table"><tr><th>Year</th><th>{col_header}</th><th>YoY Change</th></tr>'
                 for td in r.trend_data:
-                    change_str = f"{td['change_pct']:+.1f}%" if td.get('change_pct') is not None else '—'
-                    html_out += f"<tr><td>{td['year']}</td><td>£{td['value']:,.0f}</td><td>{change_str}</td></tr>"
+                    change_str = f"{td['change_pct']:+.1f}%" if td.get('change_pct') is not None else '\u2014'
+                    v = td['value']
+                    if vfmt == 'percentage':
+                        val_str = f"{v:.1f}%"
+                    elif vfmt == 'multiplier':
+                        val_str = f"{v:.2f}\u00d7"
+                    else:
+                        val_str = f"\u00a3{v:,.0f}"
+                    html_out += f"<tr><td>{td['year']}</td><td>{val_str}</td><td>{change_str}</td></tr>"
                 html_out += '</table>'
 
             html_out += f'''
@@ -3336,8 +4399,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             if limited_rules:
                 html_output += f'{len(limited_rules)} ran with limited data. '
             if skipped_rules:
-                rule_ids = ', '.join(r.rule_id for r in skipped_rules)
-                html_output += f'{len(skipped_rules)} skipped due to insufficient data ({rule_ids}). '
+                html_output += f'{len(skipped_rules)} skipped due to insufficient data. '
             html_output += '</li>'
 
         html_output += '<li><strong>Scope Limitations:</strong> This report does not include: site visits, management interviews, verification of trading activity, credit reference checks, industry benchmarking, assessment of directors\' personal financial positions, or review of legal proceedings beyond what appears in the public registry.</li>'

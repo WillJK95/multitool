@@ -1078,7 +1078,10 @@ class App(tk.Tk):
         """Show the Enhanced Due Diligence module."""
         self.clear_container()
         from .modules.enhanced_dd import EnhancedDueDiligence
-        EnhancedDueDiligence(self, self.api_key, self.show_main_menu, self.ch_token_bucket)
+        EnhancedDueDiligence(
+            self, self.api_key, self.show_main_menu, self.ch_token_bucket,
+            charity_api_key=self.charity_api_key,
+        )
     
     def show_unified_search(self) -> None:
         """Show the Unified Search module."""

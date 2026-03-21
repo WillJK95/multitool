@@ -174,6 +174,123 @@ def cc_search_charities(
     return cc_get_data(api_key, f"/allcharitydetailsbyname/{encoded_term}")
 
 
+def cc_get_charity_details_v2(
+    api_key: str,
+    reg_num: str,
+    suffix: str = "0"
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Get detailed charity information (V2 endpoint)."""
+    return cc_get_data(api_key, f"/allcharitydetailsV2/{reg_num}/{suffix}")
+
+
+def cc_get_assets_liabilities(
+    api_key: str,
+    reg_num: str,
+    suffix: str = "0"
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Get charity assets and liabilities data."""
+    return cc_get_data(api_key, f"/charityassetsliabilities/{reg_num}/{suffix}")
+
+
+def cc_get_overview(
+    api_key: str,
+    reg_num: str,
+    suffix: str = "0"
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Get charity annual return overview data."""
+    return cc_get_data(api_key, f"/charityoverview/{reg_num}/{suffix}")
+
+
+def cc_get_account_ar_info(
+    api_key: str,
+    reg_num: str,
+    suffix: str = "0"
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Get charity accounts and annual return submission information."""
+    return cc_get_data(api_key, f"/charityaraccounts/{reg_num}/{suffix}")
+
+
+def cc_get_governing_document(
+    api_key: str,
+    reg_num: str,
+    suffix: str = "0"
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Get charity governing document and charitable objects."""
+    return cc_get_data(api_key, f"/charitygoverningdocument/{reg_num}/{suffix}")
+
+
+def cc_get_registration_history(
+    api_key: str,
+    reg_num: str,
+    suffix: str = "0"
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Get charity registration history (lifecycle events)."""
+    return cc_get_data(api_key, f"/charityregistrationhistory/{reg_num}/{suffix}")
+
+
+def cc_get_regulatory_report(
+    api_key: str,
+    reg_num: str,
+    suffix: str = "0"
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Get charity regulatory reports (inquiries, warnings, etc.)."""
+    return cc_get_data(api_key, f"/charityregulatoryreport/{reg_num}/{suffix}")
+
+
+def cc_get_linked_charities(
+    api_key: str,
+    reg_num: str,
+    suffix: str = "0"
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Get charities linked to this charity (subsidiaries, etc.)."""
+    return cc_get_data(api_key, f"/linkedcharities/{reg_num}/{suffix}")
+
+
+def cc_get_trustee_info_v2(
+    api_key: str,
+    reg_num: str,
+    suffix: str = "0"
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Get detailed trustee information including cross-charity links."""
+    return cc_get_data(api_key, f"/charitytrusteeinformationV2/{reg_num}/{suffix}")
+
+
+def cc_get_policy_information(
+    api_key: str,
+    reg_num: str,
+    suffix: str = "0"
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Get charity policy information."""
+    return cc_get_data(api_key, f"/charitypolicyinformation/{reg_num}/{suffix}")
+
+
+def cc_get_other_regulators(
+    api_key: str,
+    reg_num: str,
+    suffix: str = "0"
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Get other regulators for this charity."""
+    return cc_get_data(api_key, f"/CharityOtherRegulators/{reg_num}/{suffix}")
+
+
+def cc_get_other_names(
+    api_key: str,
+    reg_num: str,
+    suffix: str = "0"
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Get other names (working names, previous names) for this charity."""
+    return cc_get_data(api_key, f"/charityothernames/{reg_num}/{suffix}")
+
+
+def cc_get_area_of_operation(
+    api_key: str,
+    reg_num: str,
+    suffix: str = "0"
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Get charity areas of operation (regions and countries)."""
+    return cc_get_data(api_key, f"/charityareaofoperation/{reg_num}/{suffix}")
+
+
 def check_api_status(api_key: str) -> bool:
     """
     Check if the Charity Commission API is accessible with the given key.
