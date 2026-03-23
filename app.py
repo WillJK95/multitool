@@ -59,8 +59,8 @@ class App(tk.Tk):
         super().__init__()
         
         self.title("Multi-Tool")
-        self.geometry("1100x650")
-        self.minsize(1100, 650)
+        self.geometry("1320x700")
+        self.minsize(1320, 700)
         
         # Load persisted settings
         self._settings = load_settings()
@@ -105,15 +105,36 @@ class App(tk.Tk):
         self.status_tooltips = {}
         self.status_timestamp_label = None
 
-        # Main container
-        self.container = ttk.Frame(self, padding=10)
-        self.container.pack(fill=tk.BOTH, expand=True)
-        
+        # Main frame holding sidebar + content side-by-side
+        self._main_frame = ttk.Frame(self)
+        self._main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Sidebar — fixed width, left, persistent (never destroyed)
+        self.sidebar = ttk.Frame(self._main_frame, width=220, padding=(10, 10, 5, 10))
+        self.sidebar.pack_propagate(False)
+
+        # Vertical separator between sidebar and content
+        self._sidebar_sep = ttk.Separator(self._main_frame, orient=tk.VERTICAL)
+
+        # Content area — modules load here (this IS self.container)
+        self.container = ttk.Frame(self._main_frame, padding=10)
+        self.container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Sidebar state tracking
+        self._active_module_name = None
+        self._sidebar_buttons = {}
+        self._sidebar_default_styles = {}
+        self._sidebar_visible = False
+        self._working_set_label = None
+        self._working_set_dropdown = None
+        self._working_set_tree = None
+        self._working_set_send_menu = None
+
         # Bind Return key to invoke buttons
         self.bind_class("TButton", "<Return>", lambda e: e.widget.invoke())
-        
+
         log_message("Application started.")
-        
+
         # Create menu bar
         self._create_menu_bar()
 
@@ -121,68 +142,254 @@ class App(tk.Tk):
         self.api_statuses = {}
         self.api_status_timestamp = None
         self.status_panel = None
-        
+
+        # Build sidebar (initially hidden until API keys are loaded)
+        self._build_sidebar()
+
         # Load API keys and show appropriate screen
         self.load_api_keys()
 
-    def _create_menu_group(self, parent, title, modules, group_bootstyle=None, explanatory_text=None):
-        """
-        Helper to create a visually distinct group of menu buttons.
+    # ── Sidebar ──────────────────────────────────────────────────────
 
-        Args:
-            parent: The parent widget (Frame).
-            title: The title of the group (e.g., "Discovery").
-            modules: List of tuples (Button Text, Command, State, Description, Bootstyle).
-            group_bootstyle: Optional bootstyle for the LabelFrame; if provided, also
-                overrides individual button bootstyles for uniformity.
-            explanatory_text: Optional grey italic text displayed below the title,
-                above the buttons.
-        """
-        # Create a labeled frame for the category
-        frame_style = group_bootstyle if group_bootstyle else "default"
-        frame = ttk.LabelFrame(parent, text=f" {title} ", padding=15, bootstyle=frame_style)
-        frame.pack(fill=tk.X, pady=10, anchor="n")
+    def _build_sidebar(self) -> None:
+        """Populate the persistent sidebar with navigation buttons."""
+        sb = self.sidebar
 
-        # Add explanatory text if provided
-        if explanatory_text:
-            ttk.Label(
-                frame,
-                text=explanatory_text,
-                font=("Segoe UI", 9, "italic"),
-                foreground="gray"
-            ).pack(anchor="w", pady=(0, 10))
+        # App name
+        ttk.Label(
+            sb, text="Multi-Tool", font=("Helvetica", 14, "bold"),
+            bootstyle="primary"
+        ).pack(anchor="w", pady=(5, 8))
 
-        for name, command, state, desc, style in modules:
-            # Create a container for each row (Button + Description)
-            row = ttk.Frame(frame)
-            row.pack(fill=tk.X, pady=6)
+        ttk.Separator(sb, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
 
-            # Use group_bootstyle if provided, otherwise use individual button style
-            button_style = group_bootstyle if group_bootstyle else style
+        # Home button — distinctive
+        self._add_sidebar_button(sb, "Home", "home", "info",
+                                 self.show_main_menu)
 
-            # Action Button
-            btn = ttk.Button(
-                row,
-                text=name,
-                command=command,
-                state=state,
-                bootstyle=button_style,
-                width=22  # Fixed width for alignment
+        ttk.Separator(sb, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
+
+        # Enhanced Due Diligence — standalone, prominent
+        self._add_sidebar_button(sb, "Enhanced Due Diligence", "edd", "info",
+                                 self.show_enhanced_dd)
+
+        ttk.Separator(sb, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
+
+        # Network Compatible section
+        ttk.Label(
+            sb, text="Network Compatible",
+            font=("Segoe UI", 9, "italic"), foreground="gray"
+        ).pack(anchor="w", pady=(6, 2))
+
+        self._add_sidebar_button(sb, "Bulk Entity Search",
+                                 "bulk_entity_search", "primary-outline",
+                                 self.show_unified_search)
+        self._add_sidebar_button(sb, "Director Search",
+                                 "director_search", "primary-outline",
+                                 self.show_director_investigation)
+        self._add_sidebar_button(sb, "Contracts Finder",
+                                 "contracts_finder", "primary-outline",
+                                 self.show_contracts_finder)
+        self._add_sidebar_button(sb, "UBO Tracer",
+                                 "ubo_tracer", "primary-outline",
+                                 self.show_ubo_investigation)
+
+        # Standalone Tools section
+        ttk.Label(
+            sb, text="Standalone Tools",
+            font=("Segoe UI", 9, "italic"), foreground="gray"
+        ).pack(anchor="w", pady=(10, 2))
+
+        self._add_sidebar_button(sb, "Grants Search",
+                                 "grants_search", "secondary-outline",
+                                 self.show_grants_investigation)
+        self._add_sidebar_button(sb, "Data Match",
+                                 "data_match", "secondary-outline",
+                                 self.show_data_match_investigation)
+
+        ttk.Separator(sb, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(10, 4))
+
+        # Working Set indicator (built into its own frame)
+        self._build_working_set_indicator(sb)
+
+        # Network Analytics Workbench — green, at bottom
+        self._add_sidebar_button(sb, "Network Workbench",
+                                 "network_workbench", "success",
+                                 self.show_network_graph_creator)
+
+    def _add_sidebar_button(self, parent, text, key, bootstyle, command):
+        """Add a single navigation button to the sidebar and register it."""
+        btn = ttk.Button(
+            parent, text=text, command=command,
+            bootstyle=bootstyle, width=24
+        )
+        btn.pack(fill=tk.X, pady=2)
+        self._sidebar_buttons[key] = btn
+        self._sidebar_default_styles[key] = bootstyle
+
+    def _show_sidebar(self) -> None:
+        """Pack the sidebar and separator so they are visible."""
+        if not self._sidebar_visible:
+            self.sidebar.pack(side=tk.LEFT, fill=tk.Y, before=self.container)
+            self._sidebar_sep.pack(side=tk.LEFT, fill=tk.Y, before=self.container)
+            self._sidebar_visible = True
+            self._update_sidebar_button_states()
+
+    def _hide_sidebar(self) -> None:
+        """Remove the sidebar from view (e.g. during API key prompt)."""
+        if self._sidebar_visible:
+            self.sidebar.pack_forget()
+            self._sidebar_sep.pack_forget()
+            self._sidebar_visible = False
+
+    def _update_sidebar_active(self, module_name: str) -> None:
+        """Highlight the active module button in the sidebar."""
+        self._active_module_name = module_name
+        for name, btn in self._sidebar_buttons.items():
+            if name == module_name:
+                base = self._sidebar_default_styles[name].replace("-outline", "")
+                btn.configure(bootstyle=base)
+            else:
+                btn.configure(bootstyle=self._sidebar_default_styles[name])
+
+    def _update_sidebar_button_states(self) -> None:
+        """Enable/disable sidebar buttons based on available API keys."""
+        ch = tk.NORMAL if self.api_key else tk.DISABLED
+        unified = tk.NORMAL if (self.api_key or self.charity_api_key) else tk.DISABLED
+
+        state_map = {
+            "bulk_entity_search": unified,
+            "director_search": ch,
+            "contracts_finder": ch,
+            "ubo_tracer": ch,
+            "edd": ch,
+        }
+        for key, state in state_map.items():
+            if key in self._sidebar_buttons:
+                self._sidebar_buttons[key].configure(state=state)
+
+    # ── Working Set Indicator ─────────────────────────────────────────
+
+    def _build_working_set_indicator(self, parent) -> None:
+        """Build the working-set indicator widget in the sidebar."""
+        ws_frame = ttk.Frame(parent)
+        ws_frame.pack(fill=tk.X, pady=(4, 6))
+
+        # Summary label — clickable
+        self._working_set_label = ttk.Label(
+            ws_frame, text="No entities in working set",
+            font=("Segoe UI", 8), foreground="gray", cursor="hand2"
+        )
+        self._working_set_label.pack(anchor="w")
+        self._working_set_label.bind("<Button-1>", lambda e: self._toggle_working_set_dropdown())
+
+        # Dropdown panel — initially hidden
+        self._working_set_dropdown = ttk.Frame(ws_frame)
+
+        # Treeview for entity list
+        tree_frame = ttk.Frame(self._working_set_dropdown)
+        tree_frame.pack(fill=tk.X)
+
+        self._working_set_tree = ttk.Treeview(
+            tree_frame, columns=("name", "number"), show="headings",
+            height=8, selectmode="none"
+        )
+        self._working_set_tree.heading("name", text="Name")
+        self._working_set_tree.heading("number", text="Number")
+        self._working_set_tree.column("name", width=120, minwidth=80)
+        self._working_set_tree.column("number", width=70, minwidth=60)
+        self._working_set_tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        tree_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL,
+                                    command=self._working_set_tree.yview)
+        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._working_set_tree.configure(yscrollcommand=tree_scroll.set)
+
+        # Action buttons row
+        btn_row = ttk.Frame(self._working_set_dropdown)
+        btn_row.pack(fill=tk.X, pady=(4, 0))
+
+        self._working_set_send_menu = ttk.Menubutton(
+            btn_row, text="Send to\u2026 \u25bc", bootstyle="primary-outline"
+        )
+        send_menu = tk.Menu(self._working_set_send_menu, tearoff=0)
+        send_menu.add_command(label="Network Workbench",
+                              command=self.show_network_graph_creator)
+        send_menu.add_command(label="Enhanced Due Diligence",
+                              command=self.show_enhanced_dd)
+        self._working_set_send_menu.configure(menu=send_menu)
+        self._working_set_send_menu.pack(side=tk.LEFT, padx=(0, 4))
+
+        ttk.Button(
+            btn_row, text="Clear", bootstyle="danger-outline",
+            command=self._clear_working_set
+        ).pack(side=tk.LEFT)
+
+    def _toggle_working_set_dropdown(self) -> None:
+        """Show or hide the working-set dropdown panel."""
+        if self._working_set_dropdown is None:
+            return
+        if self._working_set_dropdown.winfo_manager():
+            self._working_set_dropdown.pack_forget()
+        else:
+            self._working_set_dropdown.pack(fill=tk.X, pady=(4, 0))
+
+    def _refresh_working_set_indicator(self) -> None:
+        """Update the working-set label and treeview from app_state."""
+        entities = self._collect_working_set_entities()
+        count = len(entities)
+
+        if count > 0:
+            self._working_set_label.configure(
+                text=f"Working set ({count})",
+                foreground="", font=("Segoe UI", 8, "bold")
             )
-            btn.pack(side=tk.LEFT, padx=(0, 12))
-            
-            # Description Label (Next to the button)
-            desc_lbl = ttk.Label(
-                row, 
-                text=desc, 
-                font=("Segoe UI", 9), 
-                foreground="gray"
+        else:
+            self._working_set_label.configure(
+                text="No entities in working set",
+                foreground="gray", font=("Segoe UI", 8)
             )
-            desc_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
-            
-            # Add tooltip for good measure
-            Tooltip(btn, desc)
-    
+
+        # Refresh treeview
+        if self._working_set_tree:
+            self._working_set_tree.delete(
+                *self._working_set_tree.get_children()
+            )
+            for ent in entities:
+                self._working_set_tree.insert(
+                    "", tk.END,
+                    values=(ent.get("name", "Unknown"),
+                            ent.get("company_number", ent.get("number", "")))
+                )
+
+    def _collect_working_set_entities(self):
+        """Return a flat list of entity dicts from the working set."""
+        entities = []
+        ws = self.app_state.network_working_set
+        if ws and isinstance(ws, dict):
+            # network_working_set is graph-ready payload with a nodes list
+            nodes = ws.get("nodes", [])
+            if isinstance(nodes, list):
+                entities.extend(nodes)
+        elif ws and isinstance(ws, list):
+            entities.extend(ws)
+
+        if not entities and self.app_state.ubo_working_set:
+            entities = list(self.app_state.ubo_working_set)
+
+        return entities
+
+    def _clear_working_set(self) -> None:
+        """Clear the working set and refresh the indicator."""
+        self.app_state.ubo_working_set = None
+        self.app_state.network_working_set = None
+        self.app_state.network_working_set_source = None
+        self._refresh_working_set_indicator()
+        # Collapse dropdown
+        if (self._working_set_dropdown and
+                self._working_set_dropdown.winfo_manager()):
+            self._working_set_dropdown.pack_forget()
+
     def _create_menu_bar(self) -> None:
         """Create the application menu bar."""
         menu_bar = tk.Menu(self)
@@ -464,6 +671,7 @@ class App(tk.Tk):
     
     def manage_api_keys(self) -> None:
         """Open window to manage API keys."""
+        self._update_sidebar_button_states()
         manager_window = tk.Toplevel(self)
         manager_window.title("Manage API Keys")
         manager_window.geometry("500x500")
@@ -562,6 +770,7 @@ class App(tk.Tk):
     
     def show_api_key_prompt(self) -> None:
         """Show the first-time API key setup screen."""
+        self._hide_sidebar()
         self.clear_container()
         self.title("API Key Setup")
         
@@ -627,16 +836,15 @@ class App(tk.Tk):
         ).pack()
     
     def show_main_menu(self) -> None:
-        """Display the main menu with a categorized dashboard layout."""
+        """Display the home screen landing view."""
         self.unbind("<Return>")
         self.clear_container()
         self.title("Multi-Tool - Dashboard")
 
-        # Define Button States
-        ch_enabled = tk.NORMAL if self.api_key else tk.DISABLED
-        unified_enabled = tk.NORMAL if self.api_key or self.charity_api_key else tk.DISABLED
+        # Ensure sidebar is visible
+        self._show_sidebar()
 
-        # --- 1. Header at top (with API status on right) ---
+        # --- Header with API status ---
         header_frame = ttk.Frame(self.container)
         header_frame.pack(fill=tk.X, padx=20, pady=(15, 10))
 
@@ -646,14 +854,14 @@ class App(tk.Tk):
 
         ttk.Label(
             title_frame,
-            text="Module Suite",
+            text="Multi-Tool Dashboard",
             font=("Helvetica", 20, "bold"),
             bootstyle="primary"
         ).pack(anchor="w")
 
         ttk.Label(
             title_frame,
-            text="Select a module below to begin your analysis.",
+            text="Select a module from the sidebar to begin your analysis.",
             font=("Helvetica", 11),
             foreground="gray"
         ).pack(anchor="w")
@@ -662,15 +870,11 @@ class App(tk.Tk):
         self.status_panel = ttk.LabelFrame(header_frame, text="API Status", padding=5)
         self.status_panel.pack(side=tk.RIGHT, anchor="ne")
 
-        # Always build the full panel structure so layout never shifts
         self._build_api_status_panel(self.status_panel)
 
         if self.api_statuses:
-            # Cached results available - update dots and timestamp immediately
             self._update_api_status_display()
         else:
-            # No cache - dots are already grey from _build_api_status_panel
-            # Start background check and update in place when done
             def run_check():
                 self.check_api_status()
                 if self.status_panel and self.status_panel.winfo_exists():
@@ -678,97 +882,20 @@ class App(tk.Tk):
 
             threading.Thread(target=run_check, daemon=True).start()
 
-        # --- 4. Footer at bottom (pack first so it stays at bottom) ---
+        # --- Footer ---
         footer_frame = ttk.Frame(self.container)
         footer_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(0, 15))
 
-        # User Guide (Left)
-        footer_btn = ttk.Button(
+        ttk.Button(
             footer_frame,
-            text="📖 Open User Guide",
+            text="\U0001f4d6 Open User Guide",
             command=self.show_main_guide,
             bootstyle="link",
-        )
-        footer_btn.pack(side=tk.LEFT, anchor="sw", pady=(5, 0))
+        ).pack(side=tk.LEFT, anchor="sw", pady=(5, 0))
 
-        # --- 2 & 3. Content area (modules + workbench) ---
-        content_frame = ttk.Frame(self.container)
-        content_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
-
-        # Two-column modules section
-        modules_frame = ttk.Frame(content_frame)
-        modules_frame.pack(fill=tk.X)
-
-        # Left Column: Network Compatible Modules
-        left_col = ttk.Frame(modules_frame)
-        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
-
-        self._create_menu_group(
-            parent=left_col,
-            title="Network Compatible Modules",
-            modules=[
-                ("Bulk Entity Search", self.show_unified_search, unified_enabled,
-                 "Search companies & charities via mixed ID file", "primary"),
-                ("Director Search", self.show_director_investigation, ch_enabled,
-                 "Locate all appointments for a specific director", "primary"),
-                ("UBO Tracer", self.show_ubo_investigation, ch_enabled,
-                 "Trace parent companies and ownership structures", "primary"),
-                ("Contracts Finder", self.show_contracts_finder, ch_enabled,
-                 "Find government contracts & enrich with CH data", "primary"),
-            ],
-            group_bootstyle="primary",
-            explanatory_text="Export graph data to combine in the Workbench"
-        )
-
-        # Right Column: Standalone Tools
-        right_col = ttk.Frame(modules_frame)
-        right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
-
-        self._create_menu_group(
-            parent=right_col,
-            title="Standalone Tools",
-            modules=[
-                ("Enhanced Due Diligence", self.show_enhanced_dd, ch_enabled,
-                 "Generate full financial & risk reports", "info"),
-                ("Grants Search", self.show_grants_investigation, tk.NORMAL,
-                 "Analyse funding data from 360Giving", "info"),
-                ("Data Match", self.show_data_match_investigation, tk.NORMAL,
-                 "Fuzzy match two independent datasets", "info"),
-            ],
-            group_bootstyle="info",
-            explanatory_text="Specialised analysis and data utilities"
-        )
-
-        # Network Analytics Workbench section (below modules, inside content_frame)
-        workbench_frame = ttk.LabelFrame(
-            content_frame,
-            text="",
-            padding=20,
-            bootstyle="success"
-        )
-        workbench_frame.pack(fill=tk.X, pady=(10, 0))
-
-        ttk.Label(
-            workbench_frame,
-            text="🎯 Network Analytics Workbench",
-            font=("Helvetica", 16, "bold")
-        ).pack(anchor="center")
-
-        ttk.Label(
-            workbench_frame,
-            text="Combine and analyse relationship data from all your investigations in one place",
-            font=("Helvetica", 10),
-            foreground="gray"
-        ).pack(anchor="center", pady=(5, 10))
-
-        ttk.Button(
-            workbench_frame,
-            text="Open Workbench",
-            command=self.show_network_graph_creator,
-            bootstyle="success",
-            width=20,
-            state=tk.NORMAL
-        ).pack(anchor="center")
+        # --- Sidebar state ---
+        self._update_sidebar_active("home")
+        self._refresh_working_set_indicator()
     
     def show_main_guide(self) -> None:
         """Show the main help window."""
@@ -1047,24 +1174,32 @@ class App(tk.Tk):
         # Import here to avoid circular imports and speed up startup
         from .modules.director_search import DirectorSearch
         DirectorSearch(self, self.api_key, self.show_main_menu, self.ch_token_bucket)
+        self._update_sidebar_active("director_search")
+        self._refresh_working_set_indicator()
     
     def show_ubo_investigation(self) -> None:
         """Show the UBO Tracer module."""
         self.clear_container()
         from .modules.ubo_tracer import UltimateBeneficialOwnershipTracer
         UltimateBeneficialOwnershipTracer(self, self.api_key, self.show_main_menu, self.ch_token_bucket)
+        self._update_sidebar_active("ubo_tracer")
+        self._refresh_working_set_indicator()
     
     def show_grants_investigation(self) -> None:
         """Show the Grants Search module."""
         self.clear_container()
         from .modules.grants_search import GrantsSearch
         GrantsSearch(self, self.api_key, self.show_main_menu)
+        self._update_sidebar_active("grants_search")
+        self._refresh_working_set_indicator()
     
     def show_data_match_investigation(self) -> None:
         """Show the Data Match module."""
         self.clear_container()
         from .modules.data_match import DataMatch
         DataMatch(self, self.show_main_menu, self.api_key)
+        self._update_sidebar_active("data_match")
+        self._refresh_working_set_indicator()
     
     def show_network_graph_creator(self) -> None:
         """Show the Network Analytics module."""
@@ -1077,7 +1212,9 @@ class App(tk.Tk):
             api_key=self.api_key,
             help_key="network_creator"
         )
-    
+        self._update_sidebar_active("network_workbench")
+        self._refresh_working_set_indicator()
+
     def show_enhanced_dd(self) -> None:
         """Show the Enhanced Due Diligence module."""
         self.clear_container()
@@ -1086,7 +1223,9 @@ class App(tk.Tk):
             self, self.api_key, self.show_main_menu, self.ch_token_bucket,
             charity_api_key=self.charity_api_key,
         )
-    
+        self._update_sidebar_active("edd")
+        self._refresh_working_set_indicator()
+
     def show_unified_search(self) -> None:
         """Show the Unified Search module."""
         self.clear_container()
@@ -1098,6 +1237,8 @@ class App(tk.Tk):
             self.charity_api_key,
             self.ch_token_bucket
         )
+        self._update_sidebar_active("bulk_entity_search")
+        self._refresh_working_set_indicator()
 
     def show_contracts_finder(self):
         """Show the Contracts Finder module."""
@@ -1109,3 +1250,5 @@ class App(tk.Tk):
             self.ch_token_bucket,
             self.api_key
         )
+        self._update_sidebar_active("contracts_finder")
+        self._refresh_working_set_indicator()
