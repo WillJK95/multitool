@@ -23,6 +23,7 @@ DEFAULT_CH_PACING_MODE = "smooth"       # "smooth" or "burst"
 INITIAL_RATE_LIMIT = 590                # conservative startup value (before first API response)
 SMOOTH_BURST_WINDOW_SECONDS = 15        # seconds of tokens the smooth-mode bucket holds
 SMOOTH_SAFETY_MARGIN = 0.90             # fraction of server rate used in smooth mode
+RATE_LIMIT_STOP_LOSS = 10               # pause all calls when server reports ≤ this many remaining
 DEFAULT_CH_MAX_WORKERS = 2              # concurrent API threads
 MAX_CH_MAX_WORKERS = 8                  # hard ceiling for workers
 MIN_CH_MAX_WORKERS = 1                  # floor for workers

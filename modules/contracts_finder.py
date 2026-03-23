@@ -432,16 +432,15 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
                         self._ratelimit_ticking = False
                         self.status_entity_var.set("")
                         return
-                    secs = self.ch_token_bucket.seconds_until_reset
-                    if secs is None or secs <= 0:
+                    if not self.ch_token_bucket.is_paused:
                         self._ratelimit_ticking = False
                         self.status_entity_var.set("")
                         return
+                    secs = self.ch_token_bucket.seconds_until_reset
                     self.status_entity_var.set("Waiting for API usage limit to refresh")
                     self.status_var.set(
                         f"~{int(secs)} seconds remaining \u2013 processing will resume automatically"
-                        if secs is not None else
-                        "Processing will resume automatically when the limit refreshes"
+                        if secs else "Processing will resume automatically when the limit refreshes"
                     )
                     self._tracked_after(1000, _tick)
 
@@ -450,7 +449,7 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
             for i, supplier in enumerate(self.suppliers_data):
                 self.safe_update(self.progress_bar.config, {"value": i + 1})
 
-                if self.ch_token_bucket.available_tokens <= 10:
+                if self.ch_token_bucket.is_paused:
                     self.safe_ui_call(_start_ratelimit_ticker)
                 elif not self._ratelimit_ticking:
                     elapsed = time.monotonic() - start_time
