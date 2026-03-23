@@ -535,22 +535,27 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
         # Rate-limit ticker: runs on main thread, counts down independently of
         # the worker loop (which blocks when the bucket is empty).
+        _CALLS_PER_ITEM = 2  # estimated CH API calls per row
+
         def _start_ratelimit_ticker():
             if self._ratelimit_ticking:
                 return
             self._ratelimit_ticking = True
 
             def _tick():
-                if self.cancel_flag.is_set() or self.ch_token_bucket.available_tokens > 10:
+                if self.cancel_flag.is_set():
                     self._ratelimit_ticking = False
                     self.status_entity_var.set("")
                     return
                 secs = self.ch_token_bucket.seconds_until_reset
+                if secs is None or secs <= 0:
+                    # Window has reset; let the worker loop resume normal updates
+                    self._ratelimit_ticking = False
+                    self.status_entity_var.set("")
+                    return
                 self.status_entity_var.set("Waiting for API usage limit to refresh")
                 self.status_var.set(
                     f"~{int(secs)} seconds remaining \u2013 processing will resume automatically"
-                    if secs is not None else
-                    "Processing will resume automatically when the limit refreshes"
                 )
                 self._tracked_after(1000, _tick)
 
@@ -586,11 +591,16 @@ class CompanyCharitySearch(InvestigationModuleBase):
                         and self.ch_token_bucket.available_tokens <= 10
                     ):
                         self.safe_ui_call(_start_ratelimit_ticker)
-                    else:
+                    elif not self._ratelimit_ticking:
                         row_name = (
                             row_data.get(self.name_col, "") if self.name_col else ""
                         ) or str(list(row_data.values())[:1])[2:32]
-                        eta = format_eta(elapsed, processed_count, total)
+                        remaining = total - processed_count
+                        rate_wait = self.ch_token_bucket.estimate_wait_seconds(
+                            remaining * _CALLS_PER_ITEM
+                        )
+                        eta = format_eta(elapsed, processed_count, total,
+                                         rate_limit_wait=rate_wait)
                         entity = f"Searching: {row_name} ({processed_count} of {total})"
                         stats = f"ETA: {eta} | Found: {found_count} matches | Errors: {error_count}"
                         self.app.after(0, lambda e=entity: self.status_entity_var.set(e))

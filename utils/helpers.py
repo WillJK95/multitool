@@ -241,13 +241,17 @@ def format_error_summary(
 
 
 
-def format_eta(elapsed_sec: float, processed: int, total: int) -> str:
-    """Return a human-readable ETA string based on elapsed time and item counts.
+def format_eta(elapsed_sec: float, processed: int, total: int,
+               rate_limit_wait: float = 0.0) -> str:
+    """Return a human-readable ETA string incorporating rate-limit overhead.
 
     Args:
         elapsed_sec: Seconds elapsed since processing began.
         processed: Number of items completed so far.
         total: Total number of items to process.
+        rate_limit_wait: Estimated additional seconds of rate-limit waiting
+            still ahead (from TokenBucket.estimate_wait_seconds). Defaults to
+            0.0 (time-based extrapolation only).
 
     Returns:
         A short ETA string such as "~3-4 minutes" or "< 2 minutes".
@@ -256,10 +260,14 @@ def format_eta(elapsed_sec: float, processed: int, total: int) -> str:
     if processed == 0 or elapsed_sec < 2 or remaining <= 0:
         return "calculating..."
     rate = processed / elapsed_sec  # items per second
-    eta_sec = remaining / rate
-    if eta_sec < 90:
+    time_based_sec = remaining / rate
+    # Take the larger of the two estimates: the time-based extrapolation
+    # (which includes past rate-limit pauses) and the forward-looking quota
+    # calculation (which captures future window resets not yet experienced).
+    total_sec = max(time_based_sec, rate_limit_wait)
+    if total_sec < 90:
         return "< 2 minutes"
-    minutes = eta_sec / 60
+    minutes = total_sec / 60
     low = max(1, round(minutes))
     high = low + 1
     return f"~{low}-{high} minutes"

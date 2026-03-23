@@ -1,6 +1,7 @@
 # multitool/utils/token_bucket.py
 """Token bucket implementation for API rate limiting."""
 
+import math
 import threading
 import time
 from typing import Optional
@@ -269,3 +270,39 @@ class TokenBucket:
             if self._reset_epoch is None:
                 return None
             return max(0.0, self._reset_epoch - time.time())
+
+    def estimate_wait_seconds(self, remaining_calls: int) -> float:
+        """Estimate rate-limit waiting time in seconds for a given number of API calls.
+
+        Uses the server-reported quota window to calculate how many window resets
+        will be needed to service all remaining calls beyond the currently available
+        tokens. Returns 0.0 when no rate-limit headers have been received yet, or
+        when the current bucket has enough tokens to cover remaining_calls.
+
+        Args:
+            remaining_calls: Total API calls still to be made.
+
+        Returns:
+            Estimated additional seconds of rate-limit waiting required.
+        """
+        with self.lock:
+            self._refill()
+            available = self.tokens
+            server_limit = self._server_limit
+            window_secs = self._window_seconds
+
+        secs_to_reset = self.seconds_until_reset  # uses its own lock
+
+        if remaining_calls <= available:
+            return 0.0
+        if not server_limit or not window_secs or secs_to_reset is None:
+            return 0.0
+
+        deficit = remaining_calls - available
+        if deficit <= server_limit:
+            # Current window reset alone covers the deficit
+            return float(secs_to_reset)
+        else:
+            # Need multiple window resets after the first
+            extra_windows = math.ceil((deficit - server_limit) / server_limit)
+            return float(secs_to_reset) + extra_windows * window_secs
