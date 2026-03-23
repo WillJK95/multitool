@@ -35,6 +35,7 @@ from .help_content import HELP_CONTENT
 from .utils.helpers import log_message
 from .utils.token_bucket import TokenBucket
 from .utils.settings import load_settings, save_settings, derive_initial_params
+from .utils.app_state import AppState
 from .ui.tooltip import Tooltip
 from .ui.help_window import HelpWindow
 
@@ -92,6 +93,9 @@ class App(tk.Tk):
         self.api_key_saved = False
         self.charity_api_key_saved = False
         
+        # Persistent cross-module state (survives module navigation)
+        self.app_state = AppState()
+
         # API status cache
         self.api_statuses = None
         self.api_status_timestamp = None
