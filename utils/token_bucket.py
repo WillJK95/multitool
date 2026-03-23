@@ -6,7 +6,7 @@ import threading
 import time
 from typing import Optional
 
-from ..constants import SMOOTH_BURST_WINDOW_SECONDS, SMOOTH_SAFETY_MARGIN
+from ..constants import SMOOTH_BURST_WINDOW_SECONDS, SMOOTH_SAFETY_MARGIN, RATE_LIMIT_STOP_LOSS
 from ..utils.helpers import log_message
 
 
@@ -55,6 +55,8 @@ class TokenBucket:
         self._server_limit: Optional[int] = None
         self._window_seconds: Optional[int] = None
         self._reset_epoch: Optional[float] = None
+        # Stop-loss pause: set to Unix timestamp until which consume() should block
+        self._paused_until: Optional[float] = None
 
     def _refill(self) -> None:
         """
@@ -85,6 +87,16 @@ class TokenBucket:
             True when tokens have been successfully consumed
         """
         with self.lock:
+            # Stop-loss pause: block until the rate-limit window resets
+            if self._paused_until is not None:
+                pause_remaining = self._paused_until - time.time()
+                if pause_remaining > 0:
+                    self.lock.release()
+                    time.sleep(pause_remaining)
+                    self.lock.acquire()
+                self._paused_until = None
+                self._refill()
+
             self._refill()
 
             while self.tokens < tokens_required:
@@ -205,6 +217,12 @@ class TokenBucket:
                 self.last_refill_time = time.monotonic()
                 self._reset_epoch = float(reset_epoch)
 
+                # Stop-loss: freeze the bucket until window reset when nearly out
+                if remain <= RATE_LIMIT_STOP_LOSS:
+                    self._paused_until = float(reset_epoch)
+                else:
+                    self._paused_until = None
+
                 # Log noteworthy rate limit states
                 if remain == 0:
                     log_message(
@@ -270,6 +288,12 @@ class TokenBucket:
             if self._reset_epoch is None:
                 return None
             return max(0.0, self._reset_epoch - time.time())
+
+    @property
+    def is_paused(self) -> bool:
+        """True when the stop-loss has frozen the bucket until the window resets."""
+        with self.lock:
+            return self._paused_until is not None and time.time() < self._paused_until
 
     def estimate_wait_seconds(self, remaining_calls: int) -> float:
         """Estimate rate-limit waiting time in seconds for a given number of API calls.

@@ -547,15 +547,16 @@ class CompanyCharitySearch(InvestigationModuleBase):
                     self._ratelimit_ticking = False
                     self.status_entity_var.set("")
                     return
-                secs = self.ch_token_bucket.seconds_until_reset
-                if secs is None or secs <= 0:
-                    # Window has reset; let the worker loop resume normal updates
+                if not self.ch_token_bucket.is_paused:
+                    # Pause lifted (window reset or fresh headers); resume normal updates
                     self._ratelimit_ticking = False
                     self.status_entity_var.set("")
                     return
+                secs = self.ch_token_bucket.seconds_until_reset
                 self.status_entity_var.set("Waiting for API usage limit to refresh")
                 self.status_var.set(
                     f"~{int(secs)} seconds remaining \u2013 processing will resume automatically"
+                    if secs else "Processing will resume automatically when the limit refreshes"
                 )
                 self._tracked_after(1000, _tick)
 
@@ -588,7 +589,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
                     if (
                         hasattr(self, "ch_token_bucket")
-                        and self.ch_token_bucket.available_tokens <= 10
+                        and self.ch_token_bucket.is_paused
                     ):
                         self.safe_ui_call(_start_ratelimit_ticker)
                     elif not self._ratelimit_ticking:
