@@ -446,6 +446,19 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
 
                 self._tracked_after(0, _tick)
 
+            # Watchdog: starts the ticker even when workers are blocked in consume()
+            # and the enrichment loop is waiting (first stop-loss in burst mode).
+            search_active = [True]
+
+            def _watchdog():
+                if not search_active[0] or self.cancel_flag.is_set():
+                    return
+                if self.ch_token_bucket.is_paused and not self._ratelimit_ticking:
+                    _start_ratelimit_ticker()
+                self._tracked_after(500, _watchdog)
+
+            self._tracked_after(500, _watchdog)
+
             for i, supplier in enumerate(self.suppliers_data):
                 self.safe_update(self.progress_bar.config, {"value": i + 1})
 
@@ -548,6 +561,7 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
                             p.get("name", "") for p in active_pscs
                         ])
             
+            search_active[0] = False
             self.safe_update(
                 self.enrich_status_label.config,
                 {"text": "Enrichment complete.", "foreground": "green"}

@@ -330,6 +330,19 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
 
             self._tracked_after(0, _tick)
 
+        # Watchdog: starts the ticker even when all worker threads are blocked in
+        # consume() and the as_completed loop hasn't yielded (first stop-loss in burst).
+        search_active = [True]
+
+        def _watchdog():
+            if not search_active[0] or self.cancel_flag.is_set():
+                return
+            if self.ch_token_bucket.is_paused and not self._ratelimit_ticking:
+                _start_ratelimit_ticker()
+            self._tracked_after(500, _watchdog)
+
+        self._tracked_after(500, _watchdog)
+
         for i, root_cnum in enumerate(root_companies):
             if self.cancel_flag.is_set():
                 break
@@ -405,6 +418,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                 }
                 self.results_data.append(placeholder_row)
 
+        search_active[0] = False
         self.safe_ui_call(self.status_entity_var.set, "")
         if not self.cancel_flag.is_set():
             if failed_companies:
