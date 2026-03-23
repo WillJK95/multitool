@@ -562,6 +562,23 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
             self._tracked_after(0, _tick)
 
+        # Watchdog: polls is_paused every 500 ms on the main thread so the ticker
+        # starts even when all worker threads are blocked inside consume() and
+        # as_completed() hasn't yielded a result (which is what happens on the first
+        # stop-loss hit in burst mode).
+        search_active = [True]
+
+        def _watchdog():
+            if not search_active[0] or self.cancel_flag.is_set():
+                return
+            if (hasattr(self, "ch_token_bucket")
+                    and self.ch_token_bucket.is_paused
+                    and not self._ratelimit_ticking):
+                _start_ratelimit_ticker()
+            self._tracked_after(500, _watchdog)
+
+        self._tracked_after(500, _watchdog)
+
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = {
                 executor.submit(self._process_single_row, row): row
@@ -613,6 +630,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
                     messagebox.showerror, "Error", f"A processing error occurred: {e}"
                 )
 
+        search_active[0] = False
         self._api_failures = failed_rows
         self.safe_ui_call(self._finish_investigation)
 
