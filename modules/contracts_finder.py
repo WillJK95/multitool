@@ -12,6 +12,7 @@ import csv
 import os
 import re
 import threading
+import time
 import tkinter as tk
 import urllib.parse
 from datetime import datetime, timedelta
@@ -26,7 +27,7 @@ from ..api.contracts_finder import (
     check_api_status,
 )
 from ..api.companies_house import ch_get_data
-from ..utils.helpers import log_message, clean_company_number, clean_address_string, get_canonical_name_key
+from ..utils.helpers import log_message, clean_company_number, clean_address_string, get_canonical_name_key, format_eta
 from ..ui.tooltip import Tooltip
 
 from .base import InvestigationModuleBase
@@ -73,24 +74,24 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
         date_row = ttk.Frame(search_frame)
         date_row.pack(fill=tk.X, pady=5)
         
-        ttk.Label(date_row, text="From Date:").pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(date_row, text="From Date (DD/MM/YYYY):").pack(side=tk.LEFT, padx=(0, 5))
         self.from_date_var = tk.StringVar()
         # Default to 1 year ago
-        default_from = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+        default_from = (datetime.now() - timedelta(days=365)).strftime("%d/%m/%Y")
         self.from_date_var.set(default_from)
         from_entry = ttk.Entry(date_row, textvariable=self.from_date_var, width=12)
         from_entry.pack(side=tk.LEFT, padx=(0, 15))
-        Tooltip(from_entry, "Start date for contract search (YYYY-MM-DD)")
-        
+        Tooltip(from_entry, "Start date for contract search (DD/MM/YYYY)")
+
         # --- BIND ENTER KEY ---
         from_entry.bind("<Return>", self.start_contract_search)
 
-        ttk.Label(date_row, text="To Date:").pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(date_row, text="To Date (DD/MM/YYYY):").pack(side=tk.LEFT, padx=(0, 5))
         self.to_date_var = tk.StringVar()
-        self.to_date_var.set(datetime.now().strftime("%Y-%m-%d"))
+        self.to_date_var.set(datetime.now().strftime("%d/%m/%Y"))
         to_entry = ttk.Entry(date_row, textvariable=self.to_date_var, width=12)
         to_entry.pack(side=tk.LEFT)
-        Tooltip(to_entry, "End date for contract search (YYYY-MM-DD)")
+        Tooltip(to_entry, "End date for contract search (DD/MM/YYYY)")
         
         # --- BIND ENTER KEY ---
         to_entry.bind("<Return>", self.start_contract_search)
@@ -239,17 +240,15 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
             messagebox.showerror("Input Error", "Please enter a buyer organisation name.")
             return
         
-        from_date = self.from_date_var.get().strip()
-        to_date = self.to_date_var.get().strip()
-        
-        # Validate dates
+        from_date_raw = self.from_date_var.get().strip()
+        to_date_raw = self.to_date_var.get().strip()
+
+        # Validate dates (DD/MM/YYYY input) and convert to YYYY-MM-DD for the API
         try:
-            if from_date:
-                datetime.strptime(from_date, "%Y-%m-%d")
-            if to_date:
-                datetime.strptime(to_date, "%Y-%m-%d")
+            from_date = datetime.strptime(from_date_raw, "%d/%m/%Y").strftime("%Y-%m-%d") if from_date_raw else ""
+            to_date = datetime.strptime(to_date_raw, "%d/%m/%Y").strftime("%Y-%m-%d") if to_date_raw else ""
         except ValueError:
-            messagebox.showerror("Date Error", "Dates must be in YYYY-MM-DD format.")
+            messagebox.showerror("Date Error", "Dates must be in DD/MM/YYYY format.")
             return
         
         self.search_btn.config(state="disabled")
@@ -416,13 +415,31 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
             fetch_officers = self.fetch_officers_var.get()
             fetch_pscs = self.fetch_pscs_var.get()
             fetch_address = self.fetch_address_var.get()
-            
+            total = len(self.suppliers_data)
+            start_time = time.monotonic()
+            error_count = 0
+
             for i, supplier in enumerate(self.suppliers_data):
                 self.safe_update(self.progress_bar.config, {"value": i + 1})
-                self.safe_update(
-                    self.status_var.set,
-                    f"Enriching supplier {i + 1}/{len(self.suppliers_data)}: {supplier.get('name', 'Unknown')[:30]}..."
-                )
+                elapsed = time.monotonic() - start_time
+                eta = format_eta(elapsed, i, total)
+                name = supplier.get("name", "Unknown")[:40]
+
+                if self.ch_token_bucket.available_tokens <= 10:
+                    secs = self.ch_token_bucket.seconds_until_reset
+                    if secs is not None:
+                        status_msg = (
+                            f"Waiting for API usage limit to refresh "
+                            f"(~{int(secs)} seconds remaining)"
+                        )
+                    else:
+                        status_msg = "Waiting for API usage limit to refresh..."
+                else:
+                    status_msg = (
+                        f"Enriching: {name} ({i + 1} of {total}) "
+                        f"ETA: {eta} | Errors: {error_count}"
+                    )
+                self.safe_update(self.status_var.set, status_msg)
                 
                 company_number = supplier.get("company_number")
                 
@@ -450,6 +467,7 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
                 
                 if error or not profile:
                     supplier["ch_status"] = f"Not found: {error or 'No data'}"
+                    error_count += 1
                     continue
                 
                 supplier["ch_status"] = "Found"

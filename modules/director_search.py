@@ -6,6 +6,7 @@ import os
 import re
 import textwrap
 import threading
+import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -31,7 +32,7 @@ from ..constants import (
 )
 
 # Utility functions (were global functions or duplicated in classes)
-from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary
+from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary, format_eta
 
 # UI components (were classes in original file)
 from ..ui.tooltip import Tooltip
@@ -47,6 +48,10 @@ class DirectorSearch(InvestigationModuleBase):
         self.grants_results = []
         # --- Track explicit row selection for selective export ---
         self.explicit_selection_made = False
+        # --- Sort/filter state ---
+        self._sort_col = None
+        self._sort_reverse = False
+        self.filter_var = tk.StringVar()
 
         input_frame = ttk.LabelFrame(
             self.content_frame, text="Director Search", padding=10
@@ -126,7 +131,21 @@ class DirectorSearch(InvestigationModuleBase):
 
         results_frame = ttk.LabelFrame(self.content_frame, text="Results", padding=10)
         results_frame.pack(fill=tk.BOTH, expand=True, pady=10, padx=10)
-        self.tree = self._create_treeview(results_frame)
+        results_frame.grid_rowconfigure(1, weight=1)
+        results_frame.grid_columnconfigure(0, weight=1)
+
+        # Filter bar
+        filter_row = ttk.Frame(results_frame)
+        filter_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        ttk.Label(filter_row, text="Filter:").pack(side=tk.LEFT, padx=(0, 4))
+        filter_entry = ttk.Entry(filter_row, textvariable=self.filter_var, width=30)
+        filter_entry.pack(side=tk.LEFT)
+        Tooltip(filter_entry, "Type to filter results across all columns (case-insensitive)")
+        filter_entry.bind("<KeyRelease>", self._apply_filter)
+
+        tree_container = ttk.Frame(results_frame)
+        tree_container.grid(row=1, column=0, sticky="nsew")
+        self.tree = self._create_treeview(tree_container)
 
         # --- Selection controls frame ---
         selection_frame = ttk.Frame(self.content_frame)
@@ -313,7 +332,11 @@ class DirectorSearch(InvestigationModuleBase):
         )
         tree = ttk.Treeview(parent, columns=cols, show="headings", selectmode="extended")
         for col in cols:
-            tree.heading(col, text=col.replace("_", " ").title())
+            tree.heading(
+                col,
+                text=col.replace("_", " ").title(),
+                command=lambda c=col: self._sort_treeview(c),
+            )
             tree.column(col, width=150)
         yscroll = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=tree.yview)
         xscroll = ttk.Scrollbar(parent, orient=tk.HORIZONTAL, command=tree.xview)
@@ -325,6 +348,61 @@ class DirectorSearch(InvestigationModuleBase):
         xscroll.grid(row=1, column=0, sticky="ew")
         return tree
 
+    _TREE_COLS = (
+        "officer_name", "date_of_birth", "company_name",
+        "company_number", "company_status", "role", "address",
+    )
+
+    def _sort_treeview(self, col):
+        """Sort treeview rows by the clicked column header, toggling direction."""
+        if self._sort_col == col:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_col = col
+            self._sort_reverse = False
+
+        self._update_sort_headings()
+        self._reapply_sort()
+
+    def _update_sort_headings(self):
+        """Update column header text to show the current sort indicator."""
+        for c in self._TREE_COLS:
+            label = c.replace("_", " ").title()
+            if c == self._sort_col:
+                label += " ↓" if self._sort_reverse else " ↑"
+            self.tree.heading(c, text=label)
+
+    def _reapply_sort(self):
+        """Sort the treeview in-place using the current sort state (no state change)."""
+        if not self._sort_col:
+            return
+        col = self._sort_col
+
+        def sort_key(item):
+            val = self.tree.set(item, col)
+            try:
+                return (0, float(val))
+            except (ValueError, TypeError):
+                return (1, val.lower())
+
+        sorted_items = sorted(self.tree.get_children(), key=sort_key, reverse=self._sort_reverse)
+        for idx, item in enumerate(sorted_items):
+            self.tree.move(item, "", idx)
+
+    def _apply_filter(self, event=None):
+        """Re-populate the treeview showing only rows matching the filter text."""
+        query = self.filter_var.get().lower()
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        for record in self.results_data:
+            values = list(record.values())
+            if query == "" or any(query in str(v).lower() for v in values):
+                self.tree.insert("", tk.END, values=values)
+
+        self._reapply_sort()
+        self._update_selection_label()
+
     def start_search(self, event=None):
         if not self.full_name_var.get():
             messagebox.showerror("Input Error", "Full Name is required.")
@@ -332,8 +410,13 @@ class DirectorSearch(InvestigationModuleBase):
 
         self.cancel_flag.clear()
         self.results_data = []
-        # Reset selection state for new search
+        # Reset selection and sort/filter state for new search
         self.explicit_selection_made = False
+        self._sort_col = None
+        self._sort_reverse = False
+        self.filter_var.set("")
+        for c in self._TREE_COLS:
+            self.tree.heading(c, text=c.replace("_", " ").title())
 
         self.search_btn.pack_forget()
         self.cancel_btn.pack(ipady=10)
@@ -385,7 +468,12 @@ class DirectorSearch(InvestigationModuleBase):
     def _fetch_appointments(self, officers):
         """Phase 2 (threaded): Fetch appointments for all matched officers."""
         try:
+            total = len(officers)
+            start_time = time.monotonic()
             failed_officers = []
+            found_count = 0
+            error_count = 0
+
             with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
                 futures = {
                     executor.submit(self._process_officer, officer): officer
@@ -404,16 +492,32 @@ class DirectorSearch(InvestigationModuleBase):
                     if error:
                         officer_name = officer.get("title", "Unknown")
                         failed_officers.append((officer_name, error))
+                        error_count += 1
                     if processed_list:
                         self.results_data.extend(processed_list)
+                        found_count += len(processed_list)
 
                     processed_count += 1
-                    self.app.after(
-                        0,
-                        lambda: self.status_var.set(
-                            f"Fetched appointments for {processed_count}/{len(officers)} officers..."
-                        ),
-                    )
+                    elapsed = time.monotonic() - start_time
+                    eta = format_eta(elapsed, processed_count, total)
+                    officer_name = officer.get("title", "Unknown")
+
+                    if self.ch_token_bucket.available_tokens <= 10:
+                        secs = self.ch_token_bucket.seconds_until_reset
+                        if secs is not None:
+                            msg = (
+                                f"Waiting for API usage limit to refresh "
+                                f"(~{int(secs)} seconds remaining)"
+                            )
+                        else:
+                            msg = "Waiting for API usage limit to refresh..."
+                    else:
+                        msg = (
+                            f"Fetching: {officer_name} ({processed_count} of {total}) "
+                            f"ETA: {eta} | Found: {found_count} appointments | "
+                            f"Errors: {error_count}"
+                        )
+                    self.app.after(0, lambda m=msg: self.status_var.set(m))
 
             self._api_failures = failed_officers
             self.after(100, self._populate_results)

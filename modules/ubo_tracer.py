@@ -6,6 +6,7 @@ import html
 import os
 import re
 import threading
+import time
 import webbrowser
 import tkinter as tk
 from datetime import datetime
@@ -26,7 +27,7 @@ from ..constants import (
 )
 
 # Utility functions (were global functions or duplicated in classes)
-from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary
+from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary, format_eta
 
 # UI components (were classes in original file)
 from ..ui.tooltip import Tooltip
@@ -288,26 +289,43 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                 self.after(100, self._finish_investigation)
                 return
 
-        self.safe_ui_call(self.progress_bar.config, maximum=len(root_companies))
+        total = len(root_companies)
+        self.safe_ui_call(self.progress_bar.config, maximum=total)
         self.app.after(
             0,
             lambda: self.status_var.set(
-                f"Starting UBO investigation for {len(root_companies)} root companies."
+                f"Starting UBO investigation for {total} root companies."
             ),
         )
 
+        start_time = time.monotonic()
+        found_count = 0
+        error_count = 0
         failed_companies = []
         for i, root_cnum in enumerate(root_companies):
             if self.cancel_flag.is_set():
                 break
-            self.app.after(
-                0,
-                lambda: self.status_var.set(
-                    f"Processing root company {i+1}/{len(root_companies)}: {root_cnum}"
-                ),
-            )
+            current_root_name = name_map.get(root_cnum, root_cnum)
+            elapsed = time.monotonic() - start_time
+            eta = format_eta(elapsed, i, total)
+
+            if self.ch_token_bucket.available_tokens <= 10:
+                secs = self.ch_token_bucket.seconds_until_reset
+                if secs is not None:
+                    msg = (
+                        f"Waiting for API usage limit to refresh "
+                        f"(~{int(secs)} seconds remaining)"
+                    )
+                else:
+                    msg = "Waiting for API usage limit to refresh..."
+            else:
+                display_name = current_root_name or root_cnum
+                msg = (
+                    f"Processing: {display_name} ({i + 1} of {total}) "
+                    f"ETA: {eta} | Found: {found_count} UBOs | Errors: {error_count}"
+                )
+            self.app.after(0, lambda m=msg: self.status_var.set(m))
             self.app.after(0, lambda v=i + 1: self.progress_bar.config(value=v))
-            current_root_name = name_map.get(root_cnum, "")
 
             # --- MODIFICATION: Track if PSCs are found for this root ---
             pscs_found_for_this_root = False
@@ -340,8 +358,10 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                         generated_rows, next_level_cnums, err = future.result()
                         if not generated_rows and not next_level_cnums:
                             failed_companies.append((task[0], err))
+                            error_count += 1
                         if generated_rows:
                             self.results_data.extend(generated_rows)
+                            found_count += len(generated_rows)
                             pscs_found_for_this_root = True  # Mark as found
                         if next_level_cnums:
                             companies_next_level.extend(next_level_cnums)

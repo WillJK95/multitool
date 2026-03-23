@@ -238,3 +238,28 @@ def format_error_summary(
     n = len(failures)
     plural = f"{item_type}(ies)" if item_type.endswith("y") else f"{item_type}(s)"
     return f"WARNING: {n} {plural} failed ({breakdown})."
+
+
+
+def format_eta(elapsed_sec: float, processed: int, total: int) -> str:
+    """Return a human-readable ETA string based on elapsed time and item counts.
+
+    Args:
+        elapsed_sec: Seconds elapsed since processing began.
+        processed: Number of items completed so far.
+        total: Total number of items to process.
+
+    Returns:
+        A short ETA string such as "~3-4 minutes" or "< 2 minutes".
+    """
+    remaining = total - processed
+    if processed == 0 or elapsed_sec < 2 or remaining <= 0:
+        return "calculating..."
+    rate = processed / elapsed_sec  # items per second
+    eta_sec = remaining / rate
+    if eta_sec < 90:
+        return "< 2 minutes"
+    minutes = eta_sec / 60
+    low = max(1, round(minutes))
+    high = low + 1
+    return f"~{low}-{high} minutes"
