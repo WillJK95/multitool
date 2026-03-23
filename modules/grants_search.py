@@ -119,8 +119,10 @@ class GrantsSearch(InvestigationModuleBase):
             run_frame, orient="horizontal", length=300, mode="determinate"
         )
         self.progress_bar.pack(pady=10)
+        self.status_entity_var = tk.StringVar(value="")
+        ttk.Label(run_frame, textvariable=self.status_entity_var).pack(anchor=tk.W)
         self.status_var = tk.StringVar(value="Ready.")
-        ttk.Label(run_frame, textvariable=self.status_var).pack()
+        ttk.Label(run_frame, textvariable=self.status_var).pack(anchor=tk.W)
 
     def toggle_all_fields(self, select):
         for var in self.data_fields_vars.values():
@@ -332,9 +334,8 @@ class GrantsSearch(InvestigationModuleBase):
                         for f in futures:
                             f.cancel()
                         log_message("Grant investigation cancelled by user.")
-                        self.app.after(
-                            0, lambda: self.status_var.set("Investigation cancelled.")
-                        )
+                        self.app.after(0, lambda: self.status_entity_var.set(""))
+                        self.app.after(0, lambda: self.status_var.set("Investigation cancelled."))
                         break
 
                     row_tuple = futures[future]
@@ -354,21 +355,18 @@ class GrantsSearch(InvestigationModuleBase):
                     elapsed = time.monotonic() - start_time
                     eta = format_eta(elapsed, processed_count, total)
 
-                    # Identify the row by company/charity number
                     row_name = (
                         (self.company_num_col and row_dict.get(self.company_num_col, ""))
                         or (self.charity_num_col and row_dict.get(self.charity_num_col, ""))
                         or f"row {processed_count}"
                     )
-                    msg = (
-                        f"Searching: {row_name} ({processed_count} of {total}) "
-                        f"ETA: {eta} | Found: {found_count} matches | "
-                        f"Errors: {error_count}"
-                    )
+                    entity = f"Searching: {row_name} ({processed_count} of {total})"
+                    stats = f"ETA: {eta} | Found: {found_count} matches | Errors: {error_count}"
 
-                    def update_progress(p=processed_count, m=msg):
+                    def update_progress(p=processed_count, e=entity, s=stats):
                         self.progress_bar.configure(value=p)
-                        self.status_var.set(m)
+                        self.status_entity_var.set(e)
+                        self.status_var.set(s)
                         self.app.update_idletasks()
                     self.app.after(0, update_progress)
 
@@ -378,6 +376,7 @@ class GrantsSearch(InvestigationModuleBase):
                     messagebox.showerror, "Error", f"A processing error occurred: {e}"
                 )
 
+        self.safe_ui_call(self.status_entity_var.set, "")
         if not self.cancel_flag.is_set():
             self.app.after(0, lambda: self.status_var.set("Investigation complete!"))
 

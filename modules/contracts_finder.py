@@ -226,10 +226,11 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
             length=300,
             mode="determinate"
         )
-        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        
+        self.progress_bar.pack(fill=tk.X, pady=(0, 2))
+        self.status_entity_var = tk.StringVar(value="")
+        ttk.Label(progress_frame, textvariable=self.status_entity_var).pack(anchor=tk.W)
         self.status_var = tk.StringVar(value="Ready. Enter a buyer organisation name to begin.")
-        ttk.Label(progress_frame, textvariable=self.status_var).pack(side=tk.LEFT)
+        ttk.Label(progress_frame, textvariable=self.status_var).pack(anchor=tk.W)
     
     # === Contract Search ===
     
@@ -418,28 +419,43 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
             total = len(self.suppliers_data)
             start_time = time.monotonic()
             error_count = 0
+            self._ratelimit_ticking = False
+
+            # Rate-limit ticker: counts down on the main thread while workers block
+            def _start_ratelimit_ticker():
+                if self._ratelimit_ticking:
+                    return
+                self._ratelimit_ticking = True
+
+                def _tick():
+                    if self.cancel_flag.is_set() or self.ch_token_bucket.available_tokens > 10:
+                        self._ratelimit_ticking = False
+                        self.status_entity_var.set("")
+                        return
+                    secs = self.ch_token_bucket.seconds_until_reset
+                    self.status_entity_var.set("Waiting for API usage limit to refresh")
+                    self.status_var.set(
+                        f"~{int(secs)} seconds remaining \u2013 processing will resume automatically"
+                        if secs is not None else
+                        "Processing will resume automatically when the limit refreshes"
+                    )
+                    self._tracked_after(1000, _tick)
+
+                self._tracked_after(0, _tick)
 
             for i, supplier in enumerate(self.suppliers_data):
                 self.safe_update(self.progress_bar.config, {"value": i + 1})
-                elapsed = time.monotonic() - start_time
-                eta = format_eta(elapsed, i, total)
-                name = supplier.get("name", "Unknown")[:40]
 
                 if self.ch_token_bucket.available_tokens <= 10:
-                    secs = self.ch_token_bucket.seconds_until_reset
-                    if secs is not None:
-                        status_msg = (
-                            f"Waiting for API usage limit to refresh "
-                            f"(~{int(secs)} seconds remaining)"
-                        )
-                    else:
-                        status_msg = "Waiting for API usage limit to refresh..."
+                    self.safe_ui_call(_start_ratelimit_ticker)
                 else:
-                    status_msg = (
-                        f"Enriching: {name} ({i + 1} of {total}) "
-                        f"ETA: {eta} | Errors: {error_count}"
-                    )
-                self.safe_update(self.status_var.set, status_msg)
+                    elapsed = time.monotonic() - start_time
+                    eta = format_eta(elapsed, i, total)
+                    name = supplier.get("name", "Unknown")[:40]
+                    entity = f"Enriching: {name} ({i + 1} of {total})"
+                    stats = f"ETA: {eta} | Errors: {error_count}"
+                    self.safe_update(self.status_entity_var.set, entity)
+                    self.safe_update(self.status_var.set, stats)
                 
                 company_number = supplier.get("company_number")
                 
@@ -530,6 +546,7 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
                 self.enrich_status_label.config,
                 {"text": "Enrichment complete.", "foreground": "green"}
             )
+            self.safe_update(self.status_entity_var.set, "")
             self.safe_update(
                 self.status_var.set,
                 "Enrichment complete. Export data for use with other modules."
