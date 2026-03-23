@@ -277,8 +277,10 @@ class CompanyCharitySearch(InvestigationModuleBase):
             run_frame, orient="horizontal", length=300, mode="determinate"
         )
         self.progress_bar.pack(pady=10)
+        self.status_entity_var = tk.StringVar(value="")
+        ttk.Label(run_frame, textvariable=self.status_entity_var).pack(anchor=tk.W)
         self.status_var = tk.StringVar(value="Ready.")
-        ttk.Label(run_frame, textvariable=self.status_var).pack()
+        ttk.Label(run_frame, textvariable=self.status_var).pack(anchor=tk.W)
 
         # --- NEW: Logic to disable UI based on available API keys ---
         self._configure_ui_for_keys()
@@ -529,6 +531,30 @@ class CompanyCharitySearch(InvestigationModuleBase):
         processed_count = 0
         found_count = 0
         failed_rows = []
+        self._ratelimit_ticking = False
+
+        # Rate-limit ticker: runs on main thread, counts down independently of
+        # the worker loop (which blocks when the bucket is empty).
+        def _start_ratelimit_ticker():
+            if self._ratelimit_ticking:
+                return
+            self._ratelimit_ticking = True
+
+            def _tick():
+                if self.cancel_flag.is_set() or self.ch_token_bucket.available_tokens > 10:
+                    self._ratelimit_ticking = False
+                    self.status_entity_var.set("")
+                    return
+                secs = self.ch_token_bucket.seconds_until_reset
+                self.status_entity_var.set("Waiting for API usage limit to refresh")
+                self.status_var.set(
+                    f"~{int(secs)} seconds remaining \u2013 processing will resume automatically"
+                    if secs is not None else
+                    "Processing will resume automatically when the limit refreshes"
+                )
+                self._tracked_after(1000, _tick)
+
+            self._tracked_after(0, _tick)
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = {
@@ -552,34 +578,23 @@ class CompanyCharitySearch(InvestigationModuleBase):
                     processed_count += 1
                     self.app.after(0, self.progress_bar.step, 1)
 
-                    # Build live status line
                     elapsed = time.monotonic() - start_time
-                    row_name = (
-                        row_data.get(self.name_col, "") if self.name_col else ""
-                    ) or str(list(row_data.values())[:1])[2:32]
-                    eta = format_eta(elapsed, processed_count, total)
                     error_count = len(failed_rows)
 
-                    # Check for near-exhausted CH token bucket
                     if (
                         hasattr(self, "ch_token_bucket")
                         and self.ch_token_bucket.available_tokens <= 10
                     ):
-                        secs = self.ch_token_bucket.seconds_until_reset
-                        if secs is not None:
-                            msg = (
-                                f"Waiting for API usage limit to refresh "
-                                f"(~{int(secs)} seconds remaining)"
-                            )
-                        else:
-                            msg = "Waiting for API usage limit to refresh..."
+                        self.safe_ui_call(_start_ratelimit_ticker)
                     else:
-                        msg = (
-                            f"Searching: {row_name} ({processed_count} of {total}) "
-                            f"ETA: {eta} | Found: {found_count} matches | "
-                            f"Errors: {error_count}"
-                        )
-                    self.app.after(0, lambda m=msg: self.status_var.set(m))
+                        row_name = (
+                            row_data.get(self.name_col, "") if self.name_col else ""
+                        ) or str(list(row_data.values())[:1])[2:32]
+                        eta = format_eta(elapsed, processed_count, total)
+                        entity = f"Searching: {row_name} ({processed_count} of {total})"
+                        stats = f"ETA: {eta} | Found: {found_count} matches | Errors: {error_count}"
+                        self.app.after(0, lambda e=entity: self.status_entity_var.set(e))
+                        self.app.after(0, lambda s=stats: self.status_var.set(s))
 
             except Exception as e:
                 log_message(f"A fatal error occurred during unified search: {e}")
@@ -591,6 +606,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
         self.safe_ui_call(self._finish_investigation)
 
     def _finish_investigation(self):
+        self.status_entity_var.set("")
         if self.cancel_flag.is_set():
             self.app.after(0, lambda: self.status_var.set("Investigation cancelled."))
         else:

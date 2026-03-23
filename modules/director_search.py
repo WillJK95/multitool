@@ -166,10 +166,14 @@ class DirectorSearch(InvestigationModuleBase):
 
         status_export_frame = ttk.Frame(self.content_frame)
         status_export_frame.pack(fill=tk.X, pady=5, side="bottom")
+
+        # Two-row status stack (left side)
+        status_stack = ttk.Frame(status_export_frame)
+        status_stack.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.status_entity_var = tk.StringVar(value="")
+        ttk.Label(status_stack, textvariable=self.status_entity_var).pack(anchor=tk.W)
         self.status_var = tk.StringVar(value="Ready.")
-        ttk.Label(status_export_frame, textvariable=self.status_var).pack(
-            side=tk.LEFT, fill=tk.X, expand=True
-        )
+        ttk.Label(status_stack, textvariable=self.status_var).pack(anchor=tk.W)
 
         # --- Button Frame for Exports ---
         button_export_frame = ttk.Frame(status_export_frame)
@@ -473,6 +477,29 @@ class DirectorSearch(InvestigationModuleBase):
             failed_officers = []
             found_count = 0
             error_count = 0
+            self._ratelimit_ticking = False
+
+            # Rate-limit ticker: counts down on main thread while workers block
+            def _start_ratelimit_ticker():
+                if self._ratelimit_ticking:
+                    return
+                self._ratelimit_ticking = True
+
+                def _tick():
+                    if self.cancel_flag.is_set() or self.ch_token_bucket.available_tokens > 10:
+                        self._ratelimit_ticking = False
+                        self.status_entity_var.set("")
+                        return
+                    secs = self.ch_token_bucket.seconds_until_reset
+                    self.status_entity_var.set("Waiting for API usage limit to refresh")
+                    self.status_var.set(
+                        f"~{int(secs)} seconds remaining \u2013 processing will resume automatically"
+                        if secs is not None else
+                        "Processing will resume automatically when the limit refreshes"
+                    )
+                    self._tracked_after(1000, _tick)
+
+                self._tracked_after(0, _tick)
 
             with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
                 futures = {
@@ -498,26 +525,17 @@ class DirectorSearch(InvestigationModuleBase):
                         found_count += len(processed_list)
 
                     processed_count += 1
-                    elapsed = time.monotonic() - start_time
-                    eta = format_eta(elapsed, processed_count, total)
                     officer_name = officer.get("title", "Unknown")
 
                     if self.ch_token_bucket.available_tokens <= 10:
-                        secs = self.ch_token_bucket.seconds_until_reset
-                        if secs is not None:
-                            msg = (
-                                f"Waiting for API usage limit to refresh "
-                                f"(~{int(secs)} seconds remaining)"
-                            )
-                        else:
-                            msg = "Waiting for API usage limit to refresh..."
+                        self.safe_ui_call(_start_ratelimit_ticker)
                     else:
-                        msg = (
-                            f"Fetching: {officer_name} ({processed_count} of {total}) "
-                            f"ETA: {eta} | Found: {found_count} appointments | "
-                            f"Errors: {error_count}"
-                        )
-                    self.app.after(0, lambda m=msg: self.status_var.set(m))
+                        elapsed = time.monotonic() - start_time
+                        eta = format_eta(elapsed, processed_count, total)
+                        entity = f"Fetching: {officer_name} ({processed_count} of {total})"
+                        stats = f"ETA: {eta} | Found: {found_count} appointments | Errors: {error_count}"
+                        self.app.after(0, lambda e=entity: self.status_entity_var.set(e))
+                        self.app.after(0, lambda s=stats: self.status_var.set(s))
 
             self._api_failures = failed_officers
             self.after(100, self._populate_results)
@@ -536,6 +554,7 @@ class DirectorSearch(InvestigationModuleBase):
         # Update selection label after populating results
         self._update_selection_label()
 
+        self.status_entity_var.set("")
         if self.cancel_flag.is_set():
             self.app.after(0, lambda: self.status_var.set("Search cancelled."))
         else:

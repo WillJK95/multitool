@@ -135,9 +135,10 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             run_frame, orient="horizontal", length=300, mode="determinate"
         )
         self.progress_bar.pack(pady=10)
-
+        self.status_entity_var = tk.StringVar(value="")
+        ttk.Label(run_frame, textvariable=self.status_entity_var).pack(anchor=tk.W)
         self.status_var = tk.StringVar(value="Ready.")
-        ttk.Label(run_frame, textvariable=self.status_var).pack()
+        ttk.Label(run_frame, textvariable=self.status_var).pack(anchor=tk.W)
 
     def load_file(self):
         path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
@@ -301,31 +302,47 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         start_time = time.monotonic()
         found_count = 0
         error_count = 0
+        self._ratelimit_ticking = False
         failed_companies = []
+
+        # Rate-limit ticker: runs on main thread to count down while workers block
+        def _start_ratelimit_ticker():
+            if self._ratelimit_ticking:
+                return
+            self._ratelimit_ticking = True
+
+            def _tick():
+                if self.cancel_flag.is_set() or self.ch_token_bucket.available_tokens > 10:
+                    self._ratelimit_ticking = False
+                    self.status_entity_var.set("")
+                    return
+                secs = self.ch_token_bucket.seconds_until_reset
+                self.status_entity_var.set("Waiting for API usage limit to refresh")
+                self.status_var.set(
+                    f"~{int(secs)} seconds remaining \u2013 processing will resume automatically"
+                    if secs is not None else
+                    "Processing will resume automatically when the limit refreshes"
+                )
+                self._tracked_after(1000, _tick)
+
+            self._tracked_after(0, _tick)
+
         for i, root_cnum in enumerate(root_companies):
             if self.cancel_flag.is_set():
                 break
             current_root_name = name_map.get(root_cnum, root_cnum)
-            elapsed = time.monotonic() - start_time
-            eta = format_eta(elapsed, i, total)
+            self.app.after(0, lambda v=i + 1: self.progress_bar.config(value=v))
 
             if self.ch_token_bucket.available_tokens <= 10:
-                secs = self.ch_token_bucket.seconds_until_reset
-                if secs is not None:
-                    msg = (
-                        f"Waiting for API usage limit to refresh "
-                        f"(~{int(secs)} seconds remaining)"
-                    )
-                else:
-                    msg = "Waiting for API usage limit to refresh..."
+                self.safe_ui_call(_start_ratelimit_ticker)
             else:
+                elapsed = time.monotonic() - start_time
+                eta = format_eta(elapsed, i, total)
                 display_name = current_root_name or root_cnum
-                msg = (
-                    f"Processing: {display_name} ({i + 1} of {total}) "
-                    f"ETA: {eta} | Found: {found_count} UBOs | Errors: {error_count}"
-                )
-            self.app.after(0, lambda m=msg: self.status_var.set(m))
-            self.app.after(0, lambda v=i + 1: self.progress_bar.config(value=v))
+                entity = f"Processing: {display_name} ({i + 1} of {total})"
+                stats = f"ETA: {eta} | Found: {found_count} UBOs | Errors: {error_count}"
+                self.app.after(0, lambda e=entity: self.status_entity_var.set(e))
+                self.app.after(0, lambda s=stats: self.status_var.set(s))
 
             # --- MODIFICATION: Track if PSCs are found for this root ---
             pscs_found_for_this_root = False
@@ -383,6 +400,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                 }
                 self.results_data.append(placeholder_row)
 
+        self.safe_ui_call(self.status_entity_var.set, "")
         if not self.cancel_flag.is_set():
             if failed_companies:
                 # Deduplicate by company number, keeping first error
