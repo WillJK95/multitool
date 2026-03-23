@@ -428,11 +428,15 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
                 self._ratelimit_ticking = True
 
                 def _tick():
-                    if self.cancel_flag.is_set() or self.ch_token_bucket.available_tokens > 10:
+                    if self.cancel_flag.is_set():
                         self._ratelimit_ticking = False
                         self.status_entity_var.set("")
                         return
                     secs = self.ch_token_bucket.seconds_until_reset
+                    if secs is None or secs <= 0:
+                        self._ratelimit_ticking = False
+                        self.status_entity_var.set("")
+                        return
                     self.status_entity_var.set("Waiting for API usage limit to refresh")
                     self.status_var.set(
                         f"~{int(secs)} seconds remaining \u2013 processing will resume automatically"
@@ -448,9 +452,12 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
 
                 if self.ch_token_bucket.available_tokens <= 10:
                     self.safe_ui_call(_start_ratelimit_ticker)
-                else:
+                elif not self._ratelimit_ticking:
                     elapsed = time.monotonic() - start_time
-                    eta = format_eta(elapsed, i, total)
+                    calls_per_item = 1 + int(fetch_officers) + int(fetch_pscs)
+                    remaining = total - i
+                    rate_wait = self.ch_token_bucket.estimate_wait_seconds(remaining * calls_per_item)
+                    eta = format_eta(elapsed, i, total, rate_limit_wait=rate_wait)
                     name = supplier.get("name", "Unknown")[:40]
                     entity = f"Enriching: {name} ({i + 1} of {total})"
                     stats = f"ETA: {eta} | Errors: {error_count}"
