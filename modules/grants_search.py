@@ -5,6 +5,7 @@
 import csv
 import textwrap
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- Tkinter ---
@@ -22,7 +23,7 @@ from ..constants import (
 )
 
 # Utility functions (were global functions or duplicated in classes)
-from ..utils.helpers import log_message
+from ..utils.helpers import log_message, format_eta
 
 # Base class (was in original file)
 from .base import InvestigationModuleBase
@@ -310,13 +311,14 @@ class GrantsSearch(InvestigationModuleBase):
         # We will set MAX_WORKERS to 2 to respect this.
         MAX_WORKERS = 2
 
-        self.app.after(
-            0,
-            lambda: self.status_var.set(
-                f"Processing {len(self.original_data)} rows..."
-            ),
-        )
+        total = len(self.original_data)
+        self.app.after(0, lambda: self.status_var.set(f"Processing {total} rows..."))
         rows_to_process = list(enumerate(self.original_data))
+
+        start_time = time.monotonic()
+        processed_count = 0
+        found_count = 0
+        error_count = 0
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = {
@@ -324,7 +326,6 @@ class GrantsSearch(InvestigationModuleBase):
                 for row in rows_to_process
             }
 
-            processed_count = 0
             try:
                 for future in as_completed(futures):
                     if self.cancel_flag.is_set():
@@ -336,16 +337,38 @@ class GrantsSearch(InvestigationModuleBase):
                         )
                         break
 
-                    # The result is a list of new rows (can be empty, one, or many)
-                    list_of_new_rows = future.result()
+                    row_tuple = futures[future]
+                    _, row_dict = row_tuple
+                    try:
+                        list_of_new_rows = future.result()
+                    except Exception as exc:
+                        log_message(f"Grant row error: {exc}")
+                        list_of_new_rows = []
+                        error_count += 1
+
                     if list_of_new_rows:
                         self.results_data.extend(list_of_new_rows)
-                    
-                    # Update progress bar and force GUI refresh
+                        found_count += 1
+
                     processed_count += 1
-                    def update_progress(p=processed_count, t=len(self.original_data)):
+                    elapsed = time.monotonic() - start_time
+                    eta = format_eta(elapsed, processed_count, total)
+
+                    # Identify the row by company/charity number
+                    row_name = (
+                        (self.company_num_col and row_dict.get(self.company_num_col, ""))
+                        or (self.charity_num_col and row_dict.get(self.charity_num_col, ""))
+                        or f"row {processed_count}"
+                    )
+                    msg = (
+                        f"Searching: {row_name} ({processed_count} of {total}) "
+                        f"ETA: {eta} | Found: {found_count} matches | "
+                        f"Errors: {error_count}"
+                    )
+
+                    def update_progress(p=processed_count, m=msg):
                         self.progress_bar.configure(value=p)
-                        self.status_var.set(f"Processed {p}/{t} rows...")
+                        self.status_var.set(m)
                         self.app.update_idletasks()
                     self.app.after(0, update_progress)
 

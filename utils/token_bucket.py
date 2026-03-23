@@ -53,6 +53,7 @@ class TokenBucket:
         # Cached server values (populated by sync_from_headers)
         self._server_limit: Optional[int] = None
         self._window_seconds: Optional[int] = None
+        self._reset_epoch: Optional[float] = None
 
     def _refill(self) -> None:
         """
@@ -201,6 +202,7 @@ class TokenBucket:
                 # but never exceed capacity
                 self.tokens = min(remain, self.capacity)
                 self.last_refill_time = time.monotonic()
+                self._reset_epoch = float(reset_epoch)
 
                 # Log noteworthy rate limit states
                 if remain == 0:
@@ -259,3 +261,11 @@ class TokenBucket:
         with self.lock:
             self._refill()
             return self.tokens
+
+    @property
+    def seconds_until_reset(self) -> Optional[float]:
+        """Seconds until the current rate-limit window resets, or None if unknown."""
+        with self.lock:
+            if self._reset_epoch is None:
+                return None
+            return max(0.0, self._reset_epoch - time.time())
