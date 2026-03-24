@@ -218,7 +218,7 @@ class App(tk.Tk):
         ttk.Separator(sb, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(10, 4))
 
         # Network Analytics Workbench — green, at bottom
-        self._add_sidebar_button(sb, "Network Workbench",
+        self._add_sidebar_button(sb, "Network Analytics\nWorkbench",
                                  "network_workbench", "success",
                                  self.show_network_graph_creator)
 
@@ -322,7 +322,7 @@ class App(tk.Tk):
         )
         self._ws_send_menu_obj = tk.Menu(self._working_set_send_menu, tearoff=0)
         self._ws_send_menu_obj.add_command(
-            label="Network Workbench",
+            label="Network Analytics Workbench",
             command=lambda: self._send_working_set_to_network())
         self._ws_send_menu_obj.add_command(
             label="Enhanced Due Diligence",
@@ -333,6 +333,10 @@ class App(tk.Tk):
         # Bind selection change to update EDD menu state
         self._working_set_tree.bind(
             "<<TreeviewSelect>>", lambda e: self._update_ws_edd_state()
+        )
+        # Click-to-deselect toggle
+        self._working_set_tree.bind(
+            "<Button-1>", lambda e: self._toggle_tree_selection(e, self._working_set_tree)
         )
 
         ttk.Button(
@@ -1125,6 +1129,12 @@ class App(tk.Tk):
             status = result.get("charity_registration_status",
                         result.get("registration_status", "Unknown"))
 
+            # Check if charity is active
+            reg_status_code = (result.get("reg_status") or "").upper()
+            status_text = (status or "").lower()
+            is_active = reg_status_code != "RM" and "removed" not in status_text
+            result["_is_active"] = is_active
+
             ttk.Label(
                 card, text=name, font=("Helvetica", 14, "bold"), bootstyle="primary"
             ).pack(anchor="w")
@@ -1132,6 +1142,13 @@ class App(tk.Tk):
                 card, text=f"Reg No: {reg_num}  |  Status: {status}",
                 font=("Segoe UI", 9), foreground="gray"
             ).pack(anchor="w", pady=(2, 0))
+
+            if not is_active:
+                ttk.Label(
+                    card,
+                    text="\u26a0 This charity is no longer registered",
+                    font=("Segoe UI", 9, "bold"), foreground="#fd7e14"
+                ).pack(anchor="w", pady=(2, 0))
 
         # Record in quick launch history
         self._ql_record_history(result, entity_type)
@@ -1141,7 +1158,7 @@ class App(tk.Tk):
         btn_row.pack(anchor="w", pady=(8, 0))
 
         ttk.Button(
-            btn_row, text="Open in EDD", bootstyle="info-outline",
+            btn_row, text="Run Enhanced Due Diligence", bootstyle="info-outline",
             command=lambda: self._ql_open_in_edd(result, entity_type)
         ).pack(side=tk.LEFT, padx=(0, 6))
 
@@ -1186,7 +1203,9 @@ class App(tk.Tk):
 
     def _ql_open_in_ubo(self, entity) -> None:
         number = entity.get("company_number", "")
-        self.show_ubo_investigation(prefill_company=number)
+        name = entity.get("company_name", "")
+        self.show_ubo_investigation(prefill_company=number,
+                                     prefill_company_name=name)
 
     def _ql_open_in_director(self, entity) -> None:
         name = entity.get("company_name", "")
@@ -1204,10 +1223,13 @@ class App(tk.Tk):
                        entity.get("registered_charity_number", "")))
             name = entity.get("charity_name", entity.get("name", "Unknown"))
 
+        is_active = entity.get("_is_active", True)
+
         existing = {e.get("company_number") for e in self.app_state.ubo_working_set}
         if num and num not in existing:
             self.app_state.ubo_working_set.append({
-                "name": name, "company_number": num
+                "name": name, "company_number": num, "active": is_active,
+                "entity_type": entity_type,
             })
         self._refresh_working_set_indicator()
         # Refresh home screen lower panel if visible
@@ -1404,10 +1426,13 @@ class App(tk.Tk):
         """Build the working set and recent reports panels."""
         zone = ttk.Frame(parent)
         zone.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
+        zone.columnconfigure(0, weight=1, uniform="lower_panels")
+        zone.columnconfigure(1, weight=1, uniform="lower_panels")
+        zone.rowconfigure(0, weight=1)
 
         # Left — Working Set
         ws_panel = ttk.LabelFrame(zone, text="Working Set", padding=8)
-        ws_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 4))
+        ws_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
 
         self._home_ws_header = ttk.Label(ws_panel, text="", font=("Segoe UI", 9, "bold"))
         self._home_ws_header.pack(anchor="w")
@@ -1430,7 +1455,7 @@ class App(tk.Tk):
         )
         self._home_ws_send_menu_obj = tk.Menu(self._home_ws_send_menu, tearoff=0)
         self._home_ws_send_menu_obj.add_command(
-            label="Network Workbench",
+            label="Network Analytics Workbench",
             command=lambda: self._send_working_set_to_network())
         self._home_ws_send_menu_obj.add_command(
             label="Enhanced Due Diligence",
@@ -1442,6 +1467,10 @@ class App(tk.Tk):
         self._home_ws_tree.bind(
             "<<TreeviewSelect>>", lambda e: self._update_home_ws_edd_state()
         )
+        # Click-to-deselect toggle
+        self._home_ws_tree.bind(
+            "<Button-1>", lambda e: self._toggle_tree_selection(e, self._home_ws_tree)
+        )
 
         ttk.Button(
             ws_btn_row, text="Clear", bootstyle="danger-outline",
@@ -1452,7 +1481,7 @@ class App(tk.Tk):
 
         # Right — Recent EDD Reports
         rr_panel = ttk.LabelFrame(zone, text="Recent Reports", padding=8)
-        rr_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(4, 0))
+        rr_panel.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
 
         self._home_reports_frame = ttk.Frame(rr_panel)
         self._home_reports_frame.pack(fill=tk.BOTH, expand=True)
@@ -1492,6 +1521,19 @@ class App(tk.Tk):
         self._refresh_home_working_set()
 
     # ── Working Set Selection & EDD Gating ───────────────────────────
+
+    def _toggle_tree_selection(self, event, tree) -> None:
+        """Toggle selection on click: deselect if already selected, else default."""
+        item = tree.identify_row(event.y)
+        if not item:
+            # Click on empty area — clear all selection
+            tree.selection_set([])
+            return "break"
+        if item in tree.selection():
+            # Already selected — deselect
+            tree.selection_remove(item)
+            return "break"
+        # Not selected — let default Treeview behavior handle it
 
     def _update_ws_edd_state(self) -> None:
         """Enable/disable EDD in sidebar working set menu based on selection count."""
@@ -1883,6 +1925,24 @@ class App(tk.Tk):
             messagebox.showinfo("Working Set", "No entities in working set.")
             return
 
+        # Filter out inactive charities
+        inactive = [e for e in entities if not e.get("active", True)]
+        active_entities = [e for e in entities if e.get("active", True)]
+        if inactive and not active_entities:
+            messagebox.showwarning(
+                "Working Set",
+                "All entities in the working set are inactive charities "
+                "and cannot be sent to Network Analytics."
+            )
+            return
+        if inactive:
+            names = ", ".join(e.get("name", "?") for e in inactive)
+            messagebox.showinfo(
+                "Working Set",
+                f"Skipping inactive charities: {names}"
+            )
+        entities = active_entities
+
         # Show a simple progress dialog
         progress_win = tk.Toplevel(self)
         progress_win.title("Building Network Data")
@@ -2132,13 +2192,15 @@ class App(tk.Tk):
         self._update_sidebar_active("director_search")
         self._refresh_working_set_indicator()
     
-    def show_ubo_investigation(self, prefill_company=None) -> None:
+    def show_ubo_investigation(self, prefill_company=None,
+                               prefill_company_name=None) -> None:
         """Show the UBO Tracer module."""
         self.clear_container()
         from .modules.ubo_tracer import UltimateBeneficialOwnershipTracer
         UltimateBeneficialOwnershipTracer(self, self.api_key, self.show_main_menu,
                                            self.ch_token_bucket,
-                                           prefill_company=prefill_company)
+                                           prefill_company=prefill_company,
+                                           prefill_company_name=prefill_company_name)
         self._update_sidebar_active("ubo_tracer")
         self._refresh_working_set_indicator()
     
