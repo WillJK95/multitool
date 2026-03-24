@@ -222,6 +222,11 @@ class App(tk.Tk):
         self._add_sidebar_button(sb, "Network Analytics\nWorkbench",
                                  "network_workbench", "success",
                                  self.show_network_graph_creator)
+        # Centre the two-line label; anchor must go through the style system
+        self.style.configure("Centered.success.TButton", anchor="center")
+        self._sidebar_buttons["network_workbench"].configure(
+            style="Centered.success.TButton"
+        )
 
         # Working Set indicator — below Network Workbench
         self._build_working_set_indicator(sb)
@@ -230,7 +235,7 @@ class App(tk.Tk):
         """Add a single navigation button to the sidebar and register it."""
         btn = ttk.Button(
             parent, text=text, command=command,
-            bootstyle=bootstyle, width=24, anchor=tk.CENTER
+            bootstyle=bootstyle, width=24
         )
         btn.pack(fill=tk.X, pady=2)
         self._sidebar_buttons[key] = btn
