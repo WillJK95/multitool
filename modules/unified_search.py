@@ -590,8 +590,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
         # --- Treeview area ---
         tree_frame = ttk.Frame(self.results_tab)
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.pack(fill=tk.X, padx=10, pady=5)
         tree_frame.columnconfigure(0, weight=1)
 
         self.results_tree = ttk.Treeview(
@@ -601,7 +600,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
         xscroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.results_tree.xview)
         self.results_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
 
-        self.results_tree.grid(row=0, column=0, sticky="nsew")
+        self.results_tree.grid(row=0, column=0, sticky="ew")
         yscroll.grid(row=0, column=1, sticky="ns")
         xscroll.grid(row=1, column=0, sticky="ew")
 
