@@ -12,6 +12,7 @@ CONTRACTS_FINDER_BASE_URL = "https://www.contractsfinder.service.gov.uk"
 # --- File Paths ---
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".multitool")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.ini")
+RECENT_REPORTS_FILE = os.path.join(CONFIG_DIR, "recent_reports.json")
 
 # --- Keyring Configuration ---
 SERVICE_NAME = "multitool"

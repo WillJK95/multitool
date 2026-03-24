@@ -52,6 +52,7 @@ from ..constants import (
 )
 from .base import InvestigationModuleBase
 from ..utils.helpers import log_message, clean_company_number
+from ..utils.settings import save_recent_reports
 from ..utils.edd_visualizations import (
     generate_company_timeline,
     fetch_grants_for_company,
@@ -1922,6 +1923,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
             })
             self.app_state.recent_edd_reports = self.app_state.recent_edd_reports[:5]
+            save_recent_reports(self.app_state.recent_edd_reports)
 
         except Exception as e:
             import traceback
@@ -2087,6 +2089,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
             })
             self.app_state.recent_edd_reports = self.app_state.recent_edd_reports[:5]
+            save_recent_reports(self.app_state.recent_edd_reports)
 
         except Exception as e:
             error_details = traceback.format_exc()
