@@ -6,11 +6,13 @@ import csv
 import html
 import os
 import re
+import tempfile
 import textwrap
 import threading
 import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime
 
 # --- Third-Party ---
 import networkx as nx
@@ -30,18 +32,36 @@ from ..utils.helpers import clean_company_number
 
 # Constants (were at top of original file)
 from ..constants import (
-    COMPANY_DATA_FIELDS, 
+    COMPANY_DATA_FIELDS,
     CHARITY_DATA_FIELDS,
 )
 
 # Utility functions (were global functions or duplicated in classes)
 from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary, format_eta
+from ..utils.fuzzy_match import normalize_person_name
 
 # UI components (were classes in original file)
 from ..ui.tooltip import Tooltip
 
 # Base class (was in original file)
 from .base import InvestigationModuleBase
+
+# Auto-mapping patterns for column header detection
+_COMPANY_NUM_PATTERNS = [
+    "company_number", "company number", "company no", "company_no",
+    "companynumber", "co number", "ch number", "crn",
+    "company registration", "company registration number",
+]
+_CHARITY_NUM_PATTERNS = [
+    "charity_number", "charity number", "charity no", "charity_no",
+    "charitynumber", "cc number", "charity registration",
+    "reg_charity_number", "registered charity number",
+]
+_NAME_PATTERNS = [
+    "name", "company_name", "company name", "entity_name", "entity name",
+    "organisation", "organization", "charity_name", "charity name",
+    "organisation_name", "organization_name",
+]
 
 
 class CompanyCharitySearch(InvestigationModuleBase):
@@ -57,10 +77,36 @@ class CompanyCharitySearch(InvestigationModuleBase):
         super().__init__(parent_app, back_callback, api_key, help_key=help_key)
         self.charity_api_key = charity_api_key
         self.ch_token_bucket = ch_token_bucket
-        # --- UI Setup ---
+
+        # --- Notebook with Configuration and Results tabs ---
+        self.notebook = ttk.Notebook(self.content_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        self.config_tab = ttk.Frame(self.notebook)
+        self.results_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.config_tab, text="Configuration")
+        self.notebook.add(self.results_tab, text="Results")
+
+        # Column selection state (initialised before UI build)
+        self.company_col = None
+        self.charity_col = None
+        self.name_col = None
+        self._name_combo = None  # reference stored for greying out
+
+        # Results tab state
+        self._results_sort_col = None
+        self._results_sort_reverse = False
+        self._results_columns = []
+        self._row_index_map = {}  # treeview iid -> index in self.results_data
+        self._shared_connection_rows = set()
+
+        # --- Build Results tab (static skeleton) ---
+        self._build_results_tab()
+
+        # --- UI Setup (Configuration tab) ---
         # Step 1: Upload File
         upload_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 1: Upload File", padding=10
+            self.config_tab, text="Step 1: Upload File", padding=10
         )
         upload_frame.pack(fill=tk.X, pady=5, padx=10)
         ttk.Button(
@@ -71,7 +117,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
         # Step 2: Select Databases & Priority
         db_frame = ttk.LabelFrame(
-            self.content_frame,
+            self.config_tab,
             text="Step 2: Select Databases & Search Priority",
             padding=10,
         )
@@ -126,7 +172,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
         # Step 3: Fuzzy Matching
         fuzzy_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 3: Fuzzy Matching (Optional)", padding=10
+            self.config_tab, text="Step 3: Fuzzy Matching (Optional)", padding=10
         )
         fuzzy_frame.pack(fill=tk.X, pady=5, padx=10)
 
@@ -194,13 +240,13 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
         # Step 4: Select Columns
         self.column_selection_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 4: Select Columns", padding=10
+            self.config_tab, text="Step 4: Select Columns", padding=10
         )
         self.column_selection_frame.pack(fill=tk.X, pady=5, padx=10)
 
         # Step 5: Configure Data Fields
         self.fields_frame = ttk.LabelFrame(
-            self.content_frame,
+            self.config_tab,
             text="Step 5: Configure Data Fields to Return",
             padding=10,
         )
@@ -234,9 +280,9 @@ class CompanyCharitySearch(InvestigationModuleBase):
                 variable=self.charity_data_fields_vars[key],
             ).pack(anchor="w")
 
-        # Step 6: Run & Export
+        # Step 6: Run
         run_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 6: Run & Export", padding=10
+            self.config_tab, text="Step 6: Run", padding=10
         )
         run_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=10)
 
@@ -253,26 +299,6 @@ class CompanyCharitySearch(InvestigationModuleBase):
             run_buttons_frame, text="Cancel", command=self.cancel_investigation
         )
 
-        export_buttons_frame = ttk.Frame(run_frame)
-        export_buttons_frame.pack(pady=5)
-
-        self.export_btn = ttk.Button(
-            export_buttons_frame, text="Export Results", state="disabled", command=self.export_csv
-        )
-        self.export_btn.pack(side=tk.LEFT, padx=5)
-
-        self.export_graph_data_btn = ttk.Button(
-            export_buttons_frame,
-            text="Export Graph Data (CSV)",
-            state="disabled",
-            command=self.start_graph_data_export,
-        )
-        self.export_graph_data_btn.pack(side=tk.LEFT, padx=5)
-        Tooltip(
-            self.export_graph_data_btn,
-            "Export the network connections (edge list) to a CSV file for combined analysis with other modules.",
-        )
-
         self.progress_bar = ttk.Progressbar(
             run_frame, orient="horizontal", length=300, mode="determinate"
         )
@@ -281,6 +307,27 @@ class CompanyCharitySearch(InvestigationModuleBase):
         ttk.Label(run_frame, textvariable=self.status_entity_var).pack(anchor=tk.W)
         self.status_var = tk.StringVar(value="Ready.")
         ttk.Label(run_frame, textvariable=self.status_var).pack(anchor=tk.W)
+
+        # Compact completion status with clickable link to Results tab
+        self._config_completion_frame = ttk.Frame(run_frame)
+        self._config_completion_var = tk.StringVar(value="")
+        self._config_completion_label = ttk.Label(
+            self._config_completion_frame,
+            textvariable=self._config_completion_var,
+            foreground="green",
+        )
+        self._config_completion_label.pack(side=tk.LEFT)
+        self._config_results_link = ttk.Label(
+            self._config_completion_frame,
+            text="View Results",
+            foreground="blue",
+            cursor="hand2",
+            font=("Segoe UI", 9, "underline"),
+        )
+        self._config_results_link.pack(side=tk.LEFT, padx=(5, 0))
+        self._config_results_link.bind(
+            "<Button-1>", lambda e: self.notebook.select(self.results_tab)
+        )
 
         # --- NEW: Logic to disable UI based on available API keys ---
         self._configure_ui_for_keys()
@@ -306,10 +353,16 @@ class CompanyCharitySearch(InvestigationModuleBase):
             # Enable slider and make label blue
             self.accuracy_slider.config(state='normal')
             self.accuracy_description_label.config(foreground='#667eea')
+            # Enable name combo
+            if self._name_combo:
+                self._name_combo.config(state='readonly')
         else:
             # Disable slider and make label grey
             self.accuracy_slider.config(state='disabled')
             self.accuracy_description_label.config(foreground='grey')
+            # Grey out name combo (value persists for auto-mapping)
+            if self._name_combo:
+                self._name_combo.config(state='disabled')
 
     def _disable_frame_widgets(self, frame):
         """Recursively disables all widgets within a given frame."""
@@ -377,7 +430,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
             self.file_status_label.config(text="Error loading file.", foreground="red")
 
     def _display_column_selection_ui(self):
-        """Display dropdown menus for column selection."""
+        """Display dropdown menus for column selection with auto-mapping."""
         # Clear existing widgets
         for widget in self.column_selection_frame.winfo_children():
             widget.destroy()
@@ -386,8 +439,8 @@ class CompanyCharitySearch(InvestigationModuleBase):
         self.charity_num_col_var = tk.StringVar()
         self.name_col_var = tk.StringVar()
 
-        # Create options list with a "None" option at the start
-        options = ["\u2014 Not Selected \u2014"] + self.original_headers
+        NOT_SELECTED = "\u2014 Not Selected \u2014"
+        options = [NOT_SELECTED] + self.original_headers
 
         # Container to hold the three columns side-by-side
         columns_container = ttk.Frame(self.column_selection_frame)
@@ -398,15 +451,16 @@ class CompanyCharitySearch(InvestigationModuleBase):
             columns_container, text="Company Number", padding=5
         )
         cnum_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
-        
+
         cnum_combo = ttk.Combobox(
-            cnum_frame, 
-            textvariable=self.company_num_col_var, 
+            cnum_frame,
+            textvariable=self.company_num_col_var,
             values=options,
             state="readonly"
         )
         cnum_combo.pack(fill="x", pady=5)
-        cnum_combo.set("\u2014 Not Selected \u2014")  # Default value
+        cnum_combo.set(NOT_SELECTED)
+        cnum_combo.bind("<<ComboboxSelected>>", lambda e: self._on_column_selection_changed())
 
         # --- Column 2: Charity Number ---
         ccnum_frame = ttk.LabelFrame(
@@ -415,13 +469,14 @@ class CompanyCharitySearch(InvestigationModuleBase):
         ccnum_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
 
         ccnum_combo = ttk.Combobox(
-            ccnum_frame, 
-            textvariable=self.charity_num_col_var, 
+            ccnum_frame,
+            textvariable=self.charity_num_col_var,
             values=options,
             state="readonly"
         )
         ccnum_combo.pack(fill="x", pady=5)
-        ccnum_combo.set("\u2014 Not Selected \u2014")
+        ccnum_combo.set(NOT_SELECTED)
+        ccnum_combo.bind("<<ComboboxSelected>>", lambda e: self._on_column_selection_changed())
 
         # --- Column 3: Name (Fuzzy) ---
         name_frame = ttk.LabelFrame(
@@ -429,46 +484,572 @@ class CompanyCharitySearch(InvestigationModuleBase):
         )
         name_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
 
-        name_combo = ttk.Combobox(
-            name_frame, 
-            textvariable=self.name_col_var, 
+        self._name_combo = ttk.Combobox(
+            name_frame,
+            textvariable=self.name_col_var,
             values=options,
-            state="readonly"
+            state="disabled" if not self.fuzzy_match_var.get() else "readonly"
         )
-        name_combo.pack(fill="x", pady=5)
-        name_combo.set("\u2014 Not Selected \u2014")
+        self._name_combo.pack(fill="x", pady=5)
+        self._name_combo.set(NOT_SELECTED)
+        self._name_combo.bind("<<ComboboxSelected>>", lambda e: self._on_column_selection_changed())
 
-        # --- Confirm Button ---
-        ttk.Button(
-            self.column_selection_frame,
-            text="Confirm Columns",
-            command=self._confirm_columns,
-        ).pack(side=tk.BOTTOM, pady=10)
+        # --- Auto-mapping ---
+        self._auto_map_columns()
+
+        # Trigger initial validation
+        self._on_column_selection_changed()
 
         # Force UI update
         self.app.after(1, self._update_scrollregion)
 
-    def _confirm_columns(self):
-        self.company_col = self.company_num_col_var.get()
-        self.charity_col = self.charity_num_col_var.get()
-        self.name_col = self.name_col_var.get()
-        if self.company_col == "\u2014 Not Selected \u2014":
-            self.company_col = None
-        if self.charity_col == "\u2014 Not Selected \u2014":
-            self.charity_col = None
-        if self.name_col == "\u2014 Not Selected \u2014":
-            self.name_col = None
+    def _auto_map_columns(self):
+        """Auto-detect column mappings from CSV header names."""
+        NOT_SELECTED = "\u2014 Not Selected \u2014"
+        mapped_company = False
+        mapped_charity = False
+        mapped_name = False
 
-        if not self.company_col and not self.charity_col and not self.name_col:
-            messagebox.showerror(
-                "Selection Error", "You must select at least one column to match on."
+        for header in self.original_headers:
+            h = header.lower().strip()
+            if not mapped_company and h in _COMPANY_NUM_PATTERNS:
+                self.company_num_col_var.set(header)
+                mapped_company = True
+            elif not mapped_charity and h in _CHARITY_NUM_PATTERNS:
+                self.charity_num_col_var.set(header)
+                mapped_charity = True
+            elif not mapped_name and h in _NAME_PATTERNS:
+                self.name_col_var.set(header)
+                mapped_name = True
+
+    def _on_column_selection_changed(self):
+        """Auto-validate column selections and enable/disable run button."""
+        NOT_SELECTED = "\u2014 Not Selected \u2014"
+        company = self.company_num_col_var.get()
+        charity = self.charity_num_col_var.get()
+        name = self.name_col_var.get()
+
+        self.company_col = None if company == NOT_SELECTED else company
+        self.charity_col = None if charity == NOT_SELECTED else charity
+        self.name_col = None if name == NOT_SELECTED else name
+
+        if self.company_col or self.charity_col or self.name_col:
+            self.run_btn.config(state="normal")
+        else:
+            self.run_btn.config(state="disabled")
+
+    # ------------------------------------------------------------------
+    # Results tab
+    # ------------------------------------------------------------------
+
+    def _build_results_tab(self):
+        """Build the static skeleton of the Results tab (called once from __init__)."""
+        # --- Top bar: Select All / Deselect All / Filters ---
+        top_bar = ttk.Frame(self.results_tab)
+        top_bar.pack(fill=tk.X, padx=10, pady=(10, 5))
+
+        ttk.Button(
+            top_bar, text="Select All", command=self._select_all_results
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(
+            top_bar, text="Deselect All", command=self._deselect_all_results
+        ).pack(side=tk.LEFT, padx=(0, 15))
+
+        # Filter toggle buttons (non-mutually-exclusive)
+        self._filter_inactive_var = tk.BooleanVar(value=False)
+        self._filter_shared_var = tk.BooleanVar(value=False)
+        self._filter_outdated_var = tk.BooleanVar(value=False)
+
+        inactive_btn = ttk.Checkbutton(
+            top_bar, text="Show Inactive",
+            variable=self._filter_inactive_var,
+            command=self._apply_results_filters,
+            bootstyle="warning-outline-toolbutton",
+        )
+        inactive_btn.pack(side=tk.LEFT, padx=(0, 5))
+
+        shared_btn = ttk.Checkbutton(
+            top_bar, text="Show Shared Connections",
+            variable=self._filter_shared_var,
+            command=self._apply_results_filters,
+            bootstyle="info-outline-toolbutton",
+        )
+        shared_btn.pack(side=tk.LEFT, padx=(0, 5))
+        Tooltip(
+            shared_btn,
+            "Basic name matching only. For accurate entity resolution, send to Network Analytics Workbench.",
+        )
+
+        outdated_btn = ttk.Checkbutton(
+            top_bar, text="Show Outdated Filings",
+            variable=self._filter_outdated_var,
+            command=self._apply_results_filters,
+            bootstyle="danger-outline-toolbutton",
+        )
+        outdated_btn.pack(side=tk.LEFT, padx=(0, 5))
+
+        # --- Treeview area ---
+        tree_frame = ttk.Frame(self.results_tab)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
+
+        self.results_tree = ttk.Treeview(
+            tree_frame, columns=[], show="headings", selectmode="extended"
+        )
+        yscroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.results_tree.yview)
+        xscroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.results_tree.xview)
+        self.results_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+
+        self.results_tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+
+        # --- Progress area for graph-data retrieval (hidden by default) ---
+        self._results_progress_frame = ttk.Frame(self.results_tab)
+        self._results_progress_var = tk.StringVar(value="")
+        ttk.Label(
+            self._results_progress_frame, textvariable=self._results_progress_var
+        ).pack(anchor=tk.W, padx=10)
+
+        # --- Bottom bar: Export + Send to ---
+        bottom_bar = ttk.Frame(self.results_tab)
+        bottom_bar.pack(fill=tk.X, padx=10, pady=(5, 10))
+
+        ttk.Button(
+            bottom_bar, text="Export Results", command=self.export_csv
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        # "Send to… ▼" dropdown
+        self._send_menu_btn = ttk.Menubutton(
+            bottom_bar, text="Send to\u2026 \u25BC", bootstyle="primary-outline"
+        )
+        send_menu = tk.Menu(self._send_menu_btn, tearoff=0)
+        send_menu.add_command(label="Working Set", command=self._send_to_working_set)
+        send_menu.add_command(
+            label="Network Analytics Workbench", command=self._send_to_network_analytics
+        )
+        send_menu.add_command(label="UBO Tracer", command=self._send_to_ubo_tracer)
+        send_menu.add_command(label="Grants Search", command=self._send_to_grants_search)
+        self._send_menu_btn.configure(menu=send_menu)
+        self._send_menu_btn.pack(side=tk.LEFT, padx=(0, 5))
+        Tooltip(
+            self._send_menu_btn,
+            "Send selected entities to another module.",
+        )
+
+    def _select_all_results(self):
+        """Select all visible items in the results treeview."""
+        children = self.results_tree.get_children()
+        if children:
+            self.results_tree.selection_set(children)
+
+    def _deselect_all_results(self):
+        """Clear selection in the results treeview."""
+        self.results_tree.selection_remove(self.results_tree.selection())
+
+    # ------------------------------------------------------------------
+    # Populate results
+    # ------------------------------------------------------------------
+
+    def _determine_results_columns(self):
+        """Determine which columns to show, based on user's field selections."""
+        if not self.results_data:
+            return []
+
+        # Collect all keys that actually appear in results
+        present_keys = set()
+        for row in self.results_data:
+            present_keys.update(row.keys())
+
+        cols = []
+        # Match meta-columns first
+        for key in ["match_status", "match_source", "match_score", "matched_name"]:
+            if key in present_keys:
+                cols.append(key)
+        # Original CSV headers
+        for h in self.original_headers:
+            if h not in cols and h in present_keys:
+                cols.append(h)
+        # Selected CH fields (in definition order)
+        if self.search_ch_var.get():
+            for key in COMPANY_DATA_FIELDS:
+                if key not in cols and key in present_keys:
+                    if key in self.company_data_fields_vars and self.company_data_fields_vars[key].get():
+                        cols.append(key)
+        # Selected CC fields (in definition order)
+        if self.search_cc_var.get():
+            for key in CHARITY_DATA_FIELDS:
+                if key not in cols and key in present_keys:
+                    if key in self.charity_data_fields_vars and self.charity_data_fields_vars[key].get():
+                        cols.append(key)
+        # Any remaining keys not yet included
+        for key in sorted(present_keys):
+            if key not in cols:
+                cols.append(key)
+
+        return cols
+
+    def _populate_results_tab(self):
+        """Fill the results treeview after investigation completes."""
+        cols = self._determine_results_columns()
+        self._results_columns = cols
+
+        # Configure treeview columns
+        self.results_tree.configure(columns=cols)
+        for col in cols:
+            display = COMPANY_DATA_FIELDS.get(col, CHARITY_DATA_FIELDS.get(col, col.replace("_", " ").title()))
+            self.results_tree.heading(
+                col, text=display,
+                command=lambda c=col: self._sort_results_tree(c),
+            )
+            self.results_tree.column(col, width=130, minwidth=60)
+
+        # Reset sort state
+        self._results_sort_col = None
+        self._results_sort_reverse = False
+
+        # Reset filter state
+        self._filter_inactive_var.set(False)
+        self._filter_shared_var.set(False)
+        self._filter_outdated_var.set(False)
+
+        # Pre-compute shared connections index
+        self._compute_shared_connections()
+
+        # Insert all rows
+        self._insert_results_rows(self.results_data)
+
+        # Auto-sort: unmatched and dissolved at top
+        self._auto_sort_initial()
+
+    def _insert_results_rows(self, rows):
+        """Clear and insert the given rows into the treeview."""
+        for item in self.results_tree.get_children():
+            self.results_tree.delete(item)
+        self._row_index_map.clear()
+
+        for idx, row in enumerate(rows):
+            values = [str(row.get(c, "")) for c in self._results_columns]
+            iid = self.results_tree.insert("", tk.END, values=values)
+            self._row_index_map[iid] = idx
+
+    def _auto_sort_initial(self):
+        """Sort so unmatched and dissolved entities appear at the top."""
+        if not self._results_columns:
+            return
+
+        def sort_key(item):
+            vals = {c: self.results_tree.set(item, c) for c in self._results_columns}
+            status = vals.get("match_status", "").lower()
+            company_status = vals.get("company_status", "").lower()
+            # Priority: 0 = unmatched, 1 = dissolved/inactive, 2 = matched/active
+            if "no match" in status:
+                return (0, company_status)
+            if company_status and company_status != "active":
+                return (1, company_status)
+            return (2, company_status)
+
+        sorted_items = sorted(self.results_tree.get_children(), key=sort_key)
+        for idx, item in enumerate(sorted_items):
+            self.results_tree.move(item, "", idx)
+
+    # ------------------------------------------------------------------
+    # Sorting
+    # ------------------------------------------------------------------
+
+    def _sort_results_tree(self, col):
+        """Sort results treeview by clicked column header."""
+        if self._results_sort_col == col:
+            self._results_sort_reverse = not self._results_sort_reverse
+        else:
+            self._results_sort_col = col
+            self._results_sort_reverse = False
+        self._update_results_sort_headings()
+        self._reapply_results_sort()
+
+    def _update_results_sort_headings(self):
+        """Update column header text to show sort indicator."""
+        for c in self._results_columns:
+            display = COMPANY_DATA_FIELDS.get(c, CHARITY_DATA_FIELDS.get(c, c.replace("_", " ").title()))
+            if c == self._results_sort_col:
+                display += " \u2193" if self._results_sort_reverse else " \u2191"
+            self.results_tree.heading(c, text=display)
+
+    def _reapply_results_sort(self):
+        """Sort the results treeview in-place."""
+        if not self._results_sort_col:
+            return
+        col = self._results_sort_col
+
+        def sort_key(item):
+            val = self.results_tree.set(item, col)
+            try:
+                return (0, float(val))
+            except (ValueError, TypeError):
+                return (1, val.lower())
+
+        sorted_items = sorted(
+            self.results_tree.get_children(),
+            key=sort_key, reverse=self._results_sort_reverse,
+        )
+        for idx, item in enumerate(sorted_items):
+            self.results_tree.move(item, "", idx)
+
+    # ------------------------------------------------------------------
+    # Filters
+    # ------------------------------------------------------------------
+
+    def _compute_shared_connections(self):
+        """Pre-compute which rows share an address, director, owner, or trustee."""
+        self._shared_connection_rows = set()
+        address_index = {}   # normalised_address -> set of row indices
+        person_index = {}    # normalised_name -> set of row indices
+
+        for idx, row in enumerate(self.results_data):
+            # Addresses
+            addr = row.get("registered_address", "")
+            if addr:
+                key = clean_address_string(addr)
+                if key:
+                    address_index.setdefault(key, set()).add(idx)
+
+            # Officers
+            for field in ("officers", "persons_with_significant_control", "trustee_names"):
+                raw = row.get(field, "")
+                if not raw:
+                    continue
+                names = [n.strip() for n in str(raw).split(";") if n.strip()]
+                for name in names:
+                    nkey = normalize_person_name(name)
+                    if nkey:
+                        person_index.setdefault(nkey, set()).add(idx)
+
+        # Any row that shares a connection with another row
+        for indices in address_index.values():
+            if len(indices) > 1:
+                self._shared_connection_rows.update(indices)
+        for indices in person_index.values():
+            if len(indices) > 1:
+                self._shared_connection_rows.update(indices)
+
+    def _parse_date(self, date_str):
+        """Try to parse a date string, return date object or None."""
+        if not date_str:
+            return None
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(date_str.strip(), fmt).date()
+            except (ValueError, TypeError):
+                continue
+        return None
+
+    def _apply_results_filters(self):
+        """Re-populate treeview showing only rows that pass all active filters."""
+        show_inactive = self._filter_inactive_var.get()
+        show_shared = self._filter_shared_var.get()
+        show_outdated = self._filter_outdated_var.get()
+
+        # If no filters active, show all
+        if not show_inactive and not show_shared and not show_outdated:
+            self._insert_results_rows(self.results_data)
+            self._reapply_results_sort()
+            return
+
+        today = date.today()
+        filtered = []
+        for idx, row in enumerate(self.results_data):
+            # Each active filter is a requirement (AND logic)
+            if show_inactive:
+                cs = row.get("company_status", "").lower()
+                if not cs or cs == "active":
+                    continue  # skip active/unknown companies
+
+            if show_shared:
+                if idx not in self._shared_connection_rows:
+                    continue
+
+            if show_outdated:
+                is_outdated = False
+                for field in ("accounts_next_due", "confirmation_statement_next_due"):
+                    d = self._parse_date(row.get(field, ""))
+                    if d and d < today:
+                        is_outdated = True
+                        break
+                if not is_outdated:
+                    continue
+
+            filtered.append(row)
+
+        self._insert_results_rows(filtered)
+        self._reapply_results_sort()
+
+    # ------------------------------------------------------------------
+    # Send-to helpers
+    # ------------------------------------------------------------------
+
+    def _get_selected_entities(self):
+        """Return list of (index, row_dict) for selected treeview items."""
+        sel = self.results_tree.selection()
+        if not sel:
+            messagebox.showinfo("No Selection", "Please select one or more rows first.")
+            return []
+        entities = []
+        for iid in sel:
+            idx = self._row_index_map.get(iid)
+            if idx is not None and idx < len(self.results_data):
+                entities.append((idx, self.results_data[idx]))
+        return entities
+
+    def _entity_to_ws_dict(self, row):
+        """Convert a results row to a working-set entity dict."""
+        company_number = row.get("company_number", "")
+        charity_number = row.get("charity_number", row.get("reg_charity_number", ""))
+        name = row.get("matched_name", "") or row.get(
+            self.name_col, "") if self.name_col else ""
+        if not name:
+            # Try to get any name-like field
+            for k in self.original_headers:
+                if "name" in k.lower():
+                    name = row.get(k, "")
+                    if name:
+                        break
+
+        cs = row.get("company_status", "").lower()
+        is_active = cs == "active" if cs else True
+
+        # Determine entity type
+        match_source = row.get("match_source", "")
+        if "Charity Commission" in match_source and not company_number:
+            return {
+                "name": name or f"Charity {charity_number}",
+                "company_number": str(charity_number),
+                "active": is_active,
+                "entity_type": "charity",
+            }
+        return {
+            "name": name or f"Company {company_number}",
+            "company_number": str(company_number) if company_number else str(charity_number),
+            "active": is_active,
+            "entity_type": "company" if company_number else "charity",
+        }
+
+    def _send_to_working_set(self):
+        """Append selected entities to the global working set."""
+        entities = self._get_selected_entities()
+        if not entities:
+            return
+        added = 0
+        for _, row in entities:
+            ws_dict = self._entity_to_ws_dict(row)
+            self.app_state.ubo_working_set.append(ws_dict)
+            added += 1
+        self.app._refresh_working_set_indicator()
+        try:
+            self.app._refresh_home_working_set()
+        except Exception:
+            pass
+        messagebox.showinfo("Working Set", f"Added {added} entities to working set.")
+
+    def _send_to_network_analytics(self):
+        """Build graph data for selected entities and navigate to Network Analytics."""
+        entities = self._get_selected_entities()
+        if not entities:
+            return
+
+        ws_entities = [self._entity_to_ws_dict(row) for _, row in entities]
+        entity_count = len(ws_entities)
+
+        # Show progress on results tab
+        self._results_progress_frame.pack(fill=tk.X, padx=10, pady=5)
+        self._results_progress_var.set("Building network data...")
+
+        # Proxy label that forwards configure() calls to our StringVar
+        outer = self
+
+        class _ProgressProxy:
+            def configure(self, **kw):
+                txt = kw.get("text", "")
+                if txt:
+                    outer.safe_ui_call(outer._results_progress_var.set, txt)
+
+        def _build():
+            try:
+                csv_path = self.app._build_ws_graph_csv(ws_entities, _ProgressProxy())
+            except Exception as e:
+                log_message(f"Network send failed: {e}")
+                csv_path = None
+
+            def _navigate():
+                self._results_progress_frame.pack_forget()
+                self._results_progress_var.set("")
+                if csv_path:
+                    self.app._navigate_network_with_csv(
+                        csv_path,
+                        source_label=f"Working set: {entity_count} entities from Bulk Entity Search",
+                    )
+                else:
+                    messagebox.showwarning("Network Analytics", "No graph data could be generated.")
+
+            self.app.after(0, _navigate)
+
+        threading.Thread(target=_build, daemon=True).start()
+
+    def _send_to_ubo_tracer(self):
+        """Send selected companies to UBO Tracer (charities filtered with confirmation)."""
+        entities = self._get_selected_entities()
+        if not entities:
+            return
+
+        companies = []
+        charities = []
+        for _, row in entities:
+            ws = self._entity_to_ws_dict(row)
+            if ws["entity_type"] == "charity":
+                charities.append(ws)
+            else:
+                companies.append(ws)
+
+        if charities and not companies:
+            messagebox.showinfo(
+                "UBO Tracer",
+                "UBO Tracer supports companies only. No companies were selected.",
             )
             return
 
-        messagebox.showinfo(
-            "Columns Confirmed", "Column selection confirmed. Ready to run."
-        )
-        self.run_btn.config(state="normal")
+        if charities:
+            ok = messagebox.askyesno(
+                "UBO Tracer",
+                f"{len(companies)} companies and {len(charities)} charities selected. "
+                f"UBO Tracer supports companies only. Send {len(companies)} companies?",
+            )
+            if not ok:
+                return
+
+        if len(companies) == 1:
+            c = companies[0]
+            self.app.show_ubo_investigation(
+                prefill_company=c["company_number"],
+                prefill_company_name=c["name"],
+            )
+        else:
+            # Multiple companies — add to working set and navigate
+            for c in companies:
+                self.app_state.ubo_working_set.append(c)
+            self.app._refresh_working_set_indicator()
+            self.app.show_ubo_investigation()
+
+    def _send_to_grants_search(self):
+        """Send selected entities to Grants Search with prefill."""
+        entities = self._get_selected_entities()
+        if not entities:
+            return
+        ws_entities = [self._entity_to_ws_dict(row) for _, row in entities]
+        self.app.show_grants_investigation(prefill_entities=ws_entities)
+
+    # ------------------------------------------------------------------
+    # Investigation
+    # ------------------------------------------------------------------
 
     def start_investigation(self):
         # --- NEW: Check for fuzzy match logic error ---
@@ -501,10 +1082,11 @@ class CompanyCharitySearch(InvestigationModuleBase):
             return
 
         self.cancel_flag.clear()
+        # Reset run button in case of re-run
+        self.run_btn.config(text="Run Investigation", command=self.start_investigation)
         self.run_btn.pack_forget()
         self.cancel_btn.pack(side=tk.LEFT, padx=5)
-        self.export_btn.config(state="disabled")
-        self.export_graph_data_btn.config(state="disabled")
+        self._config_completion_frame.pack_forget()
         self.progress_bar["value"] = 0
         self.results_data = []
         threading.Thread(target=self._run_investigation_thread, daemon=True).start()
@@ -636,7 +1218,9 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
     def _finish_investigation(self):
         self.status_entity_var.set("")
-        if self.cancel_flag.is_set():
+        cancelled = self.cancel_flag.is_set()
+
+        if cancelled:
             self.app.after(0, lambda: self.status_var.set("Investigation cancelled."))
         else:
             failed = getattr(self, "_api_failures", [])
@@ -649,9 +1233,38 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
         self.cancel_btn.pack_forget()
         self.run_btn.pack(side=tk.LEFT, padx=5)
+
         if self.results_data:
-            self.export_btn.config(state="normal")
-            self.export_graph_data_btn.config(state="normal")
+            # Populate results tab
+            self._populate_results_tab()
+
+            # Change Run button to "Results →"
+            self.run_btn.config(
+                text="Results \u2192",
+                command=lambda: self.notebook.select(self.results_tab),
+                state="normal",
+            )
+
+            # Show compact completion status on config tab
+            match_count = sum(
+                1 for r in self.results_data
+                if r.get("match_status", "").lower() != "no match found"
+            )
+            self._config_completion_var.set(
+                f"Search complete \u2014 {match_count} matches found."
+            )
+            self._config_completion_frame.pack(pady=(5, 0))
+
+            # Auto-switch to Results tab
+            if not cancelled:
+                self.notebook.select(self.results_tab)
+        elif cancelled:
+            # Cancelled with no data - just restore run button
+            self.run_btn.config(
+                text="Run Investigation",
+                command=self.start_investigation,
+                state="normal",
+            )
 
     def _process_single_row(self, row):
         if self.cancel_flag.is_set():
@@ -931,39 +1544,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
         final_headers = ordered_headers + new_headers
         self.generic_export_csv(final_headers)
 
-    # --- Graph Data Export Methods ---
-
-    def start_graph_data_export(self):
-        """Initiates the graph data export process."""
-        if not self.results_data:
-            messagebox.showinfo(
-                "No Data", "Please run an investigation before exporting graph data."
-            )
-            return
-
-        # Disable buttons to prevent concurrent operations
-        self.run_btn.config(state="disabled")
-        self.export_btn.config(state="disabled")
-        self.export_graph_data_btn.config(state="disabled")
-        self.cancel_flag.clear()
-
-        self.app.after(0, lambda: self.status_var.set("Starting graph data collection..."))
-        threading.Thread(target=self._run_export_graph_thread, daemon=True).start()
-
-    def _run_export_graph_thread(self):
-        """Thread for building the graph object and then exporting it."""
-        try:
-            graph_object = self._build_unified_graph_object()
-            if graph_object is not None and not self.cancel_flag.is_set():
-                self.after(100, self._export_graph_to_csv, graph_object)
-        except Exception as e:
-            log_message(f"Unified graph data export failed: {e}")
-            self.safe_ui_call(
-                messagebox.showerror,
-                "Error", f"An error occurred during graph data export: {e}"
-            )
-        finally:
-            self.after(200, self._finish_graph_process)
+    # --- Network Data Methods (used by Send to Network Analytics) ---
 
     def _fetch_company_network_data(self, company_number):
         """Worker function to fetch profile, officers, and PSCs for one company."""
@@ -1220,85 +1801,4 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
         return G
 
-    def _export_graph_to_csv(self, G):
-        """Exports the graph's connections (edges) to a CSV file."""
-        if G is None or G.number_of_edges() == 0:
-            self.app.after(
-                0,
-                lambda: self.status_var.set(
-                    "Export complete. No connections to export."
-                ),
-            )
-            return
-
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv")],
-            title="Save Graph Edge List As",
-        )
-        if not filepath:
-            self.app.after(0, lambda: self.status_var.set("Export cancelled by user."))
-            return
-
-        self.app.after(
-            0, lambda: self.status_var.set("Exporting graph connections to CSV...")
-        )
-        headers = [
-            "source_id",
-            "source_label",
-            "source_type",
-            "target_id",
-            "target_label",
-            "target_type",
-            "relationship",
-        ]
-
-        try:
-            with open(filepath, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(headers)
-
-                for source_id, target_id, edge_attrs in G.edges(data=True):
-                    source_attrs = G.nodes[source_id]
-                    target_attrs = G.nodes[target_id]
-
-                    row = [
-                        source_id,
-                        source_attrs.get("label", "").replace("\n", " "),
-                        source_attrs.get("type", ""),
-                        target_id,
-                        target_attrs.get("label", "").replace("\n", " "),
-                        target_attrs.get("type", ""),
-                        edge_attrs.get("label", ""),
-                    ]
-                    writer.writerow(row)
-
-            log_message(
-                f"Successfully exported {G.number_of_edges()} unified graph connections."
-            )
-            messagebox.showinfo(
-                "Export Successful",
-                f"Successfully exported {G.number_of_edges()} connections to CSV.",
-            )
-            self.app.after(
-                0, lambda: self.status_var.set("Graph data export complete.")
-            )
-
-        except IOError as e:
-            log_message(f"Unified graph data export failed: {e}")
-            messagebox.showerror("Export Error", f"Could not write to file: {e}")
-
-    def _finish_graph_process(self):
-        """Resets the UI after any graph process completes or is cancelled."""
-        if self.cancel_flag.is_set():
-            self.app.after(0, lambda: self.status_var.set("Operation cancelled."))
-        else:
-            if "..." not in self.status_var.get():
-                self.app.after(0, lambda: self.status_var.set("Ready."))
-
-        # Restore button states
-        self.run_btn.config(state="normal")
-        if self.results_data:
-            self.export_btn.config(state="normal")
-            self.export_graph_data_btn.config(state="normal")
 

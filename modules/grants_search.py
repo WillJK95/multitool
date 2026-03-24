@@ -30,8 +30,9 @@ from .base import InvestigationModuleBase
 
 
 class GrantsSearch(InvestigationModuleBase):
-    def __init__(self, parent_app, api_key, back_callback):
+    def __init__(self, parent_app, api_key, back_callback, prefill_entities=None):
         super().__init__(parent_app, back_callback, api_key)
+        self._prefill_entities = prefill_entities
 
         upload_frame = ttk.LabelFrame(
             self.content_frame, text="Step 1: Upload File", padding=10
@@ -123,6 +124,54 @@ class GrantsSearch(InvestigationModuleBase):
         ttk.Label(run_frame, textvariable=self.status_entity_var).pack(anchor=tk.W)
         self.status_var = tk.StringVar(value="Ready.")
         ttk.Label(run_frame, textvariable=self.status_var).pack(anchor=tk.W)
+
+        # Apply prefill from Bulk Entity Search
+        if self._prefill_entities:
+            self._apply_prefill()
+
+    def _apply_prefill(self):
+        """Pre-populate data from entities sent by another module."""
+        rows = []
+        headers_set = set()
+        for ent in self._prefill_entities:
+            row = {}
+            cnum = ent.get("company_number", "")
+            name = ent.get("name", "")
+            etype = ent.get("entity_type", "company")
+            if etype == "charity":
+                row["charity_number"] = str(cnum)
+                headers_set.add("charity_number")
+            else:
+                row["company_number"] = str(cnum)
+                headers_set.add("company_number")
+            if name:
+                row["entity_name"] = name
+                headers_set.add("entity_name")
+            rows.append(row)
+
+        if not rows:
+            return
+
+        # Determine consistent headers
+        headers = []
+        for h in ["company_number", "charity_number", "entity_name"]:
+            if h in headers_set:
+                headers.append(h)
+
+        self.original_data = rows
+        self.original_headers = headers
+        self.file_status_label.config(
+            text=f"Prefilled: {len(rows)} entities from Bulk Entity Search.",
+            foreground="green",
+        )
+        self._display_column_selection_ui()
+        # Auto-select columns
+        if "company_number" in headers:
+            self.company_num_col_var.set("company_number")
+        if "charity_number" in headers:
+            self.charity_num_col_var.set("charity_number")
+        # Auto-confirm
+        self._confirm_column()
 
     def toggle_all_fields(self, select):
         for var in self.data_fields_vars.values():

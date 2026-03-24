@@ -1065,7 +1065,14 @@ class NetworkAnalytics(InvestigationModuleBase):
         )
         self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         file_scrollbar.config(command=self.file_listbox.yview)
-        
+
+        # Working set source label (shown when data is pre-loaded from another module)
+        self._ws_source_label = ttk.Label(
+            import_frame, text="", foreground="gray",
+            font=("Segoe UI", 9, "italic"),
+        )
+        # Not packed by default — set text and pack from app.py when pre-loading
+
         # Info tooltip about Data Converter
         info_frame = ttk.Frame(import_frame)
         info_frame.pack(fill=tk.X, pady=(5, 0))

@@ -2174,7 +2174,7 @@ class App(tk.Tk):
                             "correspondence_at"
                         ))
 
-    def _navigate_network_with_csv(self, csv_path: str) -> None:
+    def _navigate_network_with_csv(self, csv_path: str, source_label: str = None) -> None:
         """Navigate to Network Analytics with the given CSV file pre-loaded."""
         self.clear_container()
         from .modules.network_analytics import NetworkAnalytics
@@ -2195,6 +2195,11 @@ class App(tk.Tk):
         if module.source_files:
             module.refine_section.set_enabled(True)
             module._mark_files_changed()
+
+        # Show working set source label if provided
+        if source_label and hasattr(module, "_ws_source_label"):
+            module._ws_source_label.configure(text=source_label)
+            module._ws_source_label.pack(fill=tk.X, pady=(5, 0))
 
     # --- Module Navigation Methods ---
     # These methods load the respective investigation modules.
@@ -2222,11 +2227,12 @@ class App(tk.Tk):
         self._update_sidebar_active("ubo_tracer")
         self._refresh_working_set_indicator()
     
-    def show_grants_investigation(self) -> None:
+    def show_grants_investigation(self, prefill_entities=None) -> None:
         """Show the Grants Search module."""
         self.clear_container()
         from .modules.grants_search import GrantsSearch
-        GrantsSearch(self, self.api_key, self.show_main_menu)
+        GrantsSearch(self, self.api_key, self.show_main_menu,
+                     prefill_entities=prefill_entities)
         self._update_sidebar_active("grants_search")
         self._refresh_working_set_indicator()
     
