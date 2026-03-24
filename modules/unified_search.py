@@ -87,6 +87,9 @@ class CompanyCharitySearch(InvestigationModuleBase):
         self.notebook.add(self.config_tab, text="Configuration")
         self.notebook.add(self.results_tab, text="Results")
 
+        # Disable outer scroller when Results tab is active
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
         # Column selection state (initialised before UI build)
         self.company_col = None
         self.charity_col = None
@@ -594,7 +597,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
         tree_frame.columnconfigure(0, weight=1)
 
         self.results_tree = ttk.Treeview(
-            tree_frame, columns=[], show="headings", selectmode="extended", height=14
+            tree_frame, columns=[], show="headings", selectmode="extended", height=28
         )
         yscroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.results_tree.yview)
         xscroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.results_tree.xview)
@@ -636,6 +639,23 @@ class CompanyCharitySearch(InvestigationModuleBase):
             self._send_menu_btn,
             "Send selected entities to another module.",
         )
+
+    def _on_tab_changed(self, event=None):
+        """Toggle outer scroller when switching between Configuration and Results."""
+        selected = self.notebook.select()
+        on_results = (selected == str(self.results_tab))
+        if on_results:
+            # Disable outer scrollbar and mousewheel
+            self.scroller.scrollbar.pack_forget()
+            self.scroller.canvas.yview_moveto(0)
+            self.scroller.canvas.configure(yscrollcommand=lambda *a: None)
+            self.scroller._disabled = True
+        else:
+            # Re-enable outer scrollbar
+            self.scroller.scrollbar.pack(side="right", fill="y")
+            self.scroller.canvas.configure(yscrollcommand=self.scroller.scrollbar.set)
+            self.scroller._disabled = False
+            self._update_scrollregion()
 
     def _select_all_results(self):
         """Select all visible items in the results treeview."""

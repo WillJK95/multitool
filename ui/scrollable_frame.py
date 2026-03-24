@@ -100,6 +100,9 @@ class ScrollableFrame(ttk.Frame):
     
     def _on_mousewheel(self, event) -> None:
         """Handle mousewheel scroll events."""
+        # Allow modules to temporarily disable outer scrolling
+        if getattr(self, "_disabled", False):
+            return
         # Only scroll if there's actually scrollable content
         if self.canvas.yview() == (0.0, 1.0):
             return
