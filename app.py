@@ -40,8 +40,12 @@ from .utils.settings import load_settings, save_settings, derive_initial_params
 from .utils.app_state import AppState
 from .ui.tooltip import Tooltip
 from .ui.help_window import HelpWindow
-from .api.companies_house import ch_get_company, ch_search_companies
-from .api.charity_commission import cc_search_charities, cc_get_charity_details
+from .api.companies_house import ch_get_company, ch_search_companies, ch_get_data
+from .api.charity_commission import (
+    cc_get_data as _cc_get_data,
+    cc_search_charities, cc_get_charity_details, cc_search_charity_by_name,
+)
+from rapidfuzz.fuzz import WRatio
 
 
 class App(tk.Tk):
@@ -63,8 +67,8 @@ class App(tk.Tk):
         super().__init__()
         
         self.title("Multi-Tool")
-        self.geometry("1320x700")
-        self.minsize(1320, 700)
+        self.geometry("1320x780")
+        self.minsize(1320, 780)
         
         # Load persisted settings
         self._settings = load_settings()
@@ -213,13 +217,13 @@ class App(tk.Tk):
 
         ttk.Separator(sb, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(10, 4))
 
-        # Working Set indicator (built into its own frame)
-        self._build_working_set_indicator(sb)
-
         # Network Analytics Workbench — green, at bottom
         self._add_sidebar_button(sb, "Network Workbench",
                                  "network_workbench", "success",
                                  self.show_network_graph_creator)
+
+        # Working Set indicator — below Network Workbench
+        self._build_working_set_indicator(sb)
 
     def _add_sidebar_button(self, parent, text, key, bootstyle, command):
         """Add a single navigation button to the sidebar and register it."""
@@ -296,7 +300,7 @@ class App(tk.Tk):
 
         self._working_set_tree = ttk.Treeview(
             tree_frame, columns=("name", "number"), show="headings",
-            height=8, selectmode="none"
+            height=8, selectmode="extended"
         )
         self._working_set_tree.heading("name", text="Name")
         self._working_set_tree.heading("number", text="Number")
@@ -316,13 +320,20 @@ class App(tk.Tk):
         self._working_set_send_menu = ttk.Menubutton(
             btn_row, text="Send to\u2026 \u25bc", bootstyle="primary-outline"
         )
-        send_menu = tk.Menu(self._working_set_send_menu, tearoff=0)
-        send_menu.add_command(label="Network Workbench",
-                              command=self.show_network_graph_creator)
-        send_menu.add_command(label="Enhanced Due Diligence",
-                              command=self.show_enhanced_dd)
-        self._working_set_send_menu.configure(menu=send_menu)
+        self._ws_send_menu_obj = tk.Menu(self._working_set_send_menu, tearoff=0)
+        self._ws_send_menu_obj.add_command(
+            label="Network Workbench",
+            command=lambda: self._send_working_set_to_network())
+        self._ws_send_menu_obj.add_command(
+            label="Enhanced Due Diligence",
+            command=lambda: self._send_ws_selection_to_edd())
+        self._working_set_send_menu.configure(menu=self._ws_send_menu_obj)
         self._working_set_send_menu.pack(side=tk.LEFT, padx=(0, 4))
+
+        # Bind selection change to update EDD menu state
+        self._working_set_tree.bind(
+            "<<TreeviewSelect>>", lambda e: self._update_ws_edd_state()
+        )
 
         ttk.Button(
             btn_row, text="Clear", bootstyle="danger-outline",
@@ -1039,15 +1050,24 @@ class App(tk.Tk):
                 return None, err
             return data, None
 
-        # Search by name
-        data, err = cc_search_charities(self.charity_api_key, query)
+        # Search by name using /searchCharityName/ endpoint (same as Bulk Entity Search)
+        data, err = cc_search_charity_by_name(self.charity_api_key, stripped)
         if err:
             return None, err
-        if not data:
+        if not data or not isinstance(data, list):
             return None, None
-        # cc_search_charities returns a list
-        if isinstance(data, list) and len(data) > 0:
-            return data[0], None
+
+        # Exact match: find best match using fuzzy matching at 100% threshold
+        best_match, best_score = None, 0
+        for item in data:
+            score = WRatio(stripped.lower(), item.get("charity_name", "").lower())
+            if score > best_score:
+                best_match, best_score = item, score
+
+        if best_match and best_score >= 95:
+            return best_match, None
+        elif best_match:
+            return None, f"No exact match found (best: {best_match.get('charity_name', '?')} at {best_score:.0f}%)"
         return None, None
 
     def _ql_display_result(self, result, entity_type: str, error) -> None:
@@ -1134,14 +1154,8 @@ class App(tk.Tk):
         if entity_type != "company":
             Tooltip(trace_btn, "UBO Tracer supports companies only")
 
-        if entity_type == "company":
-            ttk.Button(
-                btn_row, text="Director Search", bootstyle="primary-outline",
-                command=lambda: self._ql_open_in_director(result)
-            ).pack(side=tk.LEFT, padx=(0, 6))
-
         ttk.Button(
-            btn_row, text="Add to Working Set", bootstyle="secondary-outline",
+            btn_row, text="Add to Working Set", bootstyle="info-outline",
             command=lambda: self._ql_add_to_working_set(result, entity_type)
         ).pack(side=tk.LEFT, padx=(0, 6))
 
@@ -1203,44 +1217,86 @@ class App(tk.Tk):
     # ── Zone 2: System Status ────────────────────────────────────────
 
     def _build_system_status_zone(self, parent) -> None:
-        """Build compact system status panels for CH and CC APIs."""
+        """Build compact system status panels for all 4 APIs."""
         zone = ttk.Frame(parent)
         zone.pack(fill=tk.X, pady=(0, 8))
 
-        # Companies House panel
+        # --- Companies House panel ---
         ch_panel = ttk.LabelFrame(zone, text="Companies House", padding=8)
-        ch_panel.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        ch_panel.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
 
         self._home_ch_key_lbl = ttk.Label(ch_panel, text="", font=("Segoe UI", 9))
         self._home_ch_key_lbl.pack(anchor="w")
-        self._home_ch_conn_lbl = ttk.Label(ch_panel, text="", font=("Segoe UI", 9))
-        self._home_ch_conn_lbl.pack(anchor="w")
+
+        # Connection + Mode/Workers on one row for height alignment
+        ch_conn_row = ttk.Frame(ch_panel)
+        ch_conn_row.pack(anchor="w", fill=tk.X)
+        self._home_ch_conn_lbl = ttk.Label(ch_conn_row, text="", font=("Segoe UI", 9))
+        self._home_ch_conn_lbl.pack(side=tk.LEFT)
 
         mode = self._settings.get("ch_pacing_mode", "smooth").title()
         workers = self.ch_max_workers
-        ttk.Label(
-            ch_panel, text=f"Mode: {mode}  |  Workers: {workers}",
-            font=("Segoe UI", 8), foreground="gray"
-        ).pack(anchor="w")
+        self._home_ch_mode_lbl = ttk.Label(
+            ch_conn_row, text=f"  Mode: {mode}  Workers: {workers}",
+            font=("Segoe UI", 8), foreground="gray", cursor="hand2"
+        )
+        self._home_ch_mode_lbl.pack(side=tk.LEFT, padx=(6, 0))
+        self._home_ch_mode_lbl.bind("<Button-1>", lambda e: self._open_settings_window())
+        self._home_ch_mode_lbl.bind("<Enter>", lambda e: self._home_ch_mode_lbl.configure(
+            font=("Segoe UI", 8, "underline")))
+        self._home_ch_mode_lbl.bind("<Leave>", lambda e: self._home_ch_mode_lbl.configure(
+            font=("Segoe UI", 8)))
 
-        ttk.Button(
+        self._home_ch_test_btn = ttk.Button(
             ch_panel, text="Test connection", bootstyle="link",
             command=lambda: self._test_single_api("companies_house")
-        ).pack(anchor="w")
+        )
+        self._home_ch_test_btn.pack(anchor="w")
 
-        # Charity Commission panel
+        # --- Charity Commission panel ---
         cc_panel = ttk.LabelFrame(zone, text="Charity Commission", padding=8)
-        cc_panel.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        cc_panel.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 3))
 
         self._home_cc_key_lbl = ttk.Label(cc_panel, text="", font=("Segoe UI", 9))
         self._home_cc_key_lbl.pack(anchor="w")
         self._home_cc_conn_lbl = ttk.Label(cc_panel, text="", font=("Segoe UI", 9))
         self._home_cc_conn_lbl.pack(anchor="w")
 
-        ttk.Button(
+        self._home_cc_test_btn = ttk.Button(
             cc_panel, text="Test connection", bootstyle="link",
             command=lambda: self._test_single_api("charity_commission")
-        ).pack(anchor="w")
+        )
+        self._home_cc_test_btn.pack(anchor="w")
+
+        # --- GrantNav 360Giving panel ---
+        gn_panel = ttk.LabelFrame(zone, text="GrantNav 360Giving", padding=8)
+        gn_panel.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 3))
+
+        ttk.Label(gn_panel, text="No key required", font=("Segoe UI", 9),
+                  foreground="gray").pack(anchor="w")
+        self._home_gn_conn_lbl = ttk.Label(gn_panel, text="", font=("Segoe UI", 9))
+        self._home_gn_conn_lbl.pack(anchor="w")
+
+        self._home_gn_test_btn = ttk.Button(
+            gn_panel, text="Test connection", bootstyle="link",
+            command=lambda: self._test_single_api("grantnav")
+        )
+        self._home_gn_test_btn.pack(anchor="w")
+
+        # --- Contracts Finder panel ---
+        cf_panel = ttk.LabelFrame(zone, text="Contracts Finder", padding=8)
+        cf_panel.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
+
+        ttk.Label(cf_panel, text="No key required", font=("Segoe UI", 9),
+                  foreground="gray").pack(anchor="w")
+        self._home_cf_conn_lbl = ttk.Label(cf_panel, text="", font=("Segoe UI", 9))
+        self._home_cf_conn_lbl.pack(anchor="w")
+
+        self._home_cf_test_btn = ttk.Button(
+            cf_panel, text="Test connection", bootstyle="link",
+            command=lambda: self._test_single_api("contracts_finder")
+        )
+        self._home_cf_test_btn.pack(anchor="w")
 
         # Initial display
         self._update_home_status_display()
@@ -1255,23 +1311,26 @@ class App(tk.Tk):
         except tk.TclError:
             return
 
+        def _conn_text(status):
+            if status == "ok":
+                return "Connection: ✓ OK", "green"
+            elif status == "error":
+                return "Connection: ✗ Failed", "red"
+            elif status == "no_key":
+                return "Connection: — No key", "gray"
+            return "Connection: …", "gray"
+
         try:
+            statuses = self.api_statuses or {}
+
             # Companies House
             ch_key_ok = bool(self.api_key)
             self._home_ch_key_lbl.configure(
                 text=f"Key loaded: {'✓' if ch_key_ok else '✗'}",
                 foreground="green" if ch_key_ok else "red"
             )
-            ch_status = (self.api_statuses or {}).get("companies_house", "unknown")
-            if ch_status == "ok":
-                conn_text, conn_color = "Connection: ✓ OK", "green"
-            elif ch_status == "error":
-                conn_text, conn_color = "Connection: ✗ Failed", "red"
-            elif ch_status == "no_key":
-                conn_text, conn_color = "Connection: — No key", "gray"
-            else:
-                conn_text, conn_color = "Connection: …", "gray"
-            self._home_ch_conn_lbl.configure(text=conn_text, foreground=conn_color)
+            ct, cc = _conn_text(statuses.get("companies_house", "unknown"))
+            self._home_ch_conn_lbl.configure(text=ct, foreground=cc)
 
             # Charity Commission
             cc_key_ok = bool(self.charity_api_key)
@@ -1279,25 +1338,65 @@ class App(tk.Tk):
                 text=f"Key loaded: {'✓' if cc_key_ok else '✗'}",
                 foreground="green" if cc_key_ok else "red"
             )
-            cc_status = (self.api_statuses or {}).get("charity_commission", "unknown")
-            if cc_status == "ok":
-                conn_text, conn_color = "Connection: ✓ OK", "green"
-            elif cc_status == "error":
-                conn_text, conn_color = "Connection: ✗ Failed", "red"
-            elif cc_status == "no_key":
-                conn_text, conn_color = "Connection: — No key", "gray"
-            else:
-                conn_text, conn_color = "Connection: …", "gray"
-            self._home_cc_conn_lbl.configure(text=conn_text, foreground=conn_color)
+            ct, cc = _conn_text(statuses.get("charity_commission", "unknown"))
+            self._home_cc_conn_lbl.configure(text=ct, foreground=cc)
+
+            # GrantNav
+            ct, cc = _conn_text(statuses.get("grantnav", "unknown"))
+            self._home_gn_conn_lbl.configure(text=ct, foreground=cc)
+
+            # Contracts Finder
+            ct, cc = _conn_text(statuses.get("contracts_finder", "unknown"))
+            self._home_cf_conn_lbl.configure(text=ct, foreground=cc)
         except tk.TclError:
             pass  # Widgets destroyed during navigation
 
     def _test_single_api(self, api_name: str) -> None:
-        """Re-test a single API connection and update status."""
+        """Re-test a single API connection and update status with feedback."""
+        btn_map = {
+            "companies_house": "_home_ch_test_btn",
+            "charity_commission": "_home_cc_test_btn",
+            "grantnav": "_home_gn_test_btn",
+            "contracts_finder": "_home_cf_test_btn",
+        }
+        btn_attr = btn_map.get(api_name)
+        btn = getattr(self, btn_attr, None) if btn_attr else None
+
+        # Show "Testing..." state
+        if btn:
+            try:
+                btn.configure(text="Testing...", state=tk.DISABLED)
+            except tk.TclError:
+                pass
+
         def _run():
             self.check_api_status()
-            self.after(0, self._update_home_status_display)
+            status = (self.api_statuses or {}).get(api_name, "unknown")
+
+            def _update_ui():
+                try:
+                    self._update_home_status_display()
+                    if btn and btn.winfo_exists():
+                        if status == "ok":
+                            btn.configure(text="✓ Connected", state=tk.NORMAL)
+                        else:
+                            btn.configure(text="✗ Failed", state=tk.NORMAL)
+                        # Revert after 2 seconds
+                        self.after(2000, lambda: self._reset_test_btn(btn))
+                except tk.TclError:
+                    pass
+
+            self.after(0, _update_ui)
+
         threading.Thread(target=_run, daemon=True).start()
+
+    def _reset_test_btn(self, btn) -> None:
+        """Reset a test connection button back to its default text."""
+        try:
+            if btn and btn.winfo_exists():
+                btn.configure(text="Test connection")
+        except tk.TclError:
+            pass
 
     # ── Zone 3: Working Set + Recent Reports ─────────────────────────
 
@@ -1315,7 +1414,7 @@ class App(tk.Tk):
 
         self._home_ws_tree = ttk.Treeview(
             ws_panel, columns=("name", "number"), show="headings",
-            height=6, selectmode="none"
+            height=6, selectmode="extended"
         )
         self._home_ws_tree.heading("name", text="Name")
         self._home_ws_tree.heading("number", text="Number")
@@ -1329,13 +1428,20 @@ class App(tk.Tk):
         self._home_ws_send_menu = ttk.Menubutton(
             ws_btn_row, text="Send to\u2026 \u25bc", bootstyle="primary-outline"
         )
-        send_menu = tk.Menu(self._home_ws_send_menu, tearoff=0)
-        send_menu.add_command(label="Network Workbench",
-                              command=self.show_network_graph_creator)
-        send_menu.add_command(label="Enhanced Due Diligence",
-                              command=self.show_enhanced_dd)
-        self._home_ws_send_menu.configure(menu=send_menu)
+        self._home_ws_send_menu_obj = tk.Menu(self._home_ws_send_menu, tearoff=0)
+        self._home_ws_send_menu_obj.add_command(
+            label="Network Workbench",
+            command=lambda: self._send_working_set_to_network())
+        self._home_ws_send_menu_obj.add_command(
+            label="Enhanced Due Diligence",
+            command=lambda: self._send_home_ws_selection_to_edd())
+        self._home_ws_send_menu.configure(menu=self._home_ws_send_menu_obj)
         self._home_ws_send_menu.pack(side=tk.LEFT, padx=(0, 6))
+
+        # Bind selection change to update EDD menu state
+        self._home_ws_tree.bind(
+            "<<TreeviewSelect>>", lambda e: self._update_home_ws_edd_state()
+        )
 
         ttk.Button(
             ws_btn_row, text="Clear", bootstyle="danger-outline",
@@ -1384,6 +1490,81 @@ class App(tk.Tk):
         """Clear working set from both home display and sidebar."""
         self._clear_working_set()
         self._refresh_home_working_set()
+
+    # ── Working Set Selection & EDD Gating ───────────────────────────
+
+    def _update_ws_edd_state(self) -> None:
+        """Enable/disable EDD in sidebar working set menu based on selection count."""
+        try:
+            sel = self._working_set_tree.selection()
+            count = len(sel)
+            if count > 1:
+                self._ws_send_menu_obj.entryconfigure(
+                    "Enhanced Due Diligence", state=tk.DISABLED,
+                    label="Enhanced Due Diligence (select 1 entity)")
+            else:
+                self._ws_send_menu_obj.entryconfigure(
+                    1, state=tk.NORMAL,
+                    label="Enhanced Due Diligence")
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _update_home_ws_edd_state(self) -> None:
+        """Enable/disable EDD in home working set menu based on selection count."""
+        try:
+            sel = self._home_ws_tree.selection()
+            count = len(sel)
+            if count > 1:
+                self._home_ws_send_menu_obj.entryconfigure(
+                    "Enhanced Due Diligence", state=tk.DISABLED,
+                    label="Enhanced Due Diligence (select 1 entity)")
+            else:
+                self._home_ws_send_menu_obj.entryconfigure(
+                    1, state=tk.NORMAL,
+                    label="Enhanced Due Diligence")
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _send_ws_selection_to_edd(self) -> None:
+        """Send the selected sidebar working set entity to EDD."""
+        self._send_tree_selection_to_edd(self._working_set_tree)
+
+    def _send_home_ws_selection_to_edd(self) -> None:
+        """Send the selected home working set entity to EDD."""
+        self._send_tree_selection_to_edd(self._home_ws_tree)
+
+    def _send_tree_selection_to_edd(self, tree) -> None:
+        """Send a single selected entity from any working set tree to EDD."""
+        try:
+            sel = tree.selection()
+        except tk.TclError:
+            sel = ()
+
+        entities = self._collect_working_set_entities()
+        if not entities:
+            return
+
+        if len(sel) == 1:
+            # Get the selected entity by index
+            idx = tree.index(sel[0])
+            if idx < len(entities):
+                ent = entities[idx]
+            else:
+                ent = entities[0]
+        elif len(sel) == 0 and len(entities) == 1:
+            ent = entities[0]
+        else:
+            messagebox.showinfo(
+                "Selection Required",
+                "Please select exactly 1 entity to open in Enhanced Due Diligence."
+            )
+            return
+
+        num = ent.get("company_number", ent.get("number", ""))
+        # Determine entity type — charity numbers are pure digits, company numbers
+        # may have letter prefixes
+        etype = "charity" if num and num.isdigit() and len(num) <= 7 else "company"
+        self.show_enhanced_dd(prefill_entity={"type": etype, "id": str(num)})
 
     def _refresh_home_reports(self) -> None:
         """Refresh the recent EDD reports list on the home screen."""
@@ -1687,6 +1868,255 @@ class App(tk.Tk):
                 self.after(0, self._update_api_status_display)
 
         threading.Thread(target=run_check, daemon=True).start()
+
+    # ── Working Set → Network Analytics ─────────────────────────────
+
+    def _send_working_set_to_network(self) -> None:
+        """Build graph data from working set entities and load into Network Analytics.
+
+        Replicates the Bulk Entity Search → Export Graph Data flow:
+        fetches officers/PSCs/trustees for each entity, writes a 7-column CSV,
+        then navigates to Network Analytics with the file pre-loaded.
+        """
+        entities = self._collect_working_set_entities()
+        if not entities:
+            messagebox.showinfo("Working Set", "No entities in working set.")
+            return
+
+        # Show a simple progress dialog
+        progress_win = tk.Toplevel(self)
+        progress_win.title("Building Network Data")
+        progress_win.transient(self)
+        progress_win.geometry("360x100")
+        progress_win.resizable(False, False)
+        progress_lbl = ttk.Label(
+            progress_win, text="Fetching entity data...",
+            font=("Segoe UI", 10), padding=20
+        )
+        progress_lbl.pack(fill=tk.BOTH, expand=True)
+
+        def _build():
+            try:
+                csv_path = self._build_ws_graph_csv(entities, progress_lbl)
+            except Exception as e:
+                log_message(f"Network preload failed: {e}")
+                csv_path = None
+
+            def _navigate():
+                try:
+                    progress_win.destroy()
+                except tk.TclError:
+                    pass
+                if csv_path:
+                    self._navigate_network_with_csv(csv_path)
+
+            self.after(0, _navigate)
+
+        threading.Thread(target=_build, daemon=True).start()
+
+    def _build_ws_graph_csv(self, entities, progress_lbl) -> str:
+        """Build a graph CSV from working set entities (runs in background thread).
+
+        Returns the path to the temporary CSV file.
+        """
+        import csv as csv_mod
+        import tempfile
+        from .utils.helpers import (
+            extract_address_string, clean_address_string,
+            format_address_label, get_canonical_name_key,
+        )
+
+        rows = []  # list of 7-element tuples
+
+        for i, ent in enumerate(entities):
+            num = ent.get("company_number", ent.get("number", ""))
+            name = ent.get("name", "Unknown")
+
+            self.after(0, lambda n=name, idx=i, tot=len(entities):
+                       progress_lbl.configure(
+                           text=f"Processing {idx+1}/{tot}: {n}"))
+
+            if not num:
+                continue
+
+            # Determine type — charity numbers are short pure digits
+            is_charity = num.isdigit() and len(num) <= 7
+
+            if is_charity:
+                self._build_charity_graph_rows(
+                    num, name, rows, extract_address_string,
+                    clean_address_string, format_address_label,
+                    get_canonical_name_key,
+                )
+            else:
+                self._build_company_graph_rows(
+                    num, name, rows, extract_address_string,
+                    clean_address_string, format_address_label,
+                    get_canonical_name_key,
+                )
+
+        if not rows:
+            return None
+
+        # Write CSV
+        fd, csv_path = tempfile.mkstemp(prefix="Seed-ws-", suffix=".csv")
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
+            writer = csv_mod.writer(f)
+            writer.writerow([
+                "source_id", "source_label", "source_type",
+                "target_id", "target_label", "target_type", "relationship"
+            ])
+            for row in rows:
+                writer.writerow(row)
+
+        log_message(f"Working set graph CSV: {len(rows)} edges written to {csv_path}")
+        return csv_path
+
+    def _build_company_graph_rows(self, company_number, company_name, rows,
+                                   extract_addr, clean_addr, fmt_addr, canon_key):
+        """Fetch company data and append graph edge rows."""
+        profile, _ = ch_get_data(
+            self.api_key, self.ch_token_bucket, f"/company/{company_number}"
+        )
+        officers, _ = ch_get_data(
+            self.api_key, self.ch_token_bucket,
+            f"/company/{company_number}/officers?items_per_page=100"
+        )
+        pscs, _ = ch_get_data(
+            self.api_key, self.ch_token_bucket,
+            f"/company/{company_number}/persons-with-significant-control?items_per_page=100"
+        )
+
+        if profile:
+            company_name = profile.get("company_name", company_name)
+
+        # Registered address
+        if profile:
+            addr_data = profile.get("registered_office_address", {})
+            raw_addr = extract_addr(addr_data)
+            if raw_addr:
+                addr_id = clean_addr(raw_addr)
+                if addr_id:
+                    rows.append((
+                        company_number, company_name, "company",
+                        addr_id, fmt_addr(raw_addr).replace("\n", " "), "address",
+                        "registered_at"
+                    ))
+
+        # Officers
+        if officers:
+            for officer in officers.get("items", []):
+                oname = officer.get("name")
+                if not oname:
+                    continue
+                dob = officer.get("date_of_birth")
+                pkey = canon_key(oname, dob)
+                role = officer.get("officer_role", "officer")
+                rows.append((
+                    company_number, company_name, "company",
+                    pkey, oname, "person", role
+                ))
+                # Officer address
+                oaddr_raw = extract_addr(officer.get("address"))
+                if oaddr_raw:
+                    oaddr_clean = clean_addr(oaddr_raw)
+                    if oaddr_clean:
+                        rows.append((
+                            pkey, oname, "person",
+                            oaddr_clean, fmt_addr(oaddr_raw).replace("\n", " "), "address",
+                            "correspondence_at"
+                        ))
+
+        # PSCs
+        if pscs:
+            for psc in pscs.get("items", []):
+                pname = psc.get("name")
+                if not pname:
+                    continue
+                dob = psc.get("date_of_birth")
+                pkey = canon_key(pname, dob)
+                rows.append((
+                    company_number, company_name, "company",
+                    pkey, pname, "person", "psc"
+                ))
+                paddr_raw = extract_addr(psc.get("address"))
+                if paddr_raw:
+                    paddr_clean = clean_addr(paddr_raw)
+                    if paddr_clean:
+                        rows.append((
+                            pkey, pname, "person",
+                            paddr_clean, fmt_addr(paddr_raw).replace("\n", " "), "address",
+                            "correspondence_at"
+                        ))
+
+    def _build_charity_graph_rows(self, charity_number, charity_name, rows,
+                                   extract_addr, clean_addr, fmt_addr, canon_key):
+        """Fetch charity data and append graph edge rows."""
+        details, _ = _cc_get_data(
+            self.charity_api_key, f"/charitydetails/{charity_number}/0"
+        )
+        trustees, _ = _cc_get_data(
+            self.charity_api_key, f"/charitytrusteenamesV2/{charity_number}/0"
+        )
+
+        node_id = f"CC-{charity_number}"
+        if details:
+            charity_name = details.get("charity_name", charity_name)
+
+        # Charity address
+        if details:
+            charity_addr = details.get("charity_contact_address")
+            if charity_addr:
+                addr_clean = clean_addr(charity_addr)
+                if addr_clean:
+                    rows.append((
+                        node_id, charity_name, "charity",
+                        addr_clean, fmt_addr(charity_addr).replace("\n", " "), "address",
+                        "registered_at"
+                    ))
+
+        # Trustees
+        if trustees and isinstance(trustees, list):
+            for trustee in trustees:
+                tname = trustee.get("trustee_name")
+                if not tname:
+                    continue
+                pkey = canon_key(tname, None)
+                rows.append((
+                    node_id, charity_name, "charity",
+                    pkey, tname, "person", "trustee"
+                ))
+                trustee_addr = trustee.get("trustee_address")
+                if trustee_addr:
+                    taddr_clean = clean_addr(trustee_addr)
+                    if taddr_clean:
+                        rows.append((
+                            pkey, tname, "person",
+                            taddr_clean, fmt_addr(trustee_addr).replace("\n", " "), "address",
+                            "correspondence_at"
+                        ))
+
+    def _navigate_network_with_csv(self, csv_path: str) -> None:
+        """Navigate to Network Analytics with the given CSV file pre-loaded."""
+        self.clear_container()
+        from .modules.network_analytics import NetworkAnalytics
+        module = NetworkAnalytics(
+            self,
+            self.show_main_menu,
+            self.ch_token_bucket,
+            api_key=self.api_key,
+            help_key="network_creator"
+        )
+        self._update_sidebar_active("network_workbench")
+        self._refresh_working_set_indicator()
+
+        # Pre-load the CSV file
+        if csv_path not in module.source_files:
+            module.source_files.append(csv_path)
+            module.file_listbox.insert(tk.END, f"FILE: {os.path.basename(csv_path)}")
+        if module.source_files:
+            module.refine_section.set_enabled(True)
+            module._mark_files_changed()
 
     # --- Module Navigation Methods ---
     # These methods load the respective investigation modules.
