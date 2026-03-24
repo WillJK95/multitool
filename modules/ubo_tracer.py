@@ -35,9 +35,12 @@ from ..ui.tooltip import Tooltip
 from .base import InvestigationModuleBase
 
 class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
-    def __init__(self, parent_app, api_key, back_callback, ch_token_bucket):
+    def __init__(self, parent_app, api_key, back_callback, ch_token_bucket,
+                 prefill_company=None, prefill_company_name=None):
         super().__init__(parent_app, back_callback, api_key, help_key="ubo")
         self.ch_token_bucket = ch_token_bucket
+        self._prefill_company = prefill_company
+        self._prefill_company_name = prefill_company_name
         # --- UI Setup ---
         upload_frame = ttk.LabelFrame(
             self.content_frame, text="Step 1: Upload File", padding=10
@@ -139,6 +142,30 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         ttk.Label(run_frame, textvariable=self.status_entity_var).pack(anchor=tk.W)
         self.status_var = tk.StringVar(value="Ready.")
         ttk.Label(run_frame, textvariable=self.status_var).pack(anchor=tk.W)
+
+        # Apply prefill from Quick Launch
+        if self._prefill_company:
+            row_data = {"company_number": self._prefill_company}
+            headers = ["company_number"]
+            if self._prefill_company_name:
+                row_data["company_name"] = self._prefill_company_name
+                headers.append("company_name")
+            self.original_data = [row_data]
+            self.original_headers = headers
+            display_name = self._prefill_company_name or self._prefill_company
+            self.file_status_label.config(
+                text=f"Quick Launch: {display_name}", foreground="green"
+            )
+            self._display_column_selection_ui()
+            self.number_col_var.set("company_number")
+            if self._prefill_company_name:
+                self.name_col_var.set("company_name")
+                self.name_col = "company_name"
+            else:
+                self.name_col_var.set("")
+                self.name_col = None
+            self.number_col = "company_number"
+            self.run_btn.config(state="normal")
 
     def load_file(self):
         path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])

@@ -291,6 +291,27 @@ def cc_get_area_of_operation(
     return cc_get_data(api_key, f"/charityareaofoperation/{reg_num}/{suffix}")
 
 
+def cc_search_charity_by_name(
+    api_key: str,
+    name: str,
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """
+    Search for charities by name using the /searchCharityName/ endpoint.
+
+    Unlike cc_search_charities (which uses /allcharitydetailsbyname/ and often
+    returns 404), this endpoint reliably returns results for name searches.
+
+    Args:
+        api_key: Charity Commission API subscription key
+        name: Charity name to search for
+
+    Returns:
+        Tuple of (list of matching charities or None, error message or None)
+    """
+    encoded_name = urllib.parse.quote(name)
+    return cc_get_data(api_key, f"/searchCharityName/{encoded_name}")
+
+
 def check_api_status(api_key: str) -> bool:
     """
     Check if the Charity Commission API is accessible with the given key.

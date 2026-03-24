@@ -57,8 +57,9 @@ class InvestigationModuleBase(ttk.Frame):
         """
         super().__init__(parent_app.container, padding=10)
         self.app = parent_app
+        self.app_state = parent_app.app_state
         self.pack(fill=tk.BOTH, expand=True)
-        
+
         self.api_key = api_key
         self.back_callback = back_callback
         self.help_key = help_key

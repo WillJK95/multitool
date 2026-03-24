@@ -41,9 +41,11 @@ from .base import InvestigationModuleBase
 
 
 class DirectorSearch(InvestigationModuleBase):
-    def __init__(self, parent_app, api_key, back_callback, ch_token_bucket):
+    def __init__(self, parent_app, api_key, back_callback, ch_token_bucket,
+                 prefill_name=None):
         super().__init__(parent_app, back_callback, api_key, help_key="director")
         self.ch_token_bucket = ch_token_bucket
+        self._prefill_name = prefill_name
         # --- Add a new instance variable for grant results ---
         self.grants_results = []
         # --- Track explicit row selection for selective export ---
@@ -227,6 +229,10 @@ class DirectorSearch(InvestigationModuleBase):
             self.export_graph_data_btn,
             "Export the network graph data (companies, people, addresses) for selected rows to CSV. If no rows are selected, all data is exported.",
         )
+
+        # Apply prefill from Quick Launch
+        if self._prefill_name:
+            self.full_name_var.set(self._prefill_name)
 
     def cancel_search(self):
         """Called when the user clicks the Cancel button."""

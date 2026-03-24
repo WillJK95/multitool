@@ -11,6 +11,7 @@ from .helpers import (
 )
 from .token_bucket import TokenBucket
 from .enrichment import enrich_with_company_data, enrich_with_charity_data
+from .app_state import AppState
 
 __all__ = [
     'log_message',
@@ -22,4 +23,5 @@ __all__ = [
     'TokenBucket',
     'enrich_with_company_data',
     'enrich_with_charity_data',
+    'AppState',
 ]
