@@ -1247,42 +1247,50 @@ class App(tk.Tk):
 
     def _update_home_status_display(self) -> None:
         """Refresh the system status labels from cached API statuses."""
-        if not hasattr(self, "_home_ch_key_lbl"):
+        try:
+            if (not hasattr(self, "_home_ch_key_lbl")
+                    or not self._home_ch_key_lbl
+                    or not self._home_ch_key_lbl.winfo_exists()):
+                return
+        except tk.TclError:
             return
 
-        # Companies House
-        ch_key_ok = bool(self.api_key)
-        self._home_ch_key_lbl.configure(
-            text=f"Key loaded: {'✓' if ch_key_ok else '✗'}",
-            foreground="green" if ch_key_ok else "red"
-        )
-        ch_status = (self.api_statuses or {}).get("companies_house", "unknown")
-        if ch_status == "ok":
-            conn_text, conn_color = "Connection: ✓ OK", "green"
-        elif ch_status == "error":
-            conn_text, conn_color = "Connection: ✗ Failed", "red"
-        elif ch_status == "no_key":
-            conn_text, conn_color = "Connection: — No key", "gray"
-        else:
-            conn_text, conn_color = "Connection: …", "gray"
-        self._home_ch_conn_lbl.configure(text=conn_text, foreground=conn_color)
+        try:
+            # Companies House
+            ch_key_ok = bool(self.api_key)
+            self._home_ch_key_lbl.configure(
+                text=f"Key loaded: {'✓' if ch_key_ok else '✗'}",
+                foreground="green" if ch_key_ok else "red"
+            )
+            ch_status = (self.api_statuses or {}).get("companies_house", "unknown")
+            if ch_status == "ok":
+                conn_text, conn_color = "Connection: ✓ OK", "green"
+            elif ch_status == "error":
+                conn_text, conn_color = "Connection: ✗ Failed", "red"
+            elif ch_status == "no_key":
+                conn_text, conn_color = "Connection: — No key", "gray"
+            else:
+                conn_text, conn_color = "Connection: …", "gray"
+            self._home_ch_conn_lbl.configure(text=conn_text, foreground=conn_color)
 
-        # Charity Commission
-        cc_key_ok = bool(self.charity_api_key)
-        self._home_cc_key_lbl.configure(
-            text=f"Key loaded: {'✓' if cc_key_ok else '✗'}",
-            foreground="green" if cc_key_ok else "red"
-        )
-        cc_status = (self.api_statuses or {}).get("charity_commission", "unknown")
-        if cc_status == "ok":
-            conn_text, conn_color = "Connection: ✓ OK", "green"
-        elif cc_status == "error":
-            conn_text, conn_color = "Connection: ✗ Failed", "red"
-        elif cc_status == "no_key":
-            conn_text, conn_color = "Connection: — No key", "gray"
-        else:
-            conn_text, conn_color = "Connection: …", "gray"
-        self._home_cc_conn_lbl.configure(text=conn_text, foreground=conn_color)
+            # Charity Commission
+            cc_key_ok = bool(self.charity_api_key)
+            self._home_cc_key_lbl.configure(
+                text=f"Key loaded: {'✓' if cc_key_ok else '✗'}",
+                foreground="green" if cc_key_ok else "red"
+            )
+            cc_status = (self.api_statuses or {}).get("charity_commission", "unknown")
+            if cc_status == "ok":
+                conn_text, conn_color = "Connection: ✓ OK", "green"
+            elif cc_status == "error":
+                conn_text, conn_color = "Connection: ✗ Failed", "red"
+            elif cc_status == "no_key":
+                conn_text, conn_color = "Connection: — No key", "gray"
+            else:
+                conn_text, conn_color = "Connection: …", "gray"
+            self._home_cc_conn_lbl.configure(text=conn_text, foreground=conn_color)
+        except tk.TclError:
+            pass  # Widgets destroyed during navigation
 
     def _test_single_api(self, api_name: str) -> None:
         """Re-test a single API connection and update status."""
@@ -1346,22 +1354,31 @@ class App(tk.Tk):
 
     def _refresh_home_working_set(self) -> None:
         """Refresh the home screen working set list."""
-        if not hasattr(self, "_home_ws_tree") or not self._home_ws_tree:
+        try:
+            if (not hasattr(self, "_home_ws_tree")
+                    or not self._home_ws_tree
+                    or not self._home_ws_tree.winfo_exists()):
+                return
+        except tk.TclError:
             return
-        entities = self._collect_working_set_entities()
-        count = len(entities)
 
-        if count > 0:
-            self._home_ws_header.configure(text=f"Working set ({count})")
-        else:
-            self._home_ws_header.configure(text="No entities in working set")
+        try:
+            entities = self._collect_working_set_entities()
+            count = len(entities)
 
-        self._home_ws_tree.delete(*self._home_ws_tree.get_children())
-        for ent in entities:
-            self._home_ws_tree.insert("", tk.END, values=(
-                ent.get("name", "Unknown"),
-                ent.get("company_number", ent.get("number", ""))
-            ))
+            if count > 0:
+                self._home_ws_header.configure(text=f"Working set ({count})")
+            else:
+                self._home_ws_header.configure(text="No entities in working set")
+
+            self._home_ws_tree.delete(*self._home_ws_tree.get_children())
+            for ent in entities:
+                self._home_ws_tree.insert("", tk.END, values=(
+                    ent.get("name", "Unknown"),
+                    ent.get("company_number", ent.get("number", ""))
+                ))
+        except tk.TclError:
+            pass
 
     def _clear_home_working_set(self) -> None:
         """Clear working set from both home display and sidebar."""
@@ -1370,8 +1387,14 @@ class App(tk.Tk):
 
     def _refresh_home_reports(self) -> None:
         """Refresh the recent EDD reports list on the home screen."""
-        if not hasattr(self, "_home_reports_frame"):
+        try:
+            if (not hasattr(self, "_home_reports_frame")
+                    or not self._home_reports_frame
+                    or not self._home_reports_frame.winfo_exists()):
+                return
+        except tk.TclError:
             return
+
         for w in self._home_reports_frame.winfo_children():
             w.destroy()
 
