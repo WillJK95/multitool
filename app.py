@@ -36,7 +36,7 @@ from .constants import (
 from .help_content import HELP_CONTENT
 from .utils.helpers import log_message, clean_company_number
 from .utils.token_bucket import TokenBucket
-from .utils.settings import load_settings, save_settings, derive_initial_params
+from .utils.settings import load_settings, save_settings, derive_initial_params, load_recent_reports
 from .utils.app_state import AppState
 from .ui.tooltip import Tooltip
 from .ui.help_window import HelpWindow
@@ -103,6 +103,7 @@ class App(tk.Tk):
         
         # Persistent cross-module state (survives module navigation)
         self.app_state = AppState()
+        self.app_state.recent_edd_reports = load_recent_reports()
 
         # API status cache
         self.api_statuses = None
@@ -229,7 +230,7 @@ class App(tk.Tk):
         """Add a single navigation button to the sidebar and register it."""
         btn = ttk.Button(
             parent, text=text, command=command,
-            bootstyle=bootstyle, width=24
+            bootstyle=bootstyle, width=24, anchor=tk.CENTER
         )
         btn.pack(fill=tk.X, pady=2)
         self._sidebar_buttons[key] = btn
@@ -323,7 +324,7 @@ class App(tk.Tk):
         self._ws_send_menu_obj = tk.Menu(self._working_set_send_menu, tearoff=0)
         self._ws_send_menu_obj.add_command(
             label="Network Analytics Workbench",
-            command=lambda: self._send_working_set_to_network())
+            command=lambda: self._send_working_set_to_network(self._working_set_tree))
         self._ws_send_menu_obj.add_command(
             label="Enhanced Due Diligence",
             command=lambda: self._send_ws_selection_to_edd())
@@ -1126,13 +1127,12 @@ class App(tk.Tk):
             name = result.get("charity_name", result.get("name", "Unknown"))
             reg_num = str(result.get("reg_charity_number",
                           result.get("registered_charity_number", "N/A")))
-            status = result.get("charity_registration_status",
-                        result.get("registration_status", "Unknown"))
-
-            # Check if charity is active
             reg_status_code = (result.get("reg_status") or "").upper()
-            status_text = (status or "").lower()
-            is_active = reg_status_code != "RM" and "removed" not in status_text
+            _STATUS_MAP = {"R": "Registered", "RM": "Removed"}
+            status = result.get("charity_registration_status",
+                        result.get("registration_status",
+                        _STATUS_MAP.get(reg_status_code, reg_status_code or "Unknown")))
+            is_active = reg_status_code != "RM" and "removed" not in (status or "").lower()
             result["_is_active"] = is_active
 
             ttk.Label(
@@ -1456,7 +1456,7 @@ class App(tk.Tk):
         self._home_ws_send_menu_obj = tk.Menu(self._home_ws_send_menu, tearoff=0)
         self._home_ws_send_menu_obj.add_command(
             label="Network Analytics Workbench",
-            command=lambda: self._send_working_set_to_network())
+            command=lambda: self._send_working_set_to_network(self._home_ws_tree))
         self._home_ws_send_menu_obj.add_command(
             label="Enhanced Due Diligence",
             command=lambda: self._send_home_ws_selection_to_edd())
@@ -1913,17 +1913,30 @@ class App(tk.Tk):
 
     # ── Working Set → Network Analytics ─────────────────────────────
 
-    def _send_working_set_to_network(self) -> None:
+    def _send_working_set_to_network(self, tree=None) -> None:
         """Build graph data from working set entities and load into Network Analytics.
 
         Replicates the Bulk Entity Search → Export Graph Data flow:
         fetches officers/PSCs/trustees for each entity, writes a 7-column CSV,
         then navigates to Network Analytics with the file pre-loaded.
+
+        If *tree* is provided and has a selection, only the selected entities
+        are sent. Otherwise all entities in the working set are used.
         """
         entities = self._collect_working_set_entities()
         if not entities:
             messagebox.showinfo("Working Set", "No entities in working set.")
             return
+
+        # Honour tree selection if any items are selected
+        if tree is not None:
+            try:
+                sel = tree.selection()
+                if sel:
+                    indices = [tree.index(item) for item in sel]
+                    entities = [entities[i] for i in indices if i < len(entities)]
+            except tk.TclError:
+                pass
 
         # Filter out inactive charities
         inactive = [e for e in entities if not e.get("active", True)]

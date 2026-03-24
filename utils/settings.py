@@ -7,6 +7,7 @@ import os
 from ..constants import (
     CONFIG_DIR,
     CONFIG_FILE,
+    RECENT_REPORTS_FILE,
     DEFAULT_CH_PACING_MODE,
     DEFAULT_CH_MAX_WORKERS,
     INITIAL_RATE_LIMIT,
@@ -113,3 +114,25 @@ def save_settings(settings: dict) -> None:
 
     with open(CONFIG_FILE, "w") as f:
         config.write(f)
+
+
+def save_recent_reports(reports: list) -> None:
+    """Persist recent EDD reports list to JSON. Filters out missing files."""
+    import json
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    valid = [r for r in reports if os.path.exists(r.get("path", ""))]
+    with open(RECENT_REPORTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(valid[:5], f, indent=2)
+
+
+def load_recent_reports() -> list:
+    """Load recent EDD reports from JSON, filtering out missing files."""
+    import json
+    if not os.path.exists(RECENT_REPORTS_FILE):
+        return []
+    try:
+        with open(RECENT_REPORTS_FILE, "r", encoding="utf-8") as f:
+            reports = json.load(f)
+        return [r for r in reports if os.path.exists(r.get("path", ""))]
+    except Exception:
+        return []
