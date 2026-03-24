@@ -595,7 +595,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
         tree_frame.columnconfigure(0, weight=1)
 
         self.results_tree = ttk.Treeview(
-            tree_frame, columns=[], show="headings", selectmode="extended"
+            tree_frame, columns=[], show="headings", selectmode="extended", height=14
         )
         yscroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.results_tree.yview)
         xscroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.results_tree.xview)
@@ -939,6 +939,8 @@ class CompanyCharitySearch(InvestigationModuleBase):
         entities = self._get_selected_entities()
         if not entities:
             return
+        if self.app_state.ubo_working_set is None:
+            self.app_state.ubo_working_set = []
         added = 0
         for _, row in entities:
             ws_dict = self._entity_to_ws_dict(row)
@@ -1034,6 +1036,8 @@ class CompanyCharitySearch(InvestigationModuleBase):
             )
         else:
             # Multiple companies — add to working set and navigate
+            if self.app_state.ubo_working_set is None:
+                self.app_state.ubo_working_set = []
             for c in companies:
                 self.app_state.ubo_working_set.append(c)
             self.app._refresh_working_set_indicator()
