@@ -7,6 +7,7 @@ navigation, API keys, and module loading.
 """
 
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -16,6 +17,7 @@ import tkinter.font
 import ttkbootstrap as tb
 import keyring
 import requests
+import webbrowser
 from datetime import datetime
 
 from .constants import (
@@ -32,12 +34,14 @@ from .constants import (
     MIN_CH_MAX_WORKERS,
 )
 from .help_content import HELP_CONTENT
-from .utils.helpers import log_message
+from .utils.helpers import log_message, clean_company_number
 from .utils.token_bucket import TokenBucket
 from .utils.settings import load_settings, save_settings, derive_initial_params
 from .utils.app_state import AppState
 from .ui.tooltip import Tooltip
 from .ui.help_window import HelpWindow
+from .api.companies_house import ch_get_company, ch_search_companies
+from .api.charity_commission import cc_search_charities, cc_get_charity_details
 
 
 class App(tk.Tk):
@@ -836,66 +840,563 @@ class App(tk.Tk):
         ).pack()
     
     def show_main_menu(self) -> None:
-        """Display the home screen landing view."""
+        """Display the home screen with Quick Launch, status, and panels."""
         self.unbind("<Return>")
         self.clear_container()
         self.title("Multi-Tool - Dashboard")
-
-        # Ensure sidebar is visible
         self._show_sidebar()
 
-        # --- Header with API status ---
-        header_frame = ttk.Frame(self.container)
-        header_frame.pack(fill=tk.X, padx=20, pady=(15, 10))
-
-        # Left side: Title and subtitle
-        title_frame = ttk.Frame(header_frame)
-        title_frame.pack(side=tk.LEFT, anchor="w")
-
-        ttk.Label(
-            title_frame,
-            text="Multi-Tool Dashboard",
-            font=("Helvetica", 20, "bold"),
-            bootstyle="primary"
-        ).pack(anchor="w")
-
-        ttk.Label(
-            title_frame,
-            text="Select a module from the sidebar to begin your analysis.",
-            font=("Helvetica", 11),
-            foreground="gray"
-        ).pack(anchor="w")
-
-        # Right side: API Status Panel
-        self.status_panel = ttk.LabelFrame(header_frame, text="API Status", padding=5)
-        self.status_panel.pack(side=tk.RIGHT, anchor="ne")
-
-        self._build_api_status_panel(self.status_panel)
-
-        if self.api_statuses:
-            self._update_api_status_display()
-        else:
-            def run_check():
-                self.check_api_status()
-                if self.status_panel and self.status_panel.winfo_exists():
-                    self.after(0, self._update_api_status_display)
-
-            threading.Thread(target=run_check, daemon=True).start()
-
-        # --- Footer ---
+        # Footer first (pack at bottom so it stays pinned)
         footer_frame = ttk.Frame(self.container)
-        footer_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(0, 15))
-
+        footer_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(0, 10))
         ttk.Button(
-            footer_frame,
-            text="\U0001f4d6 Open User Guide",
-            command=self.show_main_guide,
-            bootstyle="link",
-        ).pack(side=tk.LEFT, anchor="sw", pady=(5, 0))
+            footer_frame, text="\U0001f4d6 Open User Guide",
+            command=self.show_main_guide, bootstyle="link",
+        ).pack(side=tk.LEFT, anchor="sw")
 
-        # --- Sidebar state ---
+        # Main content — scrollable area for the three zones
+        content = ttk.Frame(self.container)
+        content.pack(fill=tk.BOTH, expand=True, padx=20, pady=(10, 0))
+
+        # Zone 1 — Quick Launch (dominant)
+        self._build_quick_launch_zone(content)
+
+        # Zone 2 — System Status (compact)
+        self._build_system_status_zone(content)
+
+        # Zone 3 — Working Set + Recent Reports (lower)
+        self._build_lower_panels_zone(content)
+
+        # Sidebar state
         self._update_sidebar_active("home")
         self._refresh_working_set_indicator()
+
+        # Trigger background API status check if no cache
+        if not self.api_statuses:
+            def run_check():
+                self.check_api_status()
+                self.after(0, self._update_home_status_display)
+            threading.Thread(target=run_check, daemon=True).start()
+        else:
+            self._update_home_status_display()
+
+    # ── Zone 1: Quick Launch ─────────────────────────────────────────
+
+    def _build_quick_launch_zone(self, parent) -> None:
+        """Build the Quick Launch search zone (dominant centrepiece)."""
+        zone = ttk.LabelFrame(parent, text="", padding=20, bootstyle="primary")
+        zone.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        ttk.Label(
+            zone, text="Quick Launch",
+            font=("Helvetica", 16, "bold"), bootstyle="primary"
+        ).pack(anchor="w")
+        ttk.Label(
+            zone, text="Resolve a company or charity and jump straight into analysis.",
+            font=("Segoe UI", 10), foreground="gray"
+        ).pack(anchor="w", pady=(0, 10))
+
+        # Entity type toggle row
+        toggle_row = ttk.Frame(zone)
+        toggle_row.pack(anchor="w", pady=(0, 8))
+
+        self._ql_entity_type = tk.StringVar(value="company")
+        self._ql_toggle_btns = {}
+
+        for etype, label, needs_key in [
+            ("company", "Company", self.api_key),
+            ("charity", "Charity", self.charity_api_key),
+        ]:
+            btn = ttk.Button(
+                toggle_row, text=label, width=12,
+                command=lambda t=etype: self._ql_set_entity_type(t),
+                state=tk.NORMAL if needs_key else tk.DISABLED,
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 6))
+            self._ql_toggle_btns[etype] = btn
+
+        self._ql_update_toggle_styles()
+
+        # Search row
+        search_row = ttk.Frame(zone)
+        search_row.pack(fill=tk.X, pady=(0, 8))
+
+        self._ql_search_var = tk.StringVar()
+        self._ql_entry = ttk.Entry(
+            search_row, textvariable=self._ql_search_var,
+            font=("Segoe UI", 11), width=50
+        )
+        self._ql_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        self._ql_entry.insert(0, "Enter number or name...")
+        self._ql_entry.configure(foreground="gray")
+        self._ql_entry.bind("<FocusIn>", self._ql_focus_in)
+        self._ql_entry.bind("<FocusOut>", self._ql_focus_out)
+        self._ql_entry.bind("<Return>", lambda e: self._quick_launch_search())
+
+        self._ql_search_btn = ttk.Button(
+            search_row, text="Search", bootstyle="primary",
+            command=self._quick_launch_search
+        )
+        self._ql_search_btn.pack(side=tk.LEFT)
+
+        # Result area (populated after search)
+        self._ql_result_frame = ttk.Frame(zone)
+        self._ql_result_frame.pack(fill=tk.X, pady=(8, 0))
+        self._ql_resolved_entity = None
+
+    def _ql_set_entity_type(self, etype: str) -> None:
+        self._ql_entity_type.set(etype)
+        self._ql_update_toggle_styles()
+
+    def _ql_update_toggle_styles(self) -> None:
+        active = self._ql_entity_type.get()
+        for etype, btn in self._ql_toggle_btns.items():
+            if str(btn.cget("state")) == tk.DISABLED:
+                continue
+            btn.configure(bootstyle="primary" if etype == active else "primary-outline")
+
+    def _ql_focus_in(self, event) -> None:
+        if self._ql_entry.get() == "Enter number or name...":
+            self._ql_entry.delete(0, tk.END)
+            self._ql_entry.configure(foreground="")
+
+    def _ql_focus_out(self, event) -> None:
+        if not self._ql_entry.get().strip():
+            self._ql_entry.insert(0, "Enter number or name...")
+            self._ql_entry.configure(foreground="gray")
+
+    def _quick_launch_search(self) -> None:
+        """Trigger entity resolution in a background thread."""
+        query = self._ql_search_var.get().strip()
+        if not query or query == "Enter number or name...":
+            return
+        entity_type = self._ql_entity_type.get()
+
+        # Show searching state
+        for w in self._ql_result_frame.winfo_children():
+            w.destroy()
+        ttk.Label(
+            self._ql_result_frame, text="Searching...",
+            font=("Segoe UI", 10, "italic"), foreground="gray"
+        ).pack(anchor="w")
+        self._ql_search_btn.configure(state=tk.DISABLED)
+
+        threading.Thread(
+            target=self._ql_resolve, args=(query, entity_type), daemon=True
+        ).start()
+
+    def _ql_resolve(self, query: str, entity_type: str) -> None:
+        """Background: resolve entity via API and schedule UI update."""
+        result = None
+        error = None
+
+        try:
+            if entity_type == "company":
+                result, error = self._ql_resolve_company(query)
+            elif entity_type == "charity":
+                result, error = self._ql_resolve_charity(query)
+        except Exception as e:
+            error = str(e)
+
+        self.after(0, self._ql_display_result, result, entity_type, error)
+
+    def _ql_resolve_company(self, query: str):
+        """Resolve a company by number or name search."""
+        # Check if query looks like a company number
+        stripped = query.strip().upper()
+        if re.match(r'^[A-Z]{0,2}\d{5,8}$', stripped):
+            number = clean_company_number(stripped)
+            data, err = ch_get_company(self.api_key, self.ch_token_bucket, number)
+            if err:
+                return None, err
+            return data, None
+
+        # Otherwise search by name
+        data, err = ch_search_companies(
+            self.api_key, self.ch_token_bucket, query, items_per_page=5
+        )
+        if err:
+            return None, err
+        items = (data or {}).get("items", [])
+        if not items:
+            return None, None
+
+        # Fetch full profile of first match
+        number = items[0].get("company_number", "")
+        if number:
+            profile, perr = ch_get_company(
+                self.api_key, self.ch_token_bucket, number
+            )
+            return profile, perr
+        return items[0], None
+
+    def _ql_resolve_charity(self, query: str):
+        """Resolve a charity by registration number or name search."""
+        stripped = query.strip()
+        if stripped.isdigit():
+            data, err = cc_get_charity_details(self.charity_api_key, stripped)
+            if err:
+                return None, err
+            return data, None
+
+        # Search by name
+        data, err = cc_search_charities(self.charity_api_key, query)
+        if err:
+            return None, err
+        if not data:
+            return None, None
+        # cc_search_charities returns a list
+        if isinstance(data, list) and len(data) > 0:
+            return data[0], None
+        return None, None
+
+    def _ql_display_result(self, result, entity_type: str, error) -> None:
+        """Show the resolved entity card and action buttons."""
+        self._ql_search_btn.configure(state=tk.NORMAL)
+
+        for w in self._ql_result_frame.winfo_children():
+            w.destroy()
+
+        if error:
+            ttk.Label(
+                self._ql_result_frame, text=f"Error: {error}",
+                foreground="red", font=("Segoe UI", 10)
+            ).pack(anchor="w")
+            return
+
+        if not result:
+            ttk.Label(
+                self._ql_result_frame, text="No match found",
+                foreground="gray", font=("Segoe UI", 10, "italic")
+            ).pack(anchor="w")
+            return
+
+        # Store resolved entity for action buttons
+        self._ql_resolved_entity = result
+        self._ql_resolved_entity["_entity_type"] = entity_type
+
+        # Entity card
+        card = ttk.Frame(self._ql_result_frame, padding=(10, 8))
+        card.pack(fill=tk.X, pady=(4, 0))
+
+        if entity_type == "company":
+            name = result.get("company_name", "Unknown")
+            number = result.get("company_number", "N/A")
+            status = result.get("company_status", "unknown").replace("_", " ").title()
+            date_raw = result.get("date_of_creation", "")
+            try:
+                date_disp = datetime.strptime(date_raw, "%Y-%m-%d").strftime("%d %b %Y")
+            except (ValueError, TypeError):
+                date_disp = date_raw or "N/A"
+
+            ttk.Label(
+                card, text=name, font=("Helvetica", 14, "bold"), bootstyle="primary"
+            ).pack(anchor="w")
+            ttk.Label(
+                card,
+                text=f"Company No: {number}  |  Status: {status}  |  Incorporated: {date_disp}",
+                font=("Segoe UI", 9), foreground="gray"
+            ).pack(anchor="w", pady=(2, 0))
+
+        elif entity_type == "charity":
+            name = result.get("charity_name", result.get("name", "Unknown"))
+            reg_num = str(result.get("reg_charity_number",
+                          result.get("registered_charity_number", "N/A")))
+            status = result.get("charity_registration_status",
+                        result.get("registration_status", "Unknown"))
+
+            ttk.Label(
+                card, text=name, font=("Helvetica", 14, "bold"), bootstyle="primary"
+            ).pack(anchor="w")
+            ttk.Label(
+                card, text=f"Reg No: {reg_num}  |  Status: {status}",
+                font=("Segoe UI", 9), foreground="gray"
+            ).pack(anchor="w", pady=(2, 0))
+
+        # Record in quick launch history
+        self._ql_record_history(result, entity_type)
+
+        # Action buttons
+        btn_row = ttk.Frame(self._ql_result_frame)
+        btn_row.pack(anchor="w", pady=(8, 0))
+
+        ttk.Button(
+            btn_row, text="Open in EDD", bootstyle="info-outline",
+            command=lambda: self._ql_open_in_edd(result, entity_type)
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        trace_btn = ttk.Button(
+            btn_row, text="Trace Ownership", bootstyle="primary-outline",
+            command=lambda: self._ql_open_in_ubo(result),
+            state=tk.NORMAL if entity_type == "company" else tk.DISABLED,
+        )
+        trace_btn.pack(side=tk.LEFT, padx=(0, 6))
+        if entity_type != "company":
+            Tooltip(trace_btn, "UBO Tracer supports companies only")
+
+        if entity_type == "company":
+            ttk.Button(
+                btn_row, text="Director Search", bootstyle="primary-outline",
+                command=lambda: self._ql_open_in_director(result)
+            ).pack(side=tk.LEFT, padx=(0, 6))
+
+        ttk.Button(
+            btn_row, text="Add to Working Set", bootstyle="secondary-outline",
+            command=lambda: self._ql_add_to_working_set(result, entity_type)
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+    def _ql_record_history(self, result, entity_type: str) -> None:
+        """Record resolved entity in quick launch history (max 5, dedup)."""
+        if entity_type == "company":
+            key = result.get("company_number", "")
+            name = result.get("company_name", "Unknown")
+        else:
+            key = str(result.get("reg_charity_number",
+                       result.get("registered_charity_number", "")))
+            name = result.get("charity_name", result.get("name", "Unknown"))
+
+        history = self.app_state.quick_launch_history
+        # Remove existing entry with same key
+        history[:] = [e for e in history if e.get("key") != key]
+        history.insert(0, {"key": key, "name": name, "type": entity_type})
+        self.app_state.quick_launch_history = history[:5]
+
+    # ── Quick Launch Action Handlers ─────────────────────────────────
+
+    def _ql_open_in_edd(self, entity, entity_type: str) -> None:
+        eid = (entity.get("company_number") or
+               str(entity.get("reg_charity_number",
+                   entity.get("registered_charity_number", ""))))
+        etype = "company" if entity_type == "company" else "charity"
+        self.show_enhanced_dd(prefill_entity={"type": etype, "id": eid})
+
+    def _ql_open_in_ubo(self, entity) -> None:
+        number = entity.get("company_number", "")
+        self.show_ubo_investigation(prefill_company=number)
+
+    def _ql_open_in_director(self, entity) -> None:
+        name = entity.get("company_name", "")
+        self.show_director_investigation(prefill_name=name)
+
+    def _ql_add_to_working_set(self, entity, entity_type: str) -> None:
+        if self.app_state.ubo_working_set is None:
+            self.app_state.ubo_working_set = []
+
+        if entity_type == "company":
+            num = entity.get("company_number", "")
+            name = entity.get("company_name", "Unknown")
+        else:
+            num = str(entity.get("reg_charity_number",
+                       entity.get("registered_charity_number", "")))
+            name = entity.get("charity_name", entity.get("name", "Unknown"))
+
+        existing = {e.get("company_number") for e in self.app_state.ubo_working_set}
+        if num and num not in existing:
+            self.app_state.ubo_working_set.append({
+                "name": name, "company_number": num
+            })
+        self._refresh_working_set_indicator()
+        # Refresh home screen lower panel if visible
+        if hasattr(self, "_home_ws_tree") and self._home_ws_tree:
+            self._refresh_home_working_set()
+
+    # ── Zone 2: System Status ────────────────────────────────────────
+
+    def _build_system_status_zone(self, parent) -> None:
+        """Build compact system status panels for CH and CC APIs."""
+        zone = ttk.Frame(parent)
+        zone.pack(fill=tk.X, pady=(0, 8))
+
+        # Companies House panel
+        ch_panel = ttk.LabelFrame(zone, text="Companies House", padding=8)
+        ch_panel.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+
+        self._home_ch_key_lbl = ttk.Label(ch_panel, text="", font=("Segoe UI", 9))
+        self._home_ch_key_lbl.pack(anchor="w")
+        self._home_ch_conn_lbl = ttk.Label(ch_panel, text="", font=("Segoe UI", 9))
+        self._home_ch_conn_lbl.pack(anchor="w")
+
+        mode = self._settings.get("ch_pacing_mode", "smooth").title()
+        workers = self.ch_max_workers
+        ttk.Label(
+            ch_panel, text=f"Mode: {mode}  |  Workers: {workers}",
+            font=("Segoe UI", 8), foreground="gray"
+        ).pack(anchor="w")
+
+        ttk.Button(
+            ch_panel, text="Test connection", bootstyle="link",
+            command=lambda: self._test_single_api("companies_house")
+        ).pack(anchor="w")
+
+        # Charity Commission panel
+        cc_panel = ttk.LabelFrame(zone, text="Charity Commission", padding=8)
+        cc_panel.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        self._home_cc_key_lbl = ttk.Label(cc_panel, text="", font=("Segoe UI", 9))
+        self._home_cc_key_lbl.pack(anchor="w")
+        self._home_cc_conn_lbl = ttk.Label(cc_panel, text="", font=("Segoe UI", 9))
+        self._home_cc_conn_lbl.pack(anchor="w")
+
+        ttk.Button(
+            cc_panel, text="Test connection", bootstyle="link",
+            command=lambda: self._test_single_api("charity_commission")
+        ).pack(anchor="w")
+
+        # Initial display
+        self._update_home_status_display()
+
+    def _update_home_status_display(self) -> None:
+        """Refresh the system status labels from cached API statuses."""
+        if not hasattr(self, "_home_ch_key_lbl"):
+            return
+
+        # Companies House
+        ch_key_ok = bool(self.api_key)
+        self._home_ch_key_lbl.configure(
+            text=f"Key loaded: {'✓' if ch_key_ok else '✗'}",
+            foreground="green" if ch_key_ok else "red"
+        )
+        ch_status = (self.api_statuses or {}).get("companies_house", "unknown")
+        if ch_status == "ok":
+            conn_text, conn_color = "Connection: ✓ OK", "green"
+        elif ch_status == "error":
+            conn_text, conn_color = "Connection: ✗ Failed", "red"
+        elif ch_status == "no_key":
+            conn_text, conn_color = "Connection: — No key", "gray"
+        else:
+            conn_text, conn_color = "Connection: …", "gray"
+        self._home_ch_conn_lbl.configure(text=conn_text, foreground=conn_color)
+
+        # Charity Commission
+        cc_key_ok = bool(self.charity_api_key)
+        self._home_cc_key_lbl.configure(
+            text=f"Key loaded: {'✓' if cc_key_ok else '✗'}",
+            foreground="green" if cc_key_ok else "red"
+        )
+        cc_status = (self.api_statuses or {}).get("charity_commission", "unknown")
+        if cc_status == "ok":
+            conn_text, conn_color = "Connection: ✓ OK", "green"
+        elif cc_status == "error":
+            conn_text, conn_color = "Connection: ✗ Failed", "red"
+        elif cc_status == "no_key":
+            conn_text, conn_color = "Connection: — No key", "gray"
+        else:
+            conn_text, conn_color = "Connection: …", "gray"
+        self._home_cc_conn_lbl.configure(text=conn_text, foreground=conn_color)
+
+    def _test_single_api(self, api_name: str) -> None:
+        """Re-test a single API connection and update status."""
+        def _run():
+            self.check_api_status()
+            self.after(0, self._update_home_status_display)
+        threading.Thread(target=_run, daemon=True).start()
+
+    # ── Zone 3: Working Set + Recent Reports ─────────────────────────
+
+    def _build_lower_panels_zone(self, parent) -> None:
+        """Build the working set and recent reports panels."""
+        zone = ttk.Frame(parent)
+        zone.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
+
+        # Left — Working Set
+        ws_panel = ttk.LabelFrame(zone, text="Working Set", padding=8)
+        ws_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 4))
+
+        self._home_ws_header = ttk.Label(ws_panel, text="", font=("Segoe UI", 9, "bold"))
+        self._home_ws_header.pack(anchor="w")
+
+        self._home_ws_tree = ttk.Treeview(
+            ws_panel, columns=("name", "number"), show="headings",
+            height=6, selectmode="none"
+        )
+        self._home_ws_tree.heading("name", text="Name")
+        self._home_ws_tree.heading("number", text="Number")
+        self._home_ws_tree.column("name", width=200, minwidth=100)
+        self._home_ws_tree.column("number", width=100, minwidth=70)
+        self._home_ws_tree.pack(fill=tk.BOTH, expand=True, pady=(4, 4))
+
+        ws_btn_row = ttk.Frame(ws_panel)
+        ws_btn_row.pack(fill=tk.X)
+
+        self._home_ws_send_menu = ttk.Menubutton(
+            ws_btn_row, text="Send to\u2026 \u25bc", bootstyle="primary-outline"
+        )
+        send_menu = tk.Menu(self._home_ws_send_menu, tearoff=0)
+        send_menu.add_command(label="Network Workbench",
+                              command=self.show_network_graph_creator)
+        send_menu.add_command(label="Enhanced Due Diligence",
+                              command=self.show_enhanced_dd)
+        self._home_ws_send_menu.configure(menu=send_menu)
+        self._home_ws_send_menu.pack(side=tk.LEFT, padx=(0, 6))
+
+        ttk.Button(
+            ws_btn_row, text="Clear", bootstyle="danger-outline",
+            command=self._clear_home_working_set
+        ).pack(side=tk.LEFT)
+
+        self._refresh_home_working_set()
+
+        # Right — Recent EDD Reports
+        rr_panel = ttk.LabelFrame(zone, text="Recent Reports", padding=8)
+        rr_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(4, 0))
+
+        self._home_reports_frame = ttk.Frame(rr_panel)
+        self._home_reports_frame.pack(fill=tk.BOTH, expand=True)
+        self._refresh_home_reports()
+
+    def _refresh_home_working_set(self) -> None:
+        """Refresh the home screen working set list."""
+        if not hasattr(self, "_home_ws_tree") or not self._home_ws_tree:
+            return
+        entities = self._collect_working_set_entities()
+        count = len(entities)
+
+        if count > 0:
+            self._home_ws_header.configure(text=f"Working set ({count})")
+        else:
+            self._home_ws_header.configure(text="No entities in working set")
+
+        self._home_ws_tree.delete(*self._home_ws_tree.get_children())
+        for ent in entities:
+            self._home_ws_tree.insert("", tk.END, values=(
+                ent.get("name", "Unknown"),
+                ent.get("company_number", ent.get("number", ""))
+            ))
+
+    def _clear_home_working_set(self) -> None:
+        """Clear working set from both home display and sidebar."""
+        self._clear_working_set()
+        self._refresh_home_working_set()
+
+    def _refresh_home_reports(self) -> None:
+        """Refresh the recent EDD reports list on the home screen."""
+        if not hasattr(self, "_home_reports_frame"):
+            return
+        for w in self._home_reports_frame.winfo_children():
+            w.destroy()
+
+        reports = self.app_state.recent_edd_reports[:5]
+        if not reports:
+            ttk.Label(
+                self._home_reports_frame, text="No recent reports",
+                foreground="gray", font=("Segoe UI", 9, "italic")
+            ).pack(anchor="w", pady=4)
+            return
+
+        for report in reports:
+            row = ttk.Frame(self._home_reports_frame)
+            row.pack(fill=tk.X, pady=2)
+            name = report.get("name", "Unknown")
+            date = report.get("date", "")
+            path = report.get("path", "")
+            lbl = ttk.Label(
+                row, text=f"{name}  —  {date}",
+                font=("Segoe UI", 9), cursor="hand2", foreground="#0d6efd"
+            )
+            lbl.pack(anchor="w")
+            if path:
+                lbl.bind("<Button-1>",
+                         lambda e, p=path: webbrowser.open(f"file://{p}"))
     
     def show_main_guide(self) -> None:
         """Show the main help window."""
@@ -1168,20 +1669,23 @@ class App(tk.Tk):
     # These methods load the respective investigation modules.
     # Each module is imported and instantiated when needed.
     
-    def show_director_investigation(self) -> None:
+    def show_director_investigation(self, prefill_name=None) -> None:
         """Show the Director Search module."""
         self.clear_container()
         # Import here to avoid circular imports and speed up startup
         from .modules.director_search import DirectorSearch
-        DirectorSearch(self, self.api_key, self.show_main_menu, self.ch_token_bucket)
+        DirectorSearch(self, self.api_key, self.show_main_menu, self.ch_token_bucket,
+                       prefill_name=prefill_name)
         self._update_sidebar_active("director_search")
         self._refresh_working_set_indicator()
     
-    def show_ubo_investigation(self) -> None:
+    def show_ubo_investigation(self, prefill_company=None) -> None:
         """Show the UBO Tracer module."""
         self.clear_container()
         from .modules.ubo_tracer import UltimateBeneficialOwnershipTracer
-        UltimateBeneficialOwnershipTracer(self, self.api_key, self.show_main_menu, self.ch_token_bucket)
+        UltimateBeneficialOwnershipTracer(self, self.api_key, self.show_main_menu,
+                                           self.ch_token_bucket,
+                                           prefill_company=prefill_company)
         self._update_sidebar_active("ubo_tracer")
         self._refresh_working_set_indicator()
     
@@ -1215,13 +1719,14 @@ class App(tk.Tk):
         self._update_sidebar_active("network_workbench")
         self._refresh_working_set_indicator()
 
-    def show_enhanced_dd(self) -> None:
+    def show_enhanced_dd(self, prefill_entity=None) -> None:
         """Show the Enhanced Due Diligence module."""
         self.clear_container()
         from .modules.enhanced_dd import EnhancedDueDiligence
         EnhancedDueDiligence(
             self, self.api_key, self.show_main_menu, self.ch_token_bucket,
             charity_api_key=self.charity_api_key,
+            prefill_entity=prefill_entity,
         )
         self._update_sidebar_active("edd")
         self._refresh_working_set_indicator()

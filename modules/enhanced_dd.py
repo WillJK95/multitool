@@ -95,10 +95,11 @@ from ..utils.charity_financial_data import CharityFinancialData
 
 class EnhancedDueDiligence(InvestigationModuleBase):
     def __init__(self, parent_app, api_key, back_callback, ch_token_bucket,
-                 charity_api_key=None):
+                 charity_api_key=None, prefill_entity=None):
         super().__init__(parent_app, back_callback, api_key, help_key=None)
         self.ch_token_bucket = ch_token_bucket
         self.charity_api_key = charity_api_key
+        self._prefill_entity = prefill_entity
         self.company_data = {}
         self.charity_data = {}
         self.financial_analyzer = None
@@ -170,7 +171,17 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         }
         
         self._build_ui()
-    
+
+        # Apply prefill if provided (from Quick Launch)
+        if self._prefill_entity:
+            etype = self._prefill_entity.get("type", "company")
+            eid = self._prefill_entity.get("id", "")
+            self.entity_type_var.set(etype)
+            self._on_entity_type_changed()
+            self.company_num_var.set(eid)
+            if eid:
+                self.after(200, self.fetch_entity_profile)
+
     def _build_ui(self):
         # Step 1: Entity Lookup
         self._lookup_frame = ttk.LabelFrame(
@@ -1903,7 +1914,15 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             
             self.safe_update(self.status_var.set, "Report generated! Opening in browser...")
             webbrowser.open(f"file://{os.path.realpath(filename)}")
-            
+
+            # Record in app_state for home screen
+            self.app_state.recent_edd_reports.insert(0, {
+                "name": self.company_data['profile'].get('company_name', 'Unknown'),
+                "path": os.path.realpath(filename),
+                "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
+            })
+            self.app_state.recent_edd_reports = self.app_state.recent_edd_reports[:5]
+
         except Exception as e:
             import traceback
             error_details = traceback.format_exc()
@@ -2059,6 +2078,15 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
             self.safe_update(self.status_var.set, "Report generated! Opening in browser...")
             webbrowser.open(f"file://{os.path.realpath(filename)}")
+
+            # Record in app_state for home screen
+            details = self.charity_data.get('details', {})
+            self.app_state.recent_edd_reports.insert(0, {
+                "name": details.get('charity_name', 'Unknown Charity'),
+                "path": os.path.realpath(filename),
+                "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
+            })
+            self.app_state.recent_edd_reports = self.app_state.recent_edd_reports[:5]
 
         except Exception as e:
             error_details = traceback.format_exc()

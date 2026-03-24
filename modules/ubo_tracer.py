@@ -35,9 +35,11 @@ from ..ui.tooltip import Tooltip
 from .base import InvestigationModuleBase
 
 class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
-    def __init__(self, parent_app, api_key, back_callback, ch_token_bucket):
+    def __init__(self, parent_app, api_key, back_callback, ch_token_bucket,
+                 prefill_company=None):
         super().__init__(parent_app, back_callback, api_key, help_key="ubo")
         self.ch_token_bucket = ch_token_bucket
+        self._prefill_company = prefill_company
         # --- UI Setup ---
         upload_frame = ttk.LabelFrame(
             self.content_frame, text="Step 1: Upload File", padding=10
@@ -139,6 +141,20 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         ttk.Label(run_frame, textvariable=self.status_entity_var).pack(anchor=tk.W)
         self.status_var = tk.StringVar(value="Ready.")
         ttk.Label(run_frame, textvariable=self.status_var).pack(anchor=tk.W)
+
+        # Apply prefill from Quick Launch
+        if self._prefill_company:
+            self.original_data = [{"company_number": self._prefill_company}]
+            self.original_headers = ["company_number"]
+            self.file_status_label.config(
+                text=f"Quick Launch: {self._prefill_company}", foreground="green"
+            )
+            self._display_column_selection_ui()
+            self.number_col_var.set("company_number")
+            self.name_col_var.set("")
+            self.number_col = "company_number"
+            self.name_col = None
+            self.run_btn.config(state="normal")
 
     def load_file(self):
         path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
