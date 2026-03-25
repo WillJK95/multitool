@@ -69,6 +69,14 @@ class App(tk.Tk):
         self.title("Multi-Tool")
         self.geometry("1320x780")
         self.minsize(1320, 780)
+        # Open maximised — try platform-appropriate methods
+        try:
+            self.state('zoomed')
+        except tk.TclError:
+            try:
+                self.attributes('-zoomed', True)
+            except tk.TclError:
+                pass
         
         # Load persisted settings
         self._settings = load_settings()
@@ -223,7 +231,7 @@ class App(tk.Tk):
                                  "network_workbench", "success",
                                  self.show_network_graph_creator)
         # Centre the two-line label; anchor must go through the style system
-        self.style.configure("Centered.success.TButton", anchor="center")
+        self.style.configure("Centered.success.TButton", anchor="center", justify="center")
         self._sidebar_buttons["network_workbench"].configure(
             style="Centered.success.TButton"
         )
@@ -1261,18 +1269,6 @@ class App(tk.Tk):
         self._home_ch_conn_lbl = ttk.Label(ch_conn_row, text="", font=("Segoe UI", 9))
         self._home_ch_conn_lbl.pack(side=tk.LEFT)
 
-        mode = self._settings.get("ch_pacing_mode", "smooth").title()
-        workers = self.ch_max_workers
-        self._home_ch_mode_lbl = ttk.Label(
-            ch_conn_row, text=f"  Mode: {mode}  Workers: {workers}",
-            font=("Segoe UI", 8), foreground="gray", cursor="hand2"
-        )
-        self._home_ch_mode_lbl.pack(side=tk.LEFT, padx=(6, 0))
-        self._home_ch_mode_lbl.bind("<Button-1>", lambda e: self._open_settings_window())
-        self._home_ch_mode_lbl.bind("<Enter>", lambda e: self._home_ch_mode_lbl.configure(
-            font=("Segoe UI", 8, "underline")))
-        self._home_ch_mode_lbl.bind("<Leave>", lambda e: self._home_ch_mode_lbl.configure(
-            font=("Segoe UI", 8)))
 
         self._home_ch_test_btn = ttk.Button(
             ch_panel, text="Test connection", bootstyle="link",

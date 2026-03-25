@@ -1,21 +1,14 @@
 # modules/ubo_tracer.py
 """UBO module"""
 
-import csv
-import html
 import os
 import re
 import threading
 import time
-import webbrowser
 import tkinter as tk
 from datetime import datetime
 from tkinter import ttk, filedialog, messagebox
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-# --- Third-Party ---
-import networkx as nx
-from pyvis.network import Network
 
 # --- From Our Package ---
 # API functions (were global functions in original file)
@@ -27,7 +20,7 @@ from ..constants import (
 )
 
 # Utility functions (were global functions or duplicated in classes)
-from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary, format_eta
+from ..utils.helpers import log_message, get_canonical_name_key, format_error_summary, format_eta
 
 # UI components (were classes in original file)
 from ..ui.tooltip import Tooltip
@@ -41,9 +34,19 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         self.ch_token_bucket = ch_token_bucket
         self._prefill_company = prefill_company
         self._prefill_company_name = prefill_company_name
-        # --- UI Setup ---
+
+        # --- Notebook with Configuration and Results tabs ---
+        self.notebook = ttk.Notebook(self.content_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        self.config_tab = ttk.Frame(self.notebook)
+        self.results_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.config_tab, text="Configuration")
+        self.notebook.add(self.results_tab, text="Results")
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+        # --- UI Setup (Configuration tab) ---
         upload_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 1: Upload File", padding=10
+            self.config_tab, text="Step 1: Upload File", padding=10
         )
         upload_frame.pack(fill=tk.X, pady=5, padx=10)
         ttk.Button(
@@ -53,12 +56,12 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         self.file_status_label.pack(pady=5)
 
         self.column_selection_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 2: Select Columns", padding=10
+            self.config_tab, text="Step 2: Select Columns", padding=10
         )
         self.column_selection_frame.pack(fill=tk.X, pady=5, padx=10)
 
         run_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 3: Run & Export", padding=10
+            self.config_tab, text="Step 3: Run Investigation", padding=10
         )
         run_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=10)
 
@@ -95,45 +98,6 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             run_buttons_frame, text="Cancel", command=self.cancel_investigation
         )
 
-        # --- MODIFIED: Export and Graph Buttons ---
-        export_buttons_frame = ttk.Frame(run_frame)
-        export_buttons_frame.pack(pady=5)
-        self.export_btn = ttk.Button(
-            export_buttons_frame,
-            text="Export PSC List",
-            state="disabled",
-            command=self.export_csv,
-        )
-        self.export_btn.pack(side=tk.LEFT, padx=5)
-        Tooltip(
-            self.export_btn,
-            "Export a flat list of all PSCs found in the ownership chain.",
-        )
-
-        self.generate_graph_btn = ttk.Button(
-            export_buttons_frame,
-            text="Generate Visual Graph",
-            state="disabled",
-            command=self.start_visual_graph_generation,
-        )
-        self.generate_graph_btn.pack(side=tk.LEFT, padx=5)
-        Tooltip(
-            self.generate_graph_btn,
-            "Generate a visual graph of the PSC ownership chain.",
-        )
-
-        self.export_graph_data_btn = ttk.Button(
-            export_buttons_frame,
-            text="Export Graph Data (CSV)",
-            state="disabled",
-            command=self.start_graph_data_export,
-        )
-        self.export_graph_data_btn.pack(side=tk.LEFT, padx=5)
-        Tooltip(
-            self.export_graph_data_btn,
-            "Export the network connections (edge list) to a CSV file for combined analysis.",
-        )
-
         self.progress_bar = ttk.Progressbar(
             run_frame, orient="horizontal", length=300, mode="determinate"
         )
@@ -166,6 +130,649 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                 self.name_col = None
             self.number_col = "company_number"
             self.run_btn.config(state="normal")
+
+        # Build Results tab skeleton
+        self._build_results_tab()
+
+    # ------------------------------------------------------------------
+    # Tab management
+    # ------------------------------------------------------------------
+
+    def _on_tab_changed(self, event=None):
+        """Toggle outer scroller when switching between Configuration and Results."""
+        selected = self.notebook.select()
+        on_results = (selected == str(self.results_tab))
+        if on_results:
+            self.scroller.scrollbar.pack_forget()
+            self.scroller.canvas.yview_moveto(0)
+            self.scroller.canvas.configure(yscrollcommand=lambda *a: None)
+            self.scroller._disabled = True
+        else:
+            self.scroller.scrollbar.pack(side="right", fill="y")
+            self.scroller.canvas.configure(yscrollcommand=self.scroller.scrollbar.set)
+            self.scroller._disabled = False
+            self._update_scrollregion()
+
+    # ------------------------------------------------------------------
+    # Results tab
+    # ------------------------------------------------------------------
+
+    def _build_results_tab(self):
+        """Build the static skeleton of the Results tab (called once from __init__)."""
+        # --- Shared Ownership section (collapsible) ---
+        self._shared_frame = ttk.LabelFrame(
+            self.results_tab, text="Shared Ownership", padding=8
+        )
+        # Not packed initially — shown only after trace completion
+        self._shared_expanded = True
+        toggle_row = ttk.Frame(self._shared_frame)
+        toggle_row.pack(fill=tk.X)
+        self._shared_toggle_btn = ttk.Label(
+            toggle_row, text="\u25BC  Hide", cursor="hand2",
+            font=("Segoe UI", 8), foreground="gray",
+        )
+        self._shared_toggle_btn.pack(anchor=tk.E)
+        self._shared_toggle_btn.bind("<Button-1>", lambda e: self._toggle_shared_section())
+        self._shared_inner = ttk.Frame(self._shared_frame)
+        self._shared_inner.pack(fill=tk.X)
+
+        # --- Top bar: Select All / Deselect All ---
+        top_bar = ttk.Frame(self.results_tab)
+        top_bar.pack(fill=tk.X, padx=10, pady=(5, 5))
+        ttk.Button(
+            top_bar, text="Select All", command=self._select_all_results
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(
+            top_bar, text="Deselect All", command=self._deselect_all_results
+        ).pack(side=tk.LEFT, padx=(0, 15))
+
+        # --- Hierarchical Treeview ---
+        tree_frame = ttk.Frame(self.results_tab)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+
+        self.results_tree = ttk.Treeview(
+            tree_frame,
+            columns=("kind", "nationality", "shareholding"),
+            show="tree headings",
+            selectmode="extended",
+            height=22,
+        )
+        self.results_tree.heading("#0", text="Entity", anchor=tk.W)
+        self.results_tree.heading("kind", text="Kind", anchor=tk.W)
+        self.results_tree.heading("nationality", text="Nationality", anchor=tk.W)
+        self.results_tree.heading("shareholding", text="Shareholding", anchor=tk.W)
+        self.results_tree.column("#0", width=350, minwidth=200)
+        self.results_tree.column("kind", width=200, minwidth=100)
+        self.results_tree.column("nationality", width=120, minwidth=80)
+        self.results_tree.column("shareholding", width=280, minwidth=150)
+
+        yscroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.results_tree.yview)
+        xscroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.results_tree.xview)
+        self.results_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+
+        self.results_tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+
+        # Treeview data tracking
+        self._tree_node_map = {}   # company_number -> treeview iid
+        self._tree_row_data = {}   # iid -> result row dict
+
+        # Bind selection change for Send to… menu state
+        self.results_tree.bind("<<TreeviewSelect>>", self._on_tree_selection_changed)
+
+        # --- Progress area for graph-data retrieval (hidden by default) ---
+        self._results_progress_frame = ttk.Frame(self.results_tab)
+        self._results_progress_var = tk.StringVar(value="")
+        ttk.Label(
+            self._results_progress_frame, textvariable=self._results_progress_var
+        ).pack(anchor=tk.W, padx=10)
+
+        # --- Bottom bar: Export + Generate Graph + Send to ---
+        bottom_bar = ttk.Frame(self.results_tab)
+        bottom_bar.pack(fill=tk.X, padx=10, pady=(5, 10))
+
+        self.export_btn = ttk.Button(
+            bottom_bar, text="Export Results", command=self.export_csv
+        )
+        self.export_btn.pack(side=tk.LEFT, padx=(0, 5))
+        Tooltip(self.export_btn, "Export a flat list of all PSCs found in the ownership chain.")
+
+        self.generate_graph_btn = ttk.Button(
+            bottom_bar, text="Generate Visual Graph",
+            command=self.start_visual_graph_generation
+        )
+        self.generate_graph_btn.pack(side=tk.LEFT, padx=(0, 10))
+        Tooltip(self.generate_graph_btn, "Generate a visual graph of the PSC ownership chain.")
+
+        # "Send to… ▼" dropdown
+        self._send_menu_btn = ttk.Menubutton(
+            bottom_bar, text="Send to\u2026 \u25BC", bootstyle="primary-outline"
+        )
+        self._send_menu = tk.Menu(self._send_menu_btn, tearoff=0)
+        self._send_menu.add_command(label="Working Set", command=self._send_to_working_set)
+        self._send_menu.add_command(label="Network Analytics Workbench", command=self._send_to_network_analytics)
+        self._send_menu.add_command(label="Enhanced Due Diligence", command=self._send_to_edd)
+        self._send_menu.add_command(label="Grants Search", command=self._send_to_grants_search)
+        self._send_menu.add_command(label="Director Search", command=self._send_to_director_search)
+        self._send_menu_btn.configure(menu=self._send_menu)
+        self._send_menu_btn.pack(side=tk.LEFT, padx=(0, 5))
+        Tooltip(
+            self._send_menu_btn,
+            "Triggers additional API calls to retrieve director, address and\n"
+            "ownership data. This may take several minutes for large result sets.",
+        )
+
+        # Initial menu state — no results yet, all disabled except WS + NA
+        self._update_send_menu_state()
+
+    def _populate_results_tree(self):
+        """Populate the hierarchical treeview from self.results_data."""
+        tree = self.results_tree
+        tree.delete(*tree.get_children())
+        self._tree_node_map.clear()
+        self._tree_row_data.clear()
+
+        if not self.results_data:
+            return
+
+        # Group results by root_company, preserving insertion order
+        from collections import OrderedDict
+        grouped = OrderedDict()
+        for row in self.results_data:
+            rc = row.get("root_company", "")
+            if rc not in grouped:
+                grouped[rc] = []
+            grouped[rc].append(row)
+
+        for root_cnum, rows in grouped.items():
+            # Determine root company display name
+            root_name = ""
+            for r in rows:
+                if r.get("root_company_name"):
+                    root_name = r["root_company_name"]
+                    break
+            display = f"{root_name} ({root_cnum})" if root_name else root_cnum
+
+            # Insert root company node
+            root_iid = tree.insert(
+                "", "end", text=display,
+                values=("Root Company", "", ""),
+                open=True,
+            )
+            self._tree_node_map[root_cnum] = root_iid
+            # Store a synthetic row for root company nodes
+            self._tree_row_data[root_iid] = {
+                "root_company": root_cnum,
+                "root_company_name": root_name,
+                "psc_name": root_name or root_cnum,
+                "psc_company_number": root_cnum,
+                "psc_kind": "root-company",
+                "psc_unique_id": root_cnum,
+                "country": "",
+                "shareholding": "",
+                "_is_root": True,
+            }
+
+            # Insert PSC rows as children, nested by level
+            for row in rows:
+                if "psc_unique_id" not in row:
+                    continue  # Skip placeholder rows
+
+                parent_cnum = row.get("parent_company_number", root_cnum)
+                parent_iid = self._tree_node_map.get(parent_cnum, root_iid)
+
+                psc_name = row.get("psc_name", "Unknown")
+                kind = row.get("psc_kind", "")
+                country = row.get("country", "")
+                shareholding = row.get("shareholding", "")
+
+                child_iid = tree.insert(
+                    parent_iid, "end", text=psc_name,
+                    values=(kind, country, shareholding),
+                    open=True,
+                )
+                self._tree_row_data[child_iid] = row
+
+                # If corporate PSC, register in node map for deeper nesting
+                psc_cnum = row.get("psc_company_number", "")
+                if psc_cnum and psc_cnum not in self._tree_node_map:
+                    self._tree_node_map[psc_cnum] = child_iid
+
+        # Build shared ownership analysis
+        self._build_shared_ownership()
+
+    # ------------------------------------------------------------------
+    # Select All / Deselect All
+    # ------------------------------------------------------------------
+
+    def _select_all_results(self):
+        """Select all items in the results treeview (recursively)."""
+        all_items = []
+        def _collect(parent=""):
+            for child in self.results_tree.get_children(parent):
+                all_items.append(child)
+                _collect(child)
+        _collect()
+        if all_items:
+            self.results_tree.selection_set(all_items)
+
+    def _deselect_all_results(self):
+        """Clear selection in the results treeview."""
+        self.results_tree.selection_remove(self.results_tree.selection())
+
+    # ------------------------------------------------------------------
+    # Tree selection → Send-to menu state
+    # ------------------------------------------------------------------
+
+    def _on_tree_selection_changed(self, event=None):
+        """Update Send to… menu enable/disable state based on current selection."""
+        self._update_send_menu_state()
+
+    def _classify_selection(self):
+        """Return (entities, has_companies, has_persons, count) for current selection."""
+        sel = self.results_tree.selection()
+        entities = []
+        has_companies = False
+        has_persons = False
+        for iid in sel:
+            row = self._tree_row_data.get(iid)
+            if not row:
+                continue
+            entities.append(row)
+            kind = row.get("psc_kind", "")
+            if row.get("_is_root") or row.get("psc_company_number") or "corporate" in kind:
+                has_companies = True
+            elif "individual" in kind:
+                has_persons = True
+            else:
+                # Default: if has company number treat as company, else person
+                if row.get("psc_company_number"):
+                    has_companies = True
+                else:
+                    has_persons = True
+        return entities, has_companies, has_persons, len(entities)
+
+    def _update_send_menu_state(self):
+        """Enable/disable Send to… menu items based on selection."""
+        entities, has_companies, has_persons, count = self._classify_selection()
+        menu = self._send_menu
+
+        # Default: Working Set + Network Analytics always enabled
+        ws_state = "normal"
+        na_state = "normal"
+        edd_state = "disabled"
+        grants_state = "disabled"
+        director_state = "disabled"
+
+        if count == 0:
+            # No selection = "all" → only WS + NA
+            pass
+        elif has_companies and has_persons:
+            # Mixed → only WS + NA
+            pass
+        elif has_companies and not has_persons:
+            if count == 1:
+                edd_state = "normal"
+                grants_state = "normal"
+            else:
+                grants_state = "normal"
+        elif has_persons and not has_companies:
+            if count == 1:
+                director_state = "normal"
+
+        menu.entryconfigure(0, state=ws_state)       # Working Set
+        menu.entryconfigure(1, state=na_state)        # Network Analytics
+        menu.entryconfigure(2, state=edd_state)       # EDD
+        menu.entryconfigure(3, state=grants_state)    # Grants Search
+        menu.entryconfigure(4, state=director_state)  # Director Search
+
+    # ------------------------------------------------------------------
+    # Shared Ownership analysis
+    # ------------------------------------------------------------------
+
+    def _build_shared_ownership(self):
+        """Populate the Shared Ownership collapsible section after trace completion."""
+        from ..utils.fuzzy_match import normalize_person_name
+
+        # Clear previous content
+        for w in self._shared_inner.winfo_children():
+            w.destroy()
+
+        if not self.results_data:
+            self._shared_frame.pack_forget()
+            return
+
+        # --- Group corporate PSCs by company number ---
+        corp_groups = {}   # psc_company_number → {name, set of root_companies}
+        # --- Group individual PSCs by normalised name + DOB ---
+        person_groups = {}  # group_key → {display_name, set of root_companies}
+
+        for row in self.results_data:
+            if "psc_unique_id" not in row:
+                continue
+            root = row.get("root_company", "")
+            kind = row.get("psc_kind", "")
+            psc_cnum = row.get("psc_company_number", "")
+            psc_name = row.get("psc_name", "")
+            uid = row.get("psc_unique_id", "")
+
+            if psc_cnum and "corporate" in kind:
+                if psc_cnum not in corp_groups:
+                    corp_groups[psc_cnum] = {"name": psc_name, "roots": set()}
+                corp_groups[psc_cnum]["roots"].add(root)
+            elif "individual" in kind or (not psc_cnum and psc_name):
+                # Group key: normalised name + DOB portion of unique_id
+                norm_name = normalize_person_name(psc_name)
+                # Extract DOB from unique_id (format: "namename-YYYY-MM")
+                dob_part = ""
+                if uid:
+                    parts = uid.rsplit("-", 2)
+                    if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                        dob_part = f"{parts[1]}-{parts[2]}"
+                group_key = f"{norm_name}|{dob_part}"
+                if group_key not in person_groups:
+                    person_groups[group_key] = {"name": psc_name, "roots": set()}
+                person_groups[group_key]["roots"].add(root)
+
+        # Filter to only shared (2+ root companies)
+        shared_corps = {k: v for k, v in corp_groups.items() if len(v["roots"]) >= 2}
+        shared_persons = {k: v for k, v in person_groups.items() if len(v["roots"]) >= 2}
+
+        # Count root companies with/without shared ownership
+        all_roots = {row.get("root_company", "") for row in self.results_data if row.get("root_company")}
+        roots_with_shared = set()
+        for v in shared_corps.values():
+            roots_with_shared.update(v["roots"])
+        for v in shared_persons.values():
+            roots_with_shared.update(v["roots"])
+        roots_without = all_roots - roots_with_shared
+
+        has_shared = bool(shared_corps or shared_persons)
+
+        # Show/hide frame
+        self._shared_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
+
+        inner = self._shared_inner
+
+        if not has_shared:
+            ttk.Label(
+                inner, text="No shared ownership identified.",
+                font=("Segoe UI", 9, "italic"), foreground="gray",
+            ).pack(anchor=tk.W, pady=2)
+            # Summary
+            ttk.Label(
+                inner,
+                text=f"0 root companies share at least one owner\n"
+                     f"{len(all_roots)} root companies have no identified shared ownership",
+                font=("Segoe UI", 9),
+            ).pack(anchor=tk.W, pady=(5, 0))
+            return
+
+        ttk.Label(
+            inner, text="Shared owners identified:",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor=tk.W, pady=(0, 4))
+
+        # --- Corporate section ---
+        if shared_corps:
+            ttk.Label(
+                inner, text="\u2500\u2500 Corporate " + "\u2500" * 40,
+                font=("Segoe UI", 9), foreground="gray",
+            ).pack(anchor=tk.W)
+
+            for cnum, info in sorted(shared_corps.items(), key=lambda x: -len(x[1]["roots"])):
+                count = len(info["roots"])
+                text = f'{info["name"]} ({cnum})     controls {count} root companies'
+                lbl = ttk.Label(
+                    inner, text=text, font=("Segoe UI", 9),
+                    cursor="hand2", foreground="#0066cc",
+                )
+                lbl.pack(anchor=tk.W, padx=(10, 0))
+                lbl.bind("<Button-1>", lambda e, cn=cnum: self._scroll_to_shared_entity(
+                    "corporate", cn))
+                lbl.bind("<Enter>", lambda e, l=lbl: l.configure(font=("Segoe UI", 9, "underline")))
+                lbl.bind("<Leave>", lambda e, l=lbl: l.configure(font=("Segoe UI", 9)))
+
+        # --- Individual section ---
+        if shared_persons:
+            ind_header = ttk.Label(
+                inner, text="\u2500\u2500 Individual (name-match only) " + "\u2500" * 25,
+                font=("Segoe UI", 9), foreground="gray",
+            )
+            ind_header.pack(anchor=tk.W, pady=(4, 0))
+            Tooltip(
+                ind_header,
+                "Name-based matching only. For accurate entity resolution,\n"
+                "send to Network Analytics Workbench.",
+            )
+
+            for key, info in sorted(shared_persons.items(), key=lambda x: -len(x[1]["roots"])):
+                count = len(info["roots"])
+                text = f'{info["name"]}     appears in {count} root companies  \u24d8'
+                lbl = ttk.Label(
+                    inner, text=text, font=("Segoe UI", 9),
+                    cursor="hand2", foreground="#0066cc",
+                )
+                lbl.pack(anchor=tk.W, padx=(10, 0))
+                lbl.bind("<Button-1>", lambda e, k=key: self._scroll_to_shared_entity(
+                    "person", k))
+                lbl.bind("<Enter>", lambda e, l=lbl: l.configure(font=("Segoe UI", 9, "underline")))
+                lbl.bind("<Leave>", lambda e, l=lbl: l.configure(font=("Segoe UI", 9)))
+                Tooltip(
+                    lbl,
+                    "Name-based matching only. For accurate entity resolution,\n"
+                    "send to Network Analytics Workbench.",
+                )
+
+        # --- Summary stats ---
+        ttk.Separator(inner, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(6, 4))
+        ttk.Label(
+            inner,
+            text=f"{len(roots_with_shared)} root companies share at least one owner\n"
+                 f"{len(roots_without)} root companies have no identified shared ownership",
+            font=("Segoe UI", 9),
+        ).pack(anchor=tk.W)
+
+    def _scroll_to_shared_entity(self, entity_type, key):
+        """Scroll treeview to first instance of a shared entity, highlight all instances."""
+        from ..utils.fuzzy_match import normalize_person_name
+        matching_iids = []
+        for iid, row in self._tree_row_data.items():
+            if entity_type == "corporate":
+                if row.get("psc_company_number") == key:
+                    matching_iids.append(iid)
+            elif entity_type == "person":
+                psc_name = row.get("psc_name", "")
+                uid = row.get("psc_unique_id", "")
+                norm = normalize_person_name(psc_name)
+                dob_part = ""
+                if uid:
+                    parts = uid.rsplit("-", 2)
+                    if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                        dob_part = f"{parts[1]}-{parts[2]}"
+                if f"{norm}|{dob_part}" == key:
+                    matching_iids.append(iid)
+
+        if matching_iids:
+            self.results_tree.selection_set(matching_iids)
+            self.results_tree.see(matching_iids[0])
+
+    def _toggle_shared_section(self):
+        """Collapse or expand the Shared Ownership inner content."""
+        if self._shared_expanded:
+            self._shared_inner.pack_forget()
+            self._shared_toggle_btn.configure(text="\u25B6  Show")
+            self._shared_expanded = False
+        else:
+            self._shared_inner.pack(fill=tk.X)
+            self._shared_toggle_btn.configure(text="\u25BC  Hide")
+            self._shared_expanded = True
+
+    # ------------------------------------------------------------------
+    # Send-to stubs (filled in Chunk 4)
+    # ------------------------------------------------------------------
+
+    def _get_selected_entities(self):
+        """Return list of row dicts for selected items, or all if none selected."""
+        sel = self.results_tree.selection()
+        if not sel:
+            # No selection → return all non-placeholder entities
+            return [row for row in self._tree_row_data.values()
+                    if "psc_unique_id" in row or row.get("_is_root")]
+        return [self._tree_row_data[iid] for iid in sel
+                if iid in self._tree_row_data]
+
+    def _entity_to_ws_dict(self, row):
+        """Convert a results/tree row to a working-set entity dict."""
+        kind = row.get("psc_kind", "")
+        is_root = row.get("_is_root", False)
+        psc_cnum = row.get("psc_company_number", "")
+
+        if is_root or psc_cnum or "corporate" in kind:
+            # Company entity
+            num = psc_cnum or row.get("root_company", "")
+            name = row.get("psc_name", "") or row.get("root_company_name", "") or num
+            return {
+                "name": name,
+                "company_number": num,
+                "active": True,
+                "entity_type": "company",
+            }
+        else:
+            # Person entity — use month/year of birth from unique_id if available
+            name = row.get("psc_name", "")
+            uid = row.get("psc_unique_id", "")
+            # unique_id format: "namename-YYYY-MM" → extract "MM/YYYY"
+            dob_str = ""
+            if uid:
+                parts = uid.rsplit("-", 2)
+                if len(parts) == 3:
+                    try:
+                        year, month = parts[1], parts[2]
+                        if year.isdigit() and month.isdigit():
+                            dob_str = f"{month}/{year}"
+                    except (ValueError, IndexError):
+                        pass
+                if not dob_str:
+                    dob_str = uid  # Fallback to unique_id itself
+            return {
+                "name": name,
+                "company_number": dob_str,
+                "active": True,
+                "entity_type": "person",
+            }
+
+    def _send_to_working_set(self):
+        """Append selected entities to the global working set."""
+        entities = self._get_selected_entities()
+        if not entities:
+            return
+        if self.app_state.ubo_working_set is None:
+            self.app_state.ubo_working_set = []
+        added = 0
+        for row in entities:
+            ws_dict = self._entity_to_ws_dict(row)
+            self.app_state.ubo_working_set.append(ws_dict)
+            added += 1
+        self.app._refresh_working_set_indicator()
+        try:
+            self.app._refresh_home_working_set()
+        except Exception:
+            pass
+        messagebox.showinfo("Working Set", f"Added {added} entities to working set.")
+
+    def _send_to_network_analytics(self):
+        """Build graph data for selected entities and navigate to Network Analytics."""
+        entities = self._get_selected_entities()
+        if not entities:
+            return
+
+        ws_entities = [self._entity_to_ws_dict(row) for row in entities]
+        entity_count = len(ws_entities)
+
+        # Show progress on results tab
+        self._results_progress_frame.pack(fill=tk.X, padx=10, pady=5)
+        self._results_progress_var.set("Building network data...")
+
+        outer = self
+
+        class _ProgressProxy:
+            def configure(self, **kw):
+                txt = kw.get("text", "")
+                if txt:
+                    outer.safe_ui_call(outer._results_progress_var.set, txt)
+
+        def _build():
+            try:
+                csv_path = self.app._build_ws_graph_csv(ws_entities, _ProgressProxy())
+            except Exception as e:
+                log_message(f"Network send failed: {e}")
+                csv_path = None
+
+            def _navigate():
+                self._results_progress_frame.pack_forget()
+                self._results_progress_var.set("")
+                if csv_path:
+                    self.app._navigate_network_with_csv(
+                        csv_path,
+                        source_label=f"Working set: {entity_count} entities from UBO Tracer",
+                    )
+                else:
+                    messagebox.showwarning("Network Analytics", "No graph data could be generated.")
+
+            self.app.after(0, _navigate)
+
+        threading.Thread(target=_build, daemon=True).start()
+
+    def _send_to_edd(self):
+        """Send single selected company to Enhanced Due Diligence."""
+        entities = self._get_selected_entities()
+        if not entities:
+            return
+        row = entities[0]
+        cnum = row.get("psc_company_number", "") or row.get("root_company", "")
+        if not cnum:
+            messagebox.showwarning("EDD", "No company number found for this entity.")
+            return
+        self.app.show_enhanced_dd(prefill_entity={"type": "company", "id": cnum})
+
+    def _send_to_grants_search(self):
+        """Send selected companies to Grants Search."""
+        entities = self._get_selected_entities()
+        if not entities:
+            return
+        ws_entities = []
+        skipped_persons = 0
+        for row in entities:
+            ws = self._entity_to_ws_dict(row)
+            if ws["entity_type"] == "person":
+                skipped_persons += 1
+                continue
+            ws_entities.append(ws)
+        if skipped_persons:
+            messagebox.showinfo(
+                "Grants Search",
+                f"{skipped_persons} person entit{'y' if skipped_persons == 1 else 'ies'} "
+                "skipped — only companies and charities are compatible with Grants Search.",
+            )
+        if not ws_entities:
+            return
+        self.app.show_grants_investigation(prefill_entities=ws_entities)
+
+    def _send_to_director_search(self):
+        """Send single selected person to Director Search."""
+        entities = self._get_selected_entities()
+        if not entities:
+            return
+        row = entities[0]
+        name = row.get("psc_name", "")
+        if not name:
+            messagebox.showwarning("Director Search", "No person name found.")
+            return
+        self.app.show_director_investigation(prefill_name=name)
 
     def load_file(self):
         path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
@@ -269,11 +876,11 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         self.cancel_flag.clear()
         self.run_btn.pack_forget()
         self.cancel_btn.pack(side=tk.LEFT, padx=5)
-        self.export_btn.config(state="disabled")
-        self.export_graph_data_btn.config(state="disabled")
-        self.generate_graph_btn.config(state="disabled")  # Disable new button
         self.progress_bar["value"] = 0
         self.results_data = []
+        # Clear previous results from treeview
+        if hasattr(self, 'results_tree'):
+            self.results_tree.delete(*self.results_tree.get_children())
         threading.Thread(target=self._run_investigation_thread, daemon=True).start()
 
     def cancel_investigation(self):
@@ -578,10 +1185,6 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         """Initiates the visual graph generation process."""
         self._start_graph_process(self._run_visual_graph_thread)
 
-    def start_graph_data_export(self):
-        """Initiates the graph data export process."""
-        self._start_graph_process(self._run_export_graph_thread)
-
     def _start_graph_process(self, target_thread_function):
         """Generic starter for any graph-related process."""
         if not self.results_data:
@@ -590,11 +1193,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             )
             return
 
-        # Disable all buttons to prevent concurrent operations
         self.run_btn.config(state="disabled")
-        self.export_btn.config(state="disabled")
-        self.export_graph_data_btn.config(state="disabled")
-        self.generate_graph_btn.config(state="disabled")
         self.cancel_flag.clear()
 
         self.app.after(0, lambda: self.status_var.set("Starting graph process..."))
@@ -619,287 +1218,6 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             )
         finally:
             self.after(200, self._finish_graph_process)
-
-    def _run_export_graph_thread(self):
-        """
-        Thread for building the full, detailed graph object (with extra API calls)
-        and then exporting it to CSV.
-        """
-        try:
-            # Build the complete, detailed graph object
-            full_graph_object = self._build_ubo_network_graph_object()
-
-            # Pass the full graph directly to the export function
-            if full_graph_object is not None and not self.cancel_flag.is_set():
-                self.after(100, self._export_graph_to_csv, full_graph_object)
-        except Exception as e:
-            log_message(f"UBO graph data export failed: {e}")
-            self.safe_ui_call(
-                messagebox.showerror,
-                "Error", f"An error occurred during graph data export: {e}"
-            )
-        finally:
-            self.after(200, self._finish_graph_process)
-
-    def _fetch_company_network_data(self, company_number, snapshot_date=None):
-        """Worker to fetch profile, officers, and PSCs for one company."""
-        profile, profile_err = ch_get_data(
-            self.api_key, self.ch_token_bucket, f"/company/{company_number}"
-        )
-        officers, _ = ch_get_data(
-            self.api_key,
-            self.ch_token_bucket,
-            f"/company/{company_number}/officers?items_per_page=100",
-        )
-        pscs, _ = ch_get_data(
-            self.api_key,
-            self.ch_token_bucket,
-            f"/company/{company_number}/persons-with-significant-control?items_per_page=100",
-        )
-        # --- NEW: If no snapshot date is provided, return all data immediately ---
-        if not snapshot_date:
-            return profile, officers, pscs, profile_err
-
-        # --- NEW: Filter officers based on the snapshot date ---
-        if officers and officers.get("items"):
-            active_officers = []
-            for officer in officers["items"]:
-                resigned_on_str = officer.get("resigned_on")
-                if not resigned_on_str:
-                    active_officers.append(officer)  # Still active
-                    continue
-                try:
-                    resigned_date = datetime.strptime(resigned_on_str, "%Y-%m-%d")
-                    if resigned_date > snapshot_date:
-                        active_officers.append(
-                            officer
-                        )  # Was still active on snapshot date
-                except (ValueError, TypeError):
-                    active_officers.append(officer)  # Keep if date is malformed
-            officers["items"] = active_officers
-
-        # --- NEW: Filter PSCs based on the snapshot date ---
-        # This requires an extra API call per PSC to get detailed date info.
-        if pscs and pscs.get("items"):
-            active_pscs = []
-            for psc_summary in pscs["items"]:
-                psc_self_link = psc_summary.get("links", {}).get("self")
-                if not psc_self_link:
-                    continue
-
-                p_details, _ = ch_get_data(
-                    self.api_key, self.ch_token_bucket, psc_self_link
-                )
-                if not p_details:
-                    continue
-
-                try:
-                    notified_date = datetime.strptime(
-                        p_details.get("notified_on", ""), "%Y-%m-%d"
-                    )
-                    if notified_date > snapshot_date:
-                        continue  # Not a PSC yet on the snapshot date
-
-                    ceased_on_str = p_details.get("ceased_on")
-                    if ceased_on_str:
-                        ceased_date = datetime.strptime(ceased_on_str, "%Y-%m-%d")
-                        if ceased_date <= snapshot_date:
-                            continue  # Had already ceased being a PSC
-
-                    # If all checks pass, it was an active PSC on the snapshot date
-                    active_pscs.append(psc_summary)
-
-                except (ValueError, TypeError):
-                    # If dates are missing/malformed, include it by default
-                    active_pscs.append(psc_summary)
-            pscs["items"] = active_pscs
-
-        return profile, officers, pscs, profile_err
-
-    def _build_ubo_network_graph_object(self):
-        """
-        Builds a comprehensive network graph including companies, addresses,
-        directors, and PSCs for all companies in the UBO chain.
-        """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        # --- NEW: Parse the snapshot date from the UI ---
-        snapshot_date_str = self.snapshot_date_var.get()
-        snapshot_date = None
-        if snapshot_date_str:
-            try:
-                snapshot_date = datetime.strptime(snapshot_date_str, "%d/%m/%Y")
-            except ValueError:
-                # Show an error if the date is invalid but continue without filtering
-                self.safe_ui_call(
-                    messagebox.showwarning,
-                    "Invalid Date for Graph",
-                    f"The date '{snapshot_date_str}' is not a valid format (DD/MM/YYYY). "
-                    "The graph will be generated with all historic data.",
-                    parent=self,
-                )
-
-        G = nx.DiGraph()
-
-        all_company_numbers = {
-            row["parent_company_number"]
-            for row in self.results_data
-            if "parent_company_number" in row
-        }
-        all_company_numbers.update(
-            {
-                row["psc_company_number"]
-                for row in self.results_data
-                if row.get("psc_company_number")
-            }
-        )
-        all_company_numbers.update({row["root_company"] for row in self.results_data})
-
-        if not all_company_numbers:
-            self.app.after(
-                0, lambda: self.status_var.set("No companies found to build graph.")
-            )
-            return None
-
-        self.app.after(
-            0,
-            lambda: self.status_var.set(
-                f"Fetching full details for {len(all_company_numbers)} companies in the network..."
-            ),
-        )
-
-        failed_graph_companies = []
-        with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
-            future_to_cnum = {
-                executor.submit(
-                    self._fetch_company_network_data, cnum, snapshot_date
-                ): cnum
-                for cnum in all_company_numbers
-                if cnum
-            }
-
-            for i, future in enumerate(as_completed(future_to_cnum)):
-                if self.cancel_flag.is_set():
-                    return None
-                cnum = future_to_cnum[future]
-                self.app.after(
-                    0,
-                    lambda: self.status_var.set(
-                        f"Processing company {i+1}/{len(all_company_numbers)}..."
-                    ),
-                )
-
-                profile, officers, pscs, profile_err = future.result()
-                if not profile:
-                    failed_graph_companies.append((cnum, profile_err))
-                    continue
-
-                G.add_node(
-                    cnum, label=profile.get("company_name", cnum), type="company"
-                )
-
-                addr_data = profile.get("registered_office_address", {})
-                raw_address_str = ", ".join(
-                    filter(
-                        None,
-                        [
-                            addr_data.get("address_line_1"),
-                            addr_data.get("locality"),
-                            addr_data.get("postal_code"),
-                        ],
-                    )
-                )
-                # FIX: Changed from _clean_address_string to clean_address_string
-                address_str = clean_address_string(raw_address_str)
-                if address_str:
-                    G.add_node(address_str, label=raw_address_str, type="address")
-                    G.add_edge(cnum, address_str, label="registered_at")
-
-                if officers:
-                    for officer in officers.get("items", []):
-                        name = officer.get("name")
-                        if not name:
-                            continue
-                        dob = officer.get("date_of_birth")
-                        person_key = get_canonical_name_key(name, dob)
-                        if not G.has_node(person_key):
-                            G.add_node(person_key, label=name, type="person", dob=dob)
-
-                        # --- FIX: Check for existing edge before adding ---
-                        if G.has_edge(cnum, person_key):
-                            # If edge exists, append the new role to the label
-                            G[cnum][person_key][
-                                "label"
-                            ] += f", {officer.get('officer_role', 'officer')}"
-                        else:
-                            G.add_edge(
-                                cnum,
-                                person_key,
-                                label=officer.get("officer_role", "officer"),
-                            )
-
-                        # Add officer correspondence address
-                        officer_addr_raw = extract_address_string(officer.get("address"))
-                        if officer_addr_raw:
-                            officer_addr_clean = clean_address_string(officer_addr_raw)
-                            if officer_addr_clean and not G.has_node(officer_addr_clean):
-                                G.add_node(
-                                    officer_addr_clean,
-                                    label=format_address_label(officer_addr_raw),
-                                    type="address",
-                                )
-                            if officer_addr_clean:
-                                G.add_edge(person_key, officer_addr_clean, label="correspondence_at")
-
-
-                if pscs:
-                    for psc in pscs.get("items", []):
-                        name = psc.get("name")
-                        if not name:
-                            continue
-                        dob = psc.get("date_of_birth")
-                        person_key = get_canonical_name_key(name, dob)
-                        if not G.has_node(person_key):
-                            G.add_node(person_key, label=name, type="person", dob=dob)
-
-                        # --- FIX: Check for existing edge before adding ---
-                        if G.has_edge(cnum, person_key):
-                            # If edge exists, append 'psc' to the label
-                            G[cnum][person_key]["label"] += ", psc"
-                        else:
-                            G.add_edge(cnum, person_key, label="psc")
-                        # Add PSC correspondence address
-                        psc_addr_raw = extract_address_string(psc.get("address"))
-                        if psc_addr_raw:
-                            psc_addr_clean = clean_address_string(psc_addr_raw)
-                            if psc_addr_clean and not G.has_node(psc_addr_clean):
-                                G.add_node(
-                                    psc_addr_clean,
-                                    label=format_address_label(psc_addr_raw),
-                                    type="address",
-                                )
-                            if psc_addr_clean:
-                                G.add_edge(person_key, psc_addr_clean, label="correspondence_at")
-        if failed_graph_companies:
-            warning = format_error_summary(failed_graph_companies, "company")
-            self.app.after(
-                0,
-                lambda w=warning: self.status_var.set(f"Graph built. {w}"),
-            )
-
-        return G
-
-    def _fetch_full_company_details(self, company_number):
-        """Worker to fetch profile and officers for a single company."""
-        profile, profile_err = ch_get_data(
-            self.api_key, self.ch_token_bucket, f"/company/{company_number}"
-        )
-        officers, _ = ch_get_data(
-            self.api_key,
-            self.ch_token_bucket,
-            f"/company/{company_number}/officers?items_per_page=100",
-        )
-        return profile, officers, profile_err
 
     def _generate_and_open_graph(self):
         """Renders and opens the visual graph with specific PSC chain styling."""
@@ -1054,83 +1372,15 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                 "Graph Error", f"Could not save or open the graph file: {e}"
             )
 
-    def _export_graph_to_csv(self, G):
-        """Exports the graph's connections (edges) to a CSV file."""
-        if G is None or G.number_of_edges() == 0:
-            self.app.after(
-                0,
-                lambda: self.status_var.set(
-                    "Export complete. No connections to export."
-                ),
-            )
-            return
-
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv")],
-            title="Save Graph Edge List As",
-        )
-        if not filepath:
-            self.app.after(0, lambda: self.status_var.set("Export cancelled by user."))
-            return
-
-        self.app.after(
-            0, lambda: self.status_var.set("Exporting graph connections to CSV...")
-        )
-        headers = [
-            "source_id",
-            "source_label",
-            "source_type",
-            "target_id",
-            "target_label",
-            "target_type",
-            "relationship",
-        ]
-
-        try:
-            with open(filepath, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(headers)
-
-                for source_id, target_id, edge_attrs in G.edges(data=True):
-                    source_attrs = G.nodes[source_id]
-                    target_attrs = G.nodes[target_id]
-
-                    row = [
-                        source_id,
-                        source_attrs.get("label", "").replace("\n", " "),
-                        source_attrs.get("type", ""),
-                        target_id,
-                        target_attrs.get("label", "").replace("\n", " "),
-                        target_attrs.get("type", ""),
-                        edge_attrs.get("label", ""),
-                    ]
-                    writer.writerow(row)
-
-            log_message(
-                f"Successfully exported {G.number_of_edges()} UBO graph connections."
-            )
-            messagebox.showinfo(
-                "Export Successful",
-                f"Successfully exported {G.number_of_edges()} connections to CSV.",
-            )
-            self.app.after(
-                0, lambda: self.status_var.set("Graph data export complete.")
-            )
-
-        except IOError as e:
-            log_message(f"UBO graph data export failed: {e}")
-            messagebox.showerror("Export Error", f"Could not write to file: {e}")
-
     def _finish_investigation(self):
         try:
             self.cancel_btn.pack_forget()
             self.run_btn.pack(side=tk.LEFT, padx=5)
 
             if self.results_data:
-                self.export_btn.config(state="normal")
-                self.export_graph_data_btn.config(state="normal")
-                self.generate_graph_btn.config(state="normal")
+                self._populate_results_tree()
+                if not self.cancel_flag.is_set():
+                    self.notebook.select(self.results_tab)
             elif not self.cancel_flag.is_set():
                 messagebox.showinfo(
                     "No Results", "The investigation completed, but no PSCs were found."
@@ -1148,12 +1398,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             if "..." not in self.status_var.get():
                 self.app.after(0, lambda: self.status_var.set("Ready."))
 
-        # Restore button states
         self.run_btn.config(state="normal")
-        if self.results_data:
-            self.export_btn.config(state="normal")
-            self.export_graph_data_btn.config(state="normal")
-            self.generate_graph_btn.config(state="normal")
 
     def export_csv(self):
         if not self.results_data:

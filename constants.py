@@ -20,7 +20,7 @@ CH_ACCOUNT_NAME = "CompaniesHouseAPI"
 CC_ACCOUNT_NAME = "CharityCommissionAPI"
 
 # --- API Rate Limiting Defaults ---
-DEFAULT_CH_PACING_MODE = "smooth"       # "smooth" or "burst"
+DEFAULT_CH_PACING_MODE = "burst"        # "smooth" or "burst"
 INITIAL_RATE_LIMIT = 590                # conservative startup value (before first API response)
 SMOOTH_BURST_WINDOW_SECONDS = 15        # seconds of tokens the smooth-mode bucket holds
 SMOOTH_SAFETY_MARGIN = 0.90             # fraction of server rate used in smooth mode
