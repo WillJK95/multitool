@@ -42,10 +42,12 @@ from .base import InvestigationModuleBase
 
 class DirectorSearch(InvestigationModuleBase):
     def __init__(self, parent_app, api_key, back_callback, ch_token_bucket,
-                 prefill_name=None):
+                 prefill_name=None, prefill_year=None, prefill_month=None):
         super().__init__(parent_app, back_callback, api_key, help_key="director")
         self.ch_token_bucket = ch_token_bucket
         self._prefill_name = prefill_name
+        self._prefill_year = prefill_year
+        self._prefill_month = prefill_month
         # --- Add a new instance variable for grant results ---
         self.grants_results = []
         # --- Track explicit row selection for selective export ---
@@ -230,9 +232,18 @@ class DirectorSearch(InvestigationModuleBase):
             "Export the network graph data (companies, people, addresses) for selected rows to CSV. If no rows are selected, all data is exported.",
         )
 
-        # Apply prefill from Quick Launch
+        # Apply prefill from Quick Launch or UBO Tracer
         if self._prefill_name:
             self.full_name_var.set(self._prefill_name)
+        if self._prefill_year:
+            self.year_var.set(self._prefill_year)
+        if self._prefill_month:
+            # Find matching month string (e.g. "03 - March")
+            month_num = str(self._prefill_month).zfill(2)
+            for opt in self.month_combo["values"]:
+                if opt.startswith(month_num):
+                    self.month_var.set(opt)
+                    break
 
     def cancel_search(self):
         """Called when the user clicks the Cancel button."""

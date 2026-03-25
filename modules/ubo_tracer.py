@@ -163,7 +163,8 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         self._shared_frame = ttk.LabelFrame(
             self.results_tab, text="Shared Ownership", padding=8
         )
-        # Not packed initially — shown only after trace completion
+        # Packed at top position; will be shown/hidden by _build_shared_ownership
+        self._shared_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
         self._shared_expanded = True
         toggle_row = ttk.Frame(self._shared_frame)
         toggle_row.pack(fill=tk.X)
@@ -222,6 +223,10 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
 
         # Bind selection change for Send to… menu state
         self.results_tree.bind("<<TreeviewSelect>>", self._on_tree_selection_changed)
+        # Click-to-deselect toggle (same as working set)
+        self.results_tree.bind(
+            "<Button-1>", lambda e: self.app._toggle_tree_selection(e, self.results_tree)
+        )
 
         # --- Progress area for graph-data retrieval (hidden by default) ---
         self._results_progress_frame = ttk.Frame(self.results_tab)
@@ -442,7 +447,6 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             w.destroy()
 
         if not self.results_data:
-            self._shared_frame.pack_forget()
             return
 
         # --- Group corporate PSCs by company number ---
@@ -491,9 +495,6 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         roots_without = all_roots - roots_with_shared
 
         has_shared = bool(shared_corps or shared_persons)
-
-        # Show/hide frame
-        self._shared_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
 
         inner = self._shared_inner
 
@@ -666,23 +667,32 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             }
 
     def _send_to_working_set(self):
-        """Append selected entities to the global working set."""
+        """Append selected entities to the global working set (no duplicates)."""
         entities = self._get_selected_entities()
         if not entities:
             return
         if self.app_state.ubo_working_set is None:
             self.app_state.ubo_working_set = []
+        # Build set of existing keys for dedup
+        existing = set()
+        for ent in self.app_state.ubo_working_set:
+            key = (ent.get("name", ""), ent.get("company_number", ""), ent.get("entity_type", ""))
+            existing.add(key)
         added = 0
         for row in entities:
             ws_dict = self._entity_to_ws_dict(row)
-            self.app_state.ubo_working_set.append(ws_dict)
-            added += 1
+            key = (ws_dict.get("name", ""), ws_dict.get("company_number", ""), ws_dict.get("entity_type", ""))
+            if key not in existing:
+                self.app_state.ubo_working_set.append(ws_dict)
+                existing.add(key)
+                added += 1
         self.app._refresh_working_set_indicator()
         try:
             self.app._refresh_home_working_set()
         except Exception:
             pass
-        messagebox.showinfo("Working Set", f"Added {added} entities to working set.")
+        if added:
+            messagebox.showinfo("Working Set", f"Added {added} entities to working set.")
 
     def _send_to_network_analytics(self):
         """Build graph data for selected entities and navigate to Network Analytics."""
@@ -764,6 +774,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
 
     def _send_to_director_search(self):
         """Send single selected person to Director Search."""
+        from ..utils.fuzzy_match import normalize_person_name
         entities = self._get_selected_entities()
         if not entities:
             return
@@ -772,7 +783,19 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         if not name:
             messagebox.showwarning("Director Search", "No person name found.")
             return
-        self.app.show_director_investigation(prefill_name=name)
+        # Strip title for cleaner prefill
+        clean_name = normalize_person_name(name)
+        # Extract year/month from psc_unique_id (format: "namekey-YYYY-MM")
+        uid = row.get("psc_unique_id", "")
+        year, month = None, None
+        if uid:
+            parts = uid.rsplit("-", 2)
+            if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                year = parts[1]
+                month = parts[2]
+        self.app.show_director_investigation(
+            prefill_name=clean_name, prefill_year=year, prefill_month=month
+        )
 
     def load_file(self):
         path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
@@ -784,7 +807,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
                 foreground="green",
             )
             self._display_column_selection_ui()
-            self.run_btn.config(state="disabled")
+            # run_btn state handled by _auto_map_columns → _auto_confirm_columns
         else:
             self.file_status_label.config(text="Error loading file.", foreground="red")
 
@@ -805,9 +828,9 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             container, text="Select Company Number Column (Required)", padding=5
         )
         number_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
-        
+
         headers = getattr(self, "original_headers", [])
-        
+
         num_combo = ttk.Combobox(
             number_frame,
             textvariable=self.number_col_var,
@@ -815,15 +838,14 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             state="readonly"
         )
         num_combo.pack(fill="x", pady=5)
-        if headers:
-            num_combo.current(0)
+        num_combo.bind("<<ComboboxSelected>>", lambda e: self._auto_confirm_columns())
 
         # Company Name (Optional)
         name_frame = ttk.LabelFrame(
             container, text="Select Company Name Column (Optional)", padding=5
         )
         name_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
-        
+
         name_options = ["\u2014 Not Selected \u2014"] + headers
         name_combo = ttk.Combobox(
             name_frame,
@@ -833,16 +855,47 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         )
         name_combo.pack(fill="x", pady=5)
         name_combo.set("\u2014 Not Selected \u2014")
+        name_combo.bind("<<ComboboxSelected>>", lambda e: self._auto_confirm_columns())
 
-        # Confirm Button
-        ttk.Button(
-            self.column_selection_frame,
-            text="Confirm Columns",
-            command=self._confirm_columns,
-        ).pack(side=tk.BOTTOM, pady=10)
-        
+        # Auto-map columns based on header names
+        self._auto_map_columns(headers)
+
         # Force geometry calculation then update scroll region
         self.app.after(50, self._force_scroll_update)
+
+    def _auto_map_columns(self, headers):
+        """Try to auto-detect company number and name columns from headers."""
+        headers_lower = [h.lower() for h in headers]
+        # Company number detection
+        num_keywords = ["company_number", "company number", "companynumber",
+                        "company_no", "company no", "comp_no", "crn",
+                        "registration_number", "registration number", "number"]
+        for kw in num_keywords:
+            for i, h in enumerate(headers_lower):
+                if kw == h or kw in h:
+                    self.number_col_var.set(headers[i])
+                    break
+            if self.number_col_var.get():
+                break
+        if not self.number_col_var.get() and headers:
+            self.number_col_var.set(headers[0])
+
+        # Company name detection
+        name_keywords = ["company_name", "company name", "companyname",
+                         "entity_name", "entity name", "name"]
+        for kw in name_keywords:
+            for i, h in enumerate(headers_lower):
+                if kw == h or kw in h:
+                    # Don't match the same column as number
+                    if headers[i] != self.number_col_var.get():
+                        self.name_col_var.set(headers[i])
+                        break
+            if self.name_col_var.get() and self.name_col_var.get() != "\u2014 Not Selected \u2014":
+                break
+
+        # Auto-confirm if number column was detected
+        if self.number_col_var.get():
+            self._auto_confirm_columns()
     
     def _force_scroll_update(self):
         """Force the scrollable frame to recalculate its geometry."""
@@ -859,18 +912,16 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         visible_height = self.scroller.canvas.winfo_height()
         self.scroller.canvas.itemconfig(self.scroller.frame_id, height=max(required_height, visible_height))
 
-    def _confirm_columns(self):
+    def _auto_confirm_columns(self, event=None):
+        """Silently confirm column selection and enable Run button."""
         self.number_col = self.number_col_var.get()
         self.name_col = self.name_col_var.get()
         if self.name_col == "\u2014 Not Selected \u2014":
             self.name_col = None
-        if not self.number_col:
-            messagebox.showerror(
-                "Selection Error", "You must select a column for the company number."
-            )
-            return
-        messagebox.showinfo("Columns Confirmed", "Column selection confirmed.")
-        self.run_btn.config(state="normal")
+        if self.number_col:
+            self.run_btn.config(state="normal")
+        else:
+            self.run_btn.config(state="disabled")
 
     def start_investigation(self):
         self.cancel_flag.clear()

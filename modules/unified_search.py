@@ -73,10 +73,12 @@ class CompanyCharitySearch(InvestigationModuleBase):
         charity_api_key,
         ch_token_bucket,
         help_key=None,
+        prefill_entities=None,
     ):
         super().__init__(parent_app, back_callback, api_key, help_key=help_key)
         self.charity_api_key = charity_api_key
         self.ch_token_bucket = ch_token_bucket
+        self._prefill_entities = prefill_entities
 
         # --- Notebook with Configuration and Results tabs ---
         self.notebook = ttk.Notebook(self.content_frame)
@@ -336,6 +338,10 @@ class CompanyCharitySearch(InvestigationModuleBase):
         self._configure_ui_for_keys()
         self._update_field_states()
 
+        # Apply prefill from working set if provided
+        if self._prefill_entities:
+            self.app.after(100, self._apply_ws_prefill)
+
     def _update_accuracy_label(self, value):
         """Update the accuracy description label when slider moves."""
         # Round to nearest integer preset
@@ -417,6 +423,37 @@ class CompanyCharitySearch(InvestigationModuleBase):
             self._disable_frame_widgets(self.cc_fields_frame)
             if self.search_priority_var.get() == "cc":
                 self.search_priority_var.set("ch")
+
+    def _apply_ws_prefill(self):
+        """Auto-load working set entities as a temporary CSV and map columns."""
+        import tempfile
+        entities = self._prefill_entities
+        if not entities:
+            return
+
+        # Write a temporary CSV with company_number and name columns
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, newline="", encoding="utf-8"
+        )
+        try:
+            writer = csv.DictWriter(tmp, fieldnames=["company_number", "name"])
+            writer.writeheader()
+            for ent in entities:
+                writer.writerow({
+                    "company_number": ent.get("company_number", ent.get("number", "")),
+                    "name": ent.get("name", ""),
+                })
+            tmp.close()
+
+            if self.load_file_logic(tmp.name):
+                self.file_status_label.config(
+                    text=f"Working set loaded: {len(self.original_data)} entities.",
+                    foreground="green",
+                )
+                self._display_column_selection_ui()
+                self.run_btn.config(state="disabled")
+        except Exception:
+            pass
 
     def load_file(self):
         path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
@@ -954,23 +991,31 @@ class CompanyCharitySearch(InvestigationModuleBase):
         }
 
     def _send_to_working_set(self):
-        """Append selected entities to the global working set."""
+        """Append selected entities to the global working set (no duplicates)."""
         entities = self._get_selected_entities()
         if not entities:
             return
         if self.app_state.ubo_working_set is None:
             self.app_state.ubo_working_set = []
+        existing = set()
+        for ent in self.app_state.ubo_working_set:
+            key = (ent.get("name", ""), ent.get("company_number", ""), ent.get("entity_type", ""))
+            existing.add(key)
         added = 0
         for _, row in entities:
             ws_dict = self._entity_to_ws_dict(row)
-            self.app_state.ubo_working_set.append(ws_dict)
-            added += 1
+            key = (ws_dict.get("name", ""), ws_dict.get("company_number", ""), ws_dict.get("entity_type", ""))
+            if key not in existing:
+                self.app_state.ubo_working_set.append(ws_dict)
+                existing.add(key)
+                added += 1
         self.app._refresh_working_set_indicator()
         try:
             self.app._refresh_home_working_set()
         except Exception:
             pass
-        messagebox.showinfo("Working Set", f"Added {added} entities to working set.")
+        if added:
+            messagebox.showinfo("Working Set", f"Added {added} entities to working set.")
 
     def _send_to_network_analytics(self):
         """Build graph data for selected entities and navigate to Network Analytics."""
