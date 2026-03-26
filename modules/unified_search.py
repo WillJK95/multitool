@@ -1115,13 +1115,8 @@ class CompanyCharitySearch(InvestigationModuleBase):
                 prefill_company_name=c["name"],
             )
         else:
-            # Multiple companies — add to working set and navigate
-            if self.app_state.ubo_working_set is None:
-                self.app_state.ubo_working_set = []
-            for c in companies:
-                self.app_state.ubo_working_set.append(c)
-            self.app._refresh_working_set_indicator()
-            self.app.show_ubo_investigation()
+            # Multiple companies — pass directly to UBO Tracer
+            self.app.show_ubo_investigation(prefill_entities=companies)
 
     def _send_to_grants_search(self):
         """Send selected entities to Grants Search with prefill."""
