@@ -133,28 +133,38 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             self.number_col = "company_number"
             self.run_btn.config(state="normal")
 
-        # Apply prefill from working set (multiple entities)
-        elif self._prefill_entities:
-            self.original_data = []
-            for ent in self._prefill_entities:
-                self.original_data.append({
-                    "company_number": ent.get("company_number", ent.get("number", "")),
-                    "company_name": ent.get("name", ""),
-                })
-            self.original_headers = ["company_number", "company_name"]
-            self.file_status_label.config(
-                text=f"Working Set: {len(self._prefill_entities)} companies",
-                foreground="green"
-            )
-            self._display_column_selection_ui()
-            self.number_col_var.set("company_number")
-            self.name_col_var.set("company_name")
-            self.name_col = "company_name"
-            self.number_col = "company_number"
-            self.run_btn.config(state="normal")
-
         # Build Results tab skeleton
         self._build_results_tab()
+
+        # Apply prefill from working set (multiple entities) — must be after
+        # _build_results_tab() so all UI is fully constructed before geometry
+        # updates fire (matches Grants Search _apply_prefill pattern).
+        if self._prefill_entities and not self._prefill_company:
+            self._apply_prefill_entities()
+
+    # ------------------------------------------------------------------
+    # Prefill handling
+    # ------------------------------------------------------------------
+
+    def _apply_prefill_entities(self):
+        """Pre-populate data from multiple entities sent via the working set."""
+        self.original_data = []
+        for ent in self._prefill_entities:
+            self.original_data.append({
+                "company_number": ent.get("company_number", ent.get("number", "")),
+                "company_name": ent.get("name", ""),
+            })
+        self.original_headers = ["company_number", "company_name"]
+        self.file_status_label.config(
+            text=f"Working Set: {len(self._prefill_entities)} companies",
+            foreground="green"
+        )
+        self._display_column_selection_ui()
+        self.number_col_var.set("company_number")
+        self.name_col_var.set("company_name")
+        self.name_col = "company_name"
+        self.number_col = "company_number"
+        self.run_btn.config(state="normal")
 
     # ------------------------------------------------------------------
     # Tab management
@@ -921,18 +931,23 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
     
     def _force_scroll_update(self):
         """Force the scrollable frame to recalculate its geometry."""
-        # Force full geometry calculation
-        self.scroller.update_idletasks()
-        # Update scroll region
-        self.scroller.canvas.configure(scrollregion=self.scroller.canvas.bbox("all"))
-        # Get actual canvas width and set frame to match
-        canvas_width = self.scroller.canvas.winfo_width()
-        if canvas_width > 1:
-            self.scroller.canvas.itemconfig(self.scroller.frame_id, width=canvas_width)
-        # Recalculate required height and update
-        required_height = self.scroller.scrollable_frame.winfo_reqheight()
-        visible_height = self.scroller.canvas.winfo_height()
-        self.scroller.canvas.itemconfig(self.scroller.frame_id, height=max(required_height, visible_height))
+        try:
+            if not self.winfo_exists():
+                return
+            # Force full geometry calculation
+            self.scroller.update_idletasks()
+            # Update scroll region
+            self.scroller.canvas.configure(scrollregion=self.scroller.canvas.bbox("all"))
+            # Get actual canvas width and set frame to match
+            canvas_width = self.scroller.canvas.winfo_width()
+            if canvas_width > 1:
+                self.scroller.canvas.itemconfig(self.scroller.frame_id, width=canvas_width)
+            # Recalculate required height and update
+            required_height = self.scroller.scrollable_frame.winfo_reqheight()
+            visible_height = self.scroller.canvas.winfo_height()
+            self.scroller.canvas.itemconfig(self.scroller.frame_id, height=max(required_height, visible_height))
+        except tk.TclError:
+            pass
 
     def _auto_confirm_columns(self, event=None):
         """Silently confirm column selection and enable Run button."""
