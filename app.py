@@ -1720,32 +1720,37 @@ class App(tk.Tk):
 
     def _send_ws_to_ubo(self, tree) -> None:
         """Send selected companies from working set to UBO Tracer."""
-        selected = self._get_ws_selected_entities(tree)
-        if not selected:
-            return
-
-        companies = [e for e in selected if e.get("entity_type", "company") == "company"]
-        others = [e for e in selected if e.get("entity_type", "company") != "company"]
-
-        if not companies:
-            messagebox.showinfo("UBO Tracer",
-                                "UBO Tracer supports companies only. No companies in selection.")
-            return
-        if others:
-            ok = messagebox.askyesno(
-                "UBO Tracer",
-                f"{len(companies)} companies and {len(others)} non-companies selected. "
-                f"UBO Tracer supports companies only. Send {len(companies)} companies?")
-            if not ok:
+        try:
+            selected = self._get_ws_selected_entities(tree)
+            if not selected:
                 return
 
-        if len(companies) == 1:
-            c = companies[0]
-            self.show_ubo_investigation(
-                prefill_company=c.get("company_number", c.get("number", "")),
-                prefill_company_name=c.get("name", ""))
-        else:
-            self.show_ubo_investigation(prefill_entities=companies)
+            companies = [e for e in selected if e.get("entity_type", "company") == "company"]
+            others = [e for e in selected if e.get("entity_type", "company") != "company"]
+
+            if not companies:
+                messagebox.showinfo("UBO Tracer",
+                                    "UBO Tracer supports companies only. No companies in selection.")
+                return
+            if others:
+                ok = messagebox.askyesno(
+                    "UBO Tracer",
+                    f"{len(companies)} companies and {len(others)} non-companies selected. "
+                    f"UBO Tracer supports companies only. Send {len(companies)} companies?")
+                if not ok:
+                    return
+
+            if len(companies) == 1:
+                c = companies[0]
+                self.show_ubo_investigation(
+                    prefill_company=c.get("company_number", c.get("number", "")),
+                    prefill_company_name=c.get("name", ""))
+            else:
+                self.show_ubo_investigation(prefill_entities=companies)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to send to UBO Tracer:\n{e}")
+            import traceback
+            traceback.print_exc()
 
     def _send_ws_to_bulk_search(self, tree) -> None:
         """Send selected companies/charities from working set to Bulk Entity Search."""
@@ -2430,11 +2435,18 @@ class App(tk.Tk):
         """Show the UBO Tracer module."""
         self.clear_container()
         from .modules.ubo_tracer import UltimateBeneficialOwnershipTracer
-        UltimateBeneficialOwnershipTracer(self, self.api_key, self.show_main_menu,
-                                           self.ch_token_bucket,
-                                           prefill_company=prefill_company,
-                                           prefill_company_name=prefill_company_name,
-                                           prefill_entities=prefill_entities)
+        try:
+            UltimateBeneficialOwnershipTracer(self, self.api_key, self.show_main_menu,
+                                               self.ch_token_bucket,
+                                               prefill_company=prefill_company,
+                                               prefill_company_name=prefill_company_name,
+                                               prefill_entities=prefill_entities)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open UBO Tracer:\n{e}")
+            import traceback
+            traceback.print_exc()
+            self.show_main_menu()
+            return
         self._update_sidebar_active("ubo_tracer")
         self._refresh_working_set_indicator()
     
