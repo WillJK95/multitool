@@ -29,11 +29,13 @@ from .base import InvestigationModuleBase
 
 class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
     def __init__(self, parent_app, api_key, back_callback, ch_token_bucket,
-                 prefill_company=None, prefill_company_name=None):
+                 prefill_company=None, prefill_company_name=None,
+                 prefill_entities=None):
         super().__init__(parent_app, back_callback, api_key, help_key="ubo")
         self.ch_token_bucket = ch_token_bucket
         self._prefill_company = prefill_company
         self._prefill_company_name = prefill_company_name
+        self._prefill_entities = prefill_entities
 
         # --- Notebook with Configuration and Results tabs ---
         self.notebook = ttk.Notebook(self.content_frame)
@@ -128,6 +130,26 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             else:
                 self.name_col_var.set("")
                 self.name_col = None
+            self.number_col = "company_number"
+            self.run_btn.config(state="normal")
+
+        # Apply prefill from working set (multiple entities)
+        elif self._prefill_entities:
+            self.original_data = []
+            for ent in self._prefill_entities:
+                self.original_data.append({
+                    "company_number": ent.get("company_number", ent.get("number", "")),
+                    "company_name": ent.get("name", ""),
+                })
+            self.original_headers = ["company_number", "company_name"]
+            self.file_status_label.config(
+                text=f"Working Set: {len(self._prefill_entities)} companies",
+                foreground="green"
+            )
+            self._display_column_selection_ui()
+            self.number_col_var.set("company_number")
+            self.name_col_var.set("company_name")
+            self.name_col = "company_name"
             self.number_col = "company_number"
             self.run_btn.config(state="normal")
 

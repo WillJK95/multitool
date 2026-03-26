@@ -326,11 +326,6 @@ class App(tk.Tk):
         self._working_set_tree.column("number", width=70, minwidth=60)
         self._working_set_tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        # Entity type color tags
-        self._working_set_tree.tag_configure("company", background="#B9D9EB")
-        self._working_set_tree.tag_configure("person", background="#D9E8B9")
-        self._working_set_tree.tag_configure("charity", background="#F0F0F0")
-
         tree_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL,
                                     command=self._working_set_tree.yview)
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -418,12 +413,10 @@ class App(tk.Tk):
                 *self._working_set_tree.get_children()
             )
             for ent in entities:
-                etype = ent.get("entity_type", "company")
                 self._working_set_tree.insert(
                     "", tk.END,
                     values=(ent.get("name", "Unknown"),
-                            ent.get("company_number", ent.get("number", ""))),
-                    tags=(etype,)
+                            ent.get("company_number", ent.get("number", "")))
                 )
 
     def _collect_working_set_entities(self):
@@ -1269,8 +1262,11 @@ class App(tk.Tk):
 
         is_active = entity.get("_is_active", True)
 
-        existing = {e.get("company_number") for e in self.app_state.ubo_working_set}
-        if num and num not in existing:
+        existing = {
+            (e.get("name", ""), e.get("company_number", ""), e.get("entity_type", ""))
+            for e in self.app_state.ubo_working_set
+        }
+        if num and (name, num, entity_type) not in existing:
             self.app_state.ubo_working_set.append({
                 "name": name, "company_number": num, "active": is_active,
                 "entity_type": entity_type,
@@ -1483,11 +1479,6 @@ class App(tk.Tk):
         self._home_ws_tree.column("number", width=100, minwidth=70)
         self._home_ws_tree.pack(fill=tk.BOTH, expand=True, pady=(4, 4))
 
-        # Entity type color tags
-        self._home_ws_tree.tag_configure("company", background="#B9D9EB")
-        self._home_ws_tree.tag_configure("person", background="#D9E8B9")
-        self._home_ws_tree.tag_configure("charity", background="#F0F0F0")
-
         ws_btn_row = ttk.Frame(ws_panel)
         ws_btn_row.pack(fill=tk.X)
 
@@ -1569,11 +1560,10 @@ class App(tk.Tk):
 
             self._home_ws_tree.delete(*self._home_ws_tree.get_children())
             for ent in entities:
-                etype = ent.get("entity_type", "company")
                 self._home_ws_tree.insert("", tk.END, values=(
                     ent.get("name", "Unknown"),
                     ent.get("company_number", ent.get("number", ""))
-                ), tags=(etype,))
+                ))
         except tk.TclError:
             pass
 
@@ -1755,12 +1745,7 @@ class App(tk.Tk):
                 prefill_company=c.get("company_number", c.get("number", "")),
                 prefill_company_name=c.get("name", ""))
         else:
-            if self.app_state.ubo_working_set is None:
-                self.app_state.ubo_working_set = []
-            for c in companies:
-                self.app_state.ubo_working_set.append(c)
-            self._refresh_working_set_indicator()
-            self.show_ubo_investigation()
+            self.show_ubo_investigation(prefill_entities=companies)
 
     def _send_ws_to_bulk_search(self, tree) -> None:
         """Send selected companies/charities from working set to Bulk Entity Search."""
@@ -2440,14 +2425,16 @@ class App(tk.Tk):
         self._refresh_working_set_indicator()
     
     def show_ubo_investigation(self, prefill_company=None,
-                               prefill_company_name=None) -> None:
+                               prefill_company_name=None,
+                               prefill_entities=None) -> None:
         """Show the UBO Tracer module."""
         self.clear_container()
         from .modules.ubo_tracer import UltimateBeneficialOwnershipTracer
         UltimateBeneficialOwnershipTracer(self, self.api_key, self.show_main_menu,
                                            self.ch_token_bucket,
                                            prefill_company=prefill_company,
-                                           prefill_company_name=prefill_company_name)
+                                           prefill_company_name=prefill_company_name,
+                                           prefill_entities=prefill_entities)
         self._update_sidebar_active("ubo_tracer")
         self._refresh_working_set_indicator()
     
