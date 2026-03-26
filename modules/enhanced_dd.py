@@ -273,20 +273,20 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         ):
             self.check_vars[key] = tk.BooleanVar(value=True)
 
-        # Deep investigation: one var shared by both slow checks (off by default)
-        deep_var = tk.BooleanVar(value=False)
+        # Deep investigation: one var shared by both slow checks
+        deep_var = tk.BooleanVar(value=True)
         self.check_vars['director_history'] = deep_var
         self.check_vars['phoenix_check'] = deep_var
 
-        # Grants: one var shared by lookup + cross-analysis (off by default)
-        grants_var = tk.BooleanVar(value=False)
+        # Grants: one var shared by lookup + cross-analysis
+        grants_var = tk.BooleanVar(value=True)
         self.check_vars['grants_lookup'] = grants_var
         self.check_vars['cross_analysis'] = grants_var
 
         # IGM mode and ownership graph
         igm_var = tk.BooleanVar(value=False)
         self.check_vars['igm_mode'] = igm_var
-        ownership_var = tk.BooleanVar(value=False)
+        ownership_var = tk.BooleanVar(value=True)
         self.check_vars['ownership_graph'] = ownership_var
 
         ttk.Label(

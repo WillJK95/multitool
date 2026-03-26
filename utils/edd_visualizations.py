@@ -534,7 +534,7 @@ def generate_grants_report_html(grants_data: list) -> str:
             <div class="grants-stat"><strong>Date Range</strong>{date_range or "N/A"}</div>
         </div>
 
-        <h3>Grant Details</h3>
+        {'<details><summary><h3 style="display:inline;cursor:pointer">Grant Details (' + str(total_grants) + ' grants — click to expand)</h3></summary>' if total_grants > 20 else '<h3>Grant Details</h3>'}
         <table class="grants-table">
             <thead>
                 <tr>
@@ -579,11 +579,16 @@ def generate_grants_report_html(grants_data: list) -> str:
             </tbody>
         </table>
     '''
+    if total_grants > 20:
+        html_out += '</details>'
 
     # Detailed descriptions section
     grants_with_desc = [g for g in sorted_grants if g.get('description')]
     if grants_with_desc:
-        html_out += '<h3>Grant Descriptions</h3>'
+        if total_grants > 20:
+            html_out += '<details><summary><h3 style="display:inline;cursor:pointer">Grant Descriptions (click to expand)</h3></summary>'
+        else:
+            html_out += '<h3>Grant Descriptions</h3>'
         for grant in grants_with_desc:
             title = html.escape(str(grant.get('title', 'Untitled')))
             desc = html.escape(str(grant.get('description', '')))
@@ -602,6 +607,8 @@ def generate_grants_report_html(grants_data: list) -> str:
                 <p>{desc}</p>
             </div>
             '''
+        if total_grants > 20:
+            html_out += '</details>'
 
     html_out += '</div>'
     return html_out

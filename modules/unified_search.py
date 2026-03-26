@@ -562,6 +562,22 @@ class CompanyCharitySearch(InvestigationModuleBase):
                 self.name_col_var.set(header)
                 mapped_name = True
 
+        # Second pass: substring matching for headers with prefixes/suffixes
+        # e.g. "Org:Company Number" contains the known pattern "company number"
+        for header in self.original_headers:
+            if mapped_company and mapped_charity and mapped_name:
+                break
+            h = header.lower().strip()
+            if not mapped_company and any(pat in h for pat in _COMPANY_NUM_PATTERNS):
+                self.company_num_col_var.set(header)
+                mapped_company = True
+            elif not mapped_charity and any(pat in h for pat in _CHARITY_NUM_PATTERNS):
+                self.charity_num_col_var.set(header)
+                mapped_charity = True
+            elif not mapped_name and any(pat in h for pat in _NAME_PATTERNS):
+                self.name_col_var.set(header)
+                mapped_name = True
+
     def _on_column_selection_changed(self):
         """Auto-validate column selections and enable/disable run button."""
         NOT_SELECTED = "\u2014 Not Selected \u2014"
@@ -1597,6 +1613,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
 
     def export_csv(self):
         if not self.results_data:
+            messagebox.showinfo("No Data", "There is no data to export.")
             return
         all_headers = set(self.original_headers)
         for row in self.results_data:
