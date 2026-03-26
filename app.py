@@ -65,7 +65,11 @@ class App(tk.Tk):
     def __init__(self):
         """Initialize the application."""
         super().__init__()
-        
+
+        # Global exception handler for tkinter callbacks/after() —
+        # without this, unhandled errors silently kill the app.
+        self.report_callback_exception = self._on_tk_error
+
         self.title("Multi-Tool")
         self.geometry("1320x780")
         self.minsize(1320, 780)
@@ -820,6 +824,17 @@ class App(tk.Tk):
         
         ttk.Button(main_frame, text="Close", command=manager_window.destroy).pack(pady=20)
     
+    def _on_tk_error(self, exc_type, exc_value, exc_tb):
+        """Global handler for unhandled tkinter callback exceptions."""
+        import traceback
+        traceback.print_exception(exc_type, exc_value, exc_tb)
+        try:
+            messagebox.showerror(
+                "Error",
+                f"An unexpected error occurred:\n{exc_value}")
+        except Exception:
+            pass
+
     def clear_container(self) -> None:
         """Clear all widgets from the container."""
         for widget in self.container.winfo_children():
