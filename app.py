@@ -69,6 +69,14 @@ class App(tk.Tk):
         self.title("Multi-Tool")
         self.geometry("1320x780")
         self.minsize(1320, 780)
+        # Open maximised — try platform-appropriate methods
+        try:
+            self.state('zoomed')
+        except tk.TclError:
+            try:
+                self.attributes('-zoomed', True)
+            except tk.TclError:
+                pass
         
         # Load persisted settings
         self._settings = load_settings()
@@ -219,7 +227,7 @@ class App(tk.Tk):
         ttk.Separator(sb, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(10, 4))
 
         # Network Analytics Workbench — green, at bottom
-        self._add_sidebar_button(sb, "Network Analytics\nWorkbench",
+        self._add_sidebar_button(sb, "Network Analytics\n     Workbench",
                                  "network_workbench", "success",
                                  self.show_network_graph_creator)
         # Centre the two-line label; anchor must go through the style system
@@ -308,11 +316,20 @@ class App(tk.Tk):
             tree_frame, columns=("name", "number"), show="headings",
             height=8, selectmode="extended"
         )
-        self._working_set_tree.heading("name", text="Name")
-        self._working_set_tree.heading("number", text="Number")
+        self._working_set_tree.heading(
+            "name", text="Name",
+            command=lambda: self._sort_ws_tree(self._working_set_tree, "name"))
+        self._working_set_tree.heading(
+            "number", text="Number",
+            command=lambda: self._sort_ws_tree(self._working_set_tree, "number"))
         self._working_set_tree.column("name", width=120, minwidth=80)
         self._working_set_tree.column("number", width=70, minwidth=60)
         self._working_set_tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Entity type color tags
+        self._working_set_tree.tag_configure("company", background="#B9D9EB")
+        self._working_set_tree.tag_configure("person", background="#D9E8B9")
+        self._working_set_tree.tag_configure("charity", background="#F0F0F0")
 
         tree_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL,
                                     command=self._working_set_tree.yview)
@@ -327,18 +344,38 @@ class App(tk.Tk):
             btn_row, text="Send to\u2026 \u25bc", bootstyle="primary-outline"
         )
         self._ws_send_menu_obj = tk.Menu(self._working_set_send_menu, tearoff=0)
+        # Index 0
         self._ws_send_menu_obj.add_command(
             label="Network Analytics Workbench",
             command=lambda: self._send_working_set_to_network(self._working_set_tree))
+        # Index 1
         self._ws_send_menu_obj.add_command(
             label="Enhanced Due Diligence",
             command=lambda: self._send_ws_selection_to_edd())
+        # Index 2
+        self._ws_send_menu_obj.add_command(
+            label="UBO Tracer",
+            command=lambda: self._send_ws_to_ubo(self._working_set_tree))
+        # Index 3
+        self._ws_send_menu_obj.add_command(
+            label="Bulk Entity Search",
+            command=lambda: self._send_ws_to_bulk_search(self._working_set_tree))
+        # Index 4
+        self._ws_send_menu_obj.add_command(
+            label="Grants Search",
+            command=lambda: self._send_ws_to_grants(self._working_set_tree))
+        # Index 5
+        self._ws_send_menu_obj.add_command(
+            label="Director Search",
+            command=lambda: self._send_ws_to_director(self._working_set_tree))
         self._working_set_send_menu.configure(menu=self._ws_send_menu_obj)
         self._working_set_send_menu.pack(side=tk.LEFT, padx=(0, 4))
 
-        # Bind selection change to update EDD menu state
+        # Bind selection change to update menu state
         self._working_set_tree.bind(
-            "<<TreeviewSelect>>", lambda e: self._update_ws_edd_state()
+            "<<TreeviewSelect>>",
+            lambda e: self._update_ws_send_menu_state(
+                self._working_set_tree, self._ws_send_menu_obj)
         )
         # Click-to-deselect toggle
         self._working_set_tree.bind(
@@ -381,10 +418,12 @@ class App(tk.Tk):
                 *self._working_set_tree.get_children()
             )
             for ent in entities:
+                etype = ent.get("entity_type", "company")
                 self._working_set_tree.insert(
                     "", tk.END,
                     values=(ent.get("name", "Unknown"),
-                            ent.get("company_number", ent.get("number", "")))
+                            ent.get("company_number", ent.get("number", ""))),
+                    tags=(etype,)
                 )
 
     def _collect_working_set_entities(self):
@@ -1261,18 +1300,6 @@ class App(tk.Tk):
         self._home_ch_conn_lbl = ttk.Label(ch_conn_row, text="", font=("Segoe UI", 9))
         self._home_ch_conn_lbl.pack(side=tk.LEFT)
 
-        mode = self._settings.get("ch_pacing_mode", "smooth").title()
-        workers = self.ch_max_workers
-        self._home_ch_mode_lbl = ttk.Label(
-            ch_conn_row, text=f"  Mode: {mode}  Workers: {workers}",
-            font=("Segoe UI", 8), foreground="gray", cursor="hand2"
-        )
-        self._home_ch_mode_lbl.pack(side=tk.LEFT, padx=(6, 0))
-        self._home_ch_mode_lbl.bind("<Button-1>", lambda e: self._open_settings_window())
-        self._home_ch_mode_lbl.bind("<Enter>", lambda e: self._home_ch_mode_lbl.configure(
-            font=("Segoe UI", 8, "underline")))
-        self._home_ch_mode_lbl.bind("<Leave>", lambda e: self._home_ch_mode_lbl.configure(
-            font=("Segoe UI", 8)))
 
         self._home_ch_test_btn = ttk.Button(
             ch_panel, text="Test connection", bootstyle="link",
@@ -1446,11 +1473,20 @@ class App(tk.Tk):
             ws_panel, columns=("name", "number"), show="headings",
             height=6, selectmode="extended"
         )
-        self._home_ws_tree.heading("name", text="Name")
-        self._home_ws_tree.heading("number", text="Number")
+        self._home_ws_tree.heading(
+            "name", text="Name",
+            command=lambda: self._sort_ws_tree(self._home_ws_tree, "name"))
+        self._home_ws_tree.heading(
+            "number", text="Number",
+            command=lambda: self._sort_ws_tree(self._home_ws_tree, "number"))
         self._home_ws_tree.column("name", width=200, minwidth=100)
         self._home_ws_tree.column("number", width=100, minwidth=70)
         self._home_ws_tree.pack(fill=tk.BOTH, expand=True, pady=(4, 4))
+
+        # Entity type color tags
+        self._home_ws_tree.tag_configure("company", background="#B9D9EB")
+        self._home_ws_tree.tag_configure("person", background="#D9E8B9")
+        self._home_ws_tree.tag_configure("charity", background="#F0F0F0")
 
         ws_btn_row = ttk.Frame(ws_panel)
         ws_btn_row.pack(fill=tk.X)
@@ -1459,18 +1495,38 @@ class App(tk.Tk):
             ws_btn_row, text="Send to\u2026 \u25bc", bootstyle="primary-outline"
         )
         self._home_ws_send_menu_obj = tk.Menu(self._home_ws_send_menu, tearoff=0)
+        # Index 0
         self._home_ws_send_menu_obj.add_command(
             label="Network Analytics Workbench",
             command=lambda: self._send_working_set_to_network(self._home_ws_tree))
+        # Index 1
         self._home_ws_send_menu_obj.add_command(
             label="Enhanced Due Diligence",
             command=lambda: self._send_home_ws_selection_to_edd())
+        # Index 2
+        self._home_ws_send_menu_obj.add_command(
+            label="UBO Tracer",
+            command=lambda: self._send_ws_to_ubo(self._home_ws_tree))
+        # Index 3
+        self._home_ws_send_menu_obj.add_command(
+            label="Bulk Entity Search",
+            command=lambda: self._send_ws_to_bulk_search(self._home_ws_tree))
+        # Index 4
+        self._home_ws_send_menu_obj.add_command(
+            label="Grants Search",
+            command=lambda: self._send_ws_to_grants(self._home_ws_tree))
+        # Index 5
+        self._home_ws_send_menu_obj.add_command(
+            label="Director Search",
+            command=lambda: self._send_ws_to_director(self._home_ws_tree))
         self._home_ws_send_menu.configure(menu=self._home_ws_send_menu_obj)
         self._home_ws_send_menu.pack(side=tk.LEFT, padx=(0, 6))
 
-        # Bind selection change to update EDD menu state
+        # Bind selection change to update menu state
         self._home_ws_tree.bind(
-            "<<TreeviewSelect>>", lambda e: self._update_home_ws_edd_state()
+            "<<TreeviewSelect>>",
+            lambda e: self._update_ws_send_menu_state(
+                self._home_ws_tree, self._home_ws_send_menu_obj)
         )
         # Click-to-deselect toggle
         self._home_ws_tree.bind(
@@ -1513,10 +1569,11 @@ class App(tk.Tk):
 
             self._home_ws_tree.delete(*self._home_ws_tree.get_children())
             for ent in entities:
+                etype = ent.get("entity_type", "company")
                 self._home_ws_tree.insert("", tk.END, values=(
                     ent.get("name", "Unknown"),
                     ent.get("company_number", ent.get("number", ""))
-                ))
+                ), tags=(etype,))
         except tk.TclError:
             pass
 
@@ -1525,7 +1582,7 @@ class App(tk.Tk):
         self._clear_working_set()
         self._refresh_home_working_set()
 
-    # ── Working Set Selection & EDD Gating ───────────────────────────
+    # ── Working Set Selection & Send Logic ──────────────────────────
 
     def _toggle_tree_selection(self, event, tree) -> None:
         """Toggle selection on click: deselect if already selected, else default."""
@@ -1540,37 +1597,105 @@ class App(tk.Tk):
             return "break"
         # Not selected — let default Treeview behavior handle it
 
-    def _update_ws_edd_state(self) -> None:
-        """Enable/disable EDD in sidebar working set menu based on selection count."""
+    def _get_ws_selected_entities(self, tree):
+        """Return selected entities from a working set tree, or all if none selected."""
+        entities = self._collect_working_set_entities()
+        if not entities:
+            return []
         try:
-            sel = self._working_set_tree.selection()
-            count = len(sel)
-            if count > 1:
-                self._ws_send_menu_obj.entryconfigure(
-                    "Enhanced Due Diligence", state=tk.DISABLED,
-                    label="Enhanced Due Diligence (select 1 entity)")
-            else:
-                self._ws_send_menu_obj.entryconfigure(
-                    1, state=tk.NORMAL,
-                    label="Enhanced Due Diligence")
-        except (tk.TclError, AttributeError):
-            pass
+            sel = tree.selection()
+        except tk.TclError:
+            sel = ()
+        if sel:
+            indices = [tree.index(item) for item in sel]
+            return [entities[i] for i in indices if i < len(entities)]
+        return entities
 
-    def _update_home_ws_edd_state(self) -> None:
-        """Enable/disable EDD in home working set menu based on selection count."""
+    def _classify_ws_selection(self, tree):
+        """Classify the current selection in a working set tree.
+
+        Returns (selected_entities, has_companies, has_charities, has_persons, count).
+        """
+        selected = self._get_ws_selected_entities(tree)
+        has_companies = False
+        has_charities = False
+        has_persons = False
+        for ent in selected:
+            etype = ent.get("entity_type", "company")
+            if etype == "company":
+                has_companies = True
+            elif etype == "charity":
+                has_charities = True
+            elif etype == "person":
+                has_persons = True
+        return selected, has_companies, has_charities, has_persons, len(selected)
+
+    def _update_ws_send_menu_state(self, tree, menu) -> None:
+        """Enable/disable Send To menu items based on selection in a working set tree.
+
+        Menu indices:
+          0 = Network Analytics Workbench  — always enabled if entities exist
+          1 = Enhanced Due Diligence       — single company or charity only
+          2 = UBO Tracer                   — companies only (no charities/persons)
+          3 = Bulk Entity Search           — companies + charities (no persons)
+          4 = Grants Search                — companies + charities (no persons)
+          5 = Director Search              — single person only
+        """
         try:
-            sel = self._home_ws_tree.selection()
-            count = len(sel)
-            if count > 1:
-                self._home_ws_send_menu_obj.entryconfigure(
-                    "Enhanced Due Diligence", state=tk.DISABLED,
-                    label="Enhanced Due Diligence (select 1 entity)")
-            else:
-                self._home_ws_send_menu_obj.entryconfigure(
-                    1, state=tk.NORMAL,
-                    label="Enhanced Due Diligence")
+            selected, has_co, has_ch, has_per, count = self._classify_ws_selection(tree)
         except (tk.TclError, AttributeError):
-            pass
+            return
+
+        def _set(idx, label, enabled):
+            try:
+                menu.entryconfigure(idx, label=label,
+                                    state=tk.NORMAL if enabled else tk.DISABLED)
+            except tk.TclError:
+                pass
+
+        has_any = count > 0
+
+        # 0: Network Analytics — always if entities exist
+        _set(0, "Network Analytics Workbench", has_any)
+
+        # 1: EDD — single company or single charity
+        edd_ok = (count == 1 and (has_co or has_ch) and not has_per)
+        _set(1, "Enhanced Due Diligence" if edd_ok else
+             "Enhanced Due Diligence (select 1 company/charity)", edd_ok)
+
+        # 2: UBO Tracer — companies only, no charities or persons
+        ubo_ok = has_any and has_co and not has_per and not has_ch
+        _set(2, "UBO Tracer" if ubo_ok else
+             "UBO Tracer (companies only)", ubo_ok)
+
+        # 3: Bulk Entity Search — companies + charities, no persons
+        bulk_ok = has_any and (has_co or has_ch) and not has_per
+        _set(3, "Bulk Entity Search" if bulk_ok else
+             "Bulk Entity Search (companies/charities only)", bulk_ok)
+
+        # 4: Grants Search — companies + charities, no persons
+        grants_ok = has_any and (has_co or has_ch) and not has_per
+        _set(4, "Grants Search" if grants_ok else
+             "Grants Search (companies/charities only)", grants_ok)
+
+        # 5: Director Search — single person only
+        dir_ok = (count == 1 and has_per and not has_co and not has_ch)
+        _set(5, "Director Search" if dir_ok else
+             "Director Search (select 1 person)", dir_ok)
+
+    def _sort_ws_tree(self, tree, col) -> None:
+        """Sort working set treeview by column, toggling A-Z / Z-A."""
+        try:
+            items = [(tree.set(iid, col), iid) for iid in tree.get_children("")]
+        except tk.TclError:
+            return
+        # Toggle sort direction using a stored attribute
+        attr = f"_ws_sort_reverse_{id(tree)}_{col}"
+        reverse = getattr(self, attr, False)
+        items.sort(key=lambda t: t[0].lower(), reverse=reverse)
+        for idx, (_, iid) in enumerate(items):
+            tree.move(iid, "", idx)
+        setattr(self, attr, not reverse)
 
     def _send_ws_selection_to_edd(self) -> None:
         """Send the selected sidebar working set entity to EDD."""
@@ -1582,36 +1707,133 @@ class App(tk.Tk):
 
     def _send_tree_selection_to_edd(self, tree) -> None:
         """Send a single selected entity from any working set tree to EDD."""
-        try:
-            sel = tree.selection()
-        except tk.TclError:
-            sel = ()
-
-        entities = self._collect_working_set_entities()
-        if not entities:
+        selected = self._get_ws_selected_entities(tree)
+        if not selected:
             return
 
-        if len(sel) == 1:
-            # Get the selected entity by index
-            idx = tree.index(sel[0])
-            if idx < len(entities):
-                ent = entities[idx]
-            else:
-                ent = entities[0]
-        elif len(sel) == 0 and len(entities) == 1:
-            ent = entities[0]
-        else:
+        if len(selected) != 1:
             messagebox.showinfo(
                 "Selection Required",
                 "Please select exactly 1 entity to open in Enhanced Due Diligence."
             )
             return
 
+        ent = selected[0]
         num = ent.get("company_number", ent.get("number", ""))
-        # Determine entity type — charity numbers are pure digits, company numbers
-        # may have letter prefixes
-        etype = "charity" if num and num.isdigit() and len(num) <= 7 else "company"
-        self.show_enhanced_dd(prefill_entity={"type": etype, "id": str(num)})
+        etype = ent.get("entity_type", "company")
+        if etype == "person":
+            messagebox.showinfo(
+                "EDD", "Enhanced Due Diligence requires a company or charity.")
+            return
+        dd_type = "charity" if etype == "charity" else "company"
+        self.show_enhanced_dd(prefill_entity={"type": dd_type, "id": str(num)})
+
+    def _send_ws_to_ubo(self, tree) -> None:
+        """Send selected companies from working set to UBO Tracer."""
+        selected = self._get_ws_selected_entities(tree)
+        if not selected:
+            return
+
+        companies = [e for e in selected if e.get("entity_type", "company") == "company"]
+        others = [e for e in selected if e.get("entity_type", "company") != "company"]
+
+        if not companies:
+            messagebox.showinfo("UBO Tracer",
+                                "UBO Tracer supports companies only. No companies in selection.")
+            return
+        if others:
+            ok = messagebox.askyesno(
+                "UBO Tracer",
+                f"{len(companies)} companies and {len(others)} non-companies selected. "
+                f"UBO Tracer supports companies only. Send {len(companies)} companies?")
+            if not ok:
+                return
+
+        if len(companies) == 1:
+            c = companies[0]
+            self.show_ubo_investigation(
+                prefill_company=c.get("company_number", c.get("number", "")),
+                prefill_company_name=c.get("name", ""))
+        else:
+            if self.app_state.ubo_working_set is None:
+                self.app_state.ubo_working_set = []
+            for c in companies:
+                self.app_state.ubo_working_set.append(c)
+            self._refresh_working_set_indicator()
+            self.show_ubo_investigation()
+
+    def _send_ws_to_bulk_search(self, tree) -> None:
+        """Send selected companies/charities from working set to Bulk Entity Search."""
+        selected = self._get_ws_selected_entities(tree)
+        if not selected:
+            return
+
+        valid = [e for e in selected
+                 if e.get("entity_type", "company") in ("company", "charity")]
+        persons = [e for e in selected if e.get("entity_type") == "person"]
+
+        if not valid:
+            messagebox.showinfo("Bulk Entity Search",
+                                "No companies or charities in selection.")
+            return
+        if persons:
+            messagebox.showinfo("Bulk Entity Search",
+                                f"Skipping {len(persons)} person(s). "
+                                f"Sending {len(valid)} companies/charities.")
+
+        self.show_unified_search(prefill_entities=valid)
+
+    def _send_ws_to_grants(self, tree) -> None:
+        """Send selected companies/charities from working set to Grants Search."""
+        selected = self._get_ws_selected_entities(tree)
+        if not selected:
+            return
+
+        valid = [e for e in selected
+                 if e.get("entity_type", "company") in ("company", "charity")]
+        persons = [e for e in selected if e.get("entity_type") == "person"]
+
+        if not valid:
+            messagebox.showinfo("Grants Search",
+                                "No companies or charities in selection.")
+            return
+        if persons:
+            messagebox.showinfo("Grants Search",
+                                f"Skipping {len(persons)} person(s). "
+                                f"Sending {len(valid)} companies/charities.")
+
+        self.show_grants_investigation(prefill_entities=valid)
+
+    def _send_ws_to_director(self, tree) -> None:
+        """Send selected person from working set to Director Search."""
+        selected = self._get_ws_selected_entities(tree)
+        if not selected:
+            return
+
+        persons = [e for e in selected if e.get("entity_type") == "person"]
+        if not persons or len(persons) != 1:
+            messagebox.showinfo("Director Search",
+                                "Please select exactly 1 person for Director Search.")
+            return
+
+        ent = persons[0]
+        from .utils.fuzzy_match import normalize_person_name
+        name = normalize_person_name(ent.get("name", ""))
+
+        # Extract year/month from company_number field (stored as "MM/YYYY" for persons)
+        dob_str = ent.get("company_number", "")
+        year, month = None, None
+        if dob_str and "/" in dob_str:
+            parts = dob_str.split("/")
+            if len(parts) == 2:
+                try:
+                    month = str(int(parts[0]))
+                    year = str(int(parts[1]))
+                except ValueError:
+                    pass
+
+        self.show_director_investigation(
+            prefill_name=name, prefill_year=year, prefill_month=month)
 
     def _refresh_home_reports(self) -> None:
         """Refresh the recent EDD reports list on the home screen."""
@@ -2205,13 +2427,15 @@ class App(tk.Tk):
     # These methods load the respective investigation modules.
     # Each module is imported and instantiated when needed.
     
-    def show_director_investigation(self, prefill_name=None) -> None:
+    def show_director_investigation(self, prefill_name=None,
+                                    prefill_year=None, prefill_month=None) -> None:
         """Show the Director Search module."""
         self.clear_container()
         # Import here to avoid circular imports and speed up startup
         from .modules.director_search import DirectorSearch
         DirectorSearch(self, self.api_key, self.show_main_menu, self.ch_token_bucket,
-                       prefill_name=prefill_name)
+                       prefill_name=prefill_name, prefill_year=prefill_year,
+                       prefill_month=prefill_month)
         self._update_sidebar_active("director_search")
         self._refresh_working_set_indicator()
     
@@ -2270,7 +2494,7 @@ class App(tk.Tk):
         self._update_sidebar_active("edd")
         self._refresh_working_set_indicator()
 
-    def show_unified_search(self) -> None:
+    def show_unified_search(self, prefill_entities=None) -> None:
         """Show the Unified Search module."""
         self.clear_container()
         from .modules.unified_search import CompanyCharitySearch
@@ -2279,7 +2503,8 @@ class App(tk.Tk):
             self.show_main_menu,
             self.api_key,
             self.charity_api_key,
-            self.ch_token_bucket
+            self.ch_token_bucket,
+            prefill_entities=prefill_entities
         )
         self._update_sidebar_active("bulk_entity_search")
         self._refresh_working_set_indicator()
