@@ -1740,8 +1740,35 @@ class App(tk.Tk):
             if not selected:
                 return
 
-            companies = [e for e in selected if e.get("entity_type", "company") == "company"]
-            others = [e for e in selected if e.get("entity_type", "company") != "company"]
+            companies = []
+            others = []
+            for ent in selected:
+                if not isinstance(ent, dict):
+                    others.append(ent)
+                    continue
+
+                etype = ent.get("entity_type", "company")
+                if etype != "company":
+                    others.append(ent)
+                    continue
+
+                # Normalize payload shape to what UBO Tracer expects so mixed
+                # working-set sources cannot pass malformed values that may
+                # break UBO prefill initialization.
+                company_number = str(
+                    ent.get("company_number", ent.get("number", ""))
+                ).strip()
+                company_name = str(ent.get("name", ent.get("company_name", ""))).strip()
+
+                if not company_number:
+                    others.append(ent)
+                    continue
+
+                companies.append({
+                    "entity_type": "company",
+                    "company_number": company_number,
+                    "name": company_name,
+                })
 
             if not companies:
                 messagebox.showinfo("UBO Tracer",
