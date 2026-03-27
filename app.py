@@ -1282,6 +1282,13 @@ class App(tk.Tk):
             (e.get("name", ""), e.get("company_number", ""), e.get("entity_type", ""))
             for e in self.app_state.ubo_working_set
         }
+        num = str(num).strip()
+        name = str(name).strip()
+        if entity_type == "company":
+            name = name or f"Company {num}"
+        elif entity_type == "charity":
+            name = name or f"Charity {num}"
+
         if num and (name, num, entity_type) not in existing:
             self.app_state.ubo_working_set.append({
                 "name": name, "company_number": num, "active": is_active,
@@ -1795,10 +1802,13 @@ class App(tk.Tk):
                     others.append(ent)
                     continue
 
+                # Align payload shape with Bulk Entity Search _entity_to_ws_dict
+                # so UBO prefill always receives the exact same schema.
                 companies.append({
                     "entity_type": "company",
                     "company_number": company_number,
-                    "name": company_name,
+                    "name": company_name or f"Company {company_number}",
+                    "active": bool(ent.get("active", True)),
                 })
 
             if not companies:
@@ -1813,6 +1823,10 @@ class App(tk.Tk):
                 if not ok:
                     return
 
+            log_message(
+                "Working Set -> UBO send: "
+                f"selected={len(selected)} companies={len(companies)} others={len(others)}"
+            )
             if len(companies) == 1:
                 c = companies[0]
                 self.show_ubo_investigation(
