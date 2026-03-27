@@ -4,6 +4,7 @@
 import os
 import base64
 import html
+import tempfile
 import threading
 import traceback
 import webbrowser
@@ -23,7 +24,9 @@ from rapidfuzz.fuzz import WRatio
 
 from ..utils.financial_analyzer import FinancialAnalyzer, iXBRLParser
 from ..ui.tooltip import Tooltip
-from ..api.companies_house import ch_get_data
+from ..api.companies_house import (
+    ch_get_data, ch_get_document_metadata, ch_download_document_content,
+)
 from ..api.charity_commission import (
     cc_get_charity_details_v2,
     cc_get_financial_history,
@@ -105,6 +108,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self.charity_data = {}
         self.financial_analyzer = None
         self.accounts_loaded = False
+        self._available_ixbrl_filings = []  # [(filing_date, metadata_path), ...]
         self._entity_type = 'company'  # 'company' or 'charity'
         
         # Default thresholds (used by all check methods and cross-analysis rules)
@@ -221,24 +225,52 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         # Step 2: Upload Accounts (hidden for charity)
         self._upload_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 2: Upload iXBRL Accounts (Optional)", padding=10
+            self.content_frame, text="Step 2: iXBRL Accounts (Optional)", padding=10
         )
         upload_frame = self._upload_frame
         upload_frame.pack(fill=tk.X, pady=5, padx=10)
-        
+
         buttons_frame = ttk.Frame(upload_frame)
         buttons_frame.pack(fill=tk.X, pady=5)
-        
-        ttk.Button(
+
+        self.upload_btn = ttk.Button(
             buttons_frame, text="Upload Accounts Files...", command=self.load_accounts
-        ).pack(side=tk.LEFT, padx=(0, 5))
-        
+        )
+        self.upload_btn.pack(side=tk.LEFT, padx=(0, 5))
+
         ttk.Button(
             buttons_frame, text="Clear Files", command=self.clear_accounts
         ).pack(side=tk.LEFT, padx=5)
-        
-        self.accounts_status_label = ttk.Label(upload_frame, text="No accounts loaded.")
+
+        ttk.Separator(buttons_frame, orient=tk.VERTICAL).pack(
+            side=tk.LEFT, padx=10, fill=tk.Y, pady=2
+        )
+
+        self.auto_fetch_btn = ttk.Button(
+            buttons_frame, text="Auto-fetch from CH",
+            command=self._auto_fetch_accounts, state='disabled'
+        )
+        self.auto_fetch_btn.pack(side=tk.LEFT, padx=(0, 3))
+
+        self.years_var = tk.StringVar(value="3")
+        self.years_spinbox = ttk.Spinbox(
+            buttons_frame, from_=1, to=5, width=3,
+            textvariable=self.years_var, state='readonly'
+        )
+        self.years_spinbox.pack(side=tk.LEFT, padx=(0, 3))
+        ttk.Label(buttons_frame, text="years").pack(side=tk.LEFT)
+
+        # Status row
+        status_row = ttk.Frame(upload_frame)
+        status_row.pack(fill=tk.X, pady=(0, 2))
+
+        self.accounts_status_label = ttk.Label(status_row, text="No accounts loaded.")
         self.accounts_status_label.pack(side=tk.LEFT, padx=10)
+
+        self.ixbrl_availability_label = ttk.Label(
+            status_row, text="", foreground='grey'
+        )
+        self.ixbrl_availability_label.pack(side=tk.RIGHT, padx=10)
 
         # Charity mode note (replaces upload frame when charity selected)
         self._charity_accounts_note = ttk.LabelFrame(
@@ -376,6 +408,130 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self.accounts_status_label.config(text="No accounts loaded.", foreground="black")
         self._update_accounts_checkboxes()
         self.status_var.set("Accounts cleared.")
+
+    def _auto_fetch_accounts(self):
+        """Kick off automatic iXBRL accounts download from Companies House."""
+        if not self._available_ixbrl_filings:
+            messagebox.showwarning(
+                "No iXBRL Available",
+                "No iXBRL accounts were found for this company."
+            )
+            return
+
+        try:
+            num_years = int(self.years_var.get())
+        except ValueError:
+            num_years = 3
+        num_years = max(1, min(num_years, len(self._available_ixbrl_filings)))
+
+        self.auto_fetch_btn.config(state='disabled')
+        self.upload_btn.config(state='disabled')
+        self.accounts_status_label.config(
+            text="Fetching accounts from Companies House...", foreground='blue'
+        )
+
+        threading.Thread(
+            target=self._auto_fetch_accounts_thread,
+            args=(num_years,),
+            daemon=True,
+        ).start()
+
+    def _auto_fetch_accounts_thread(self, num_years):
+        """Background thread to download iXBRL accounts and load them."""
+        cnum = self.company_data['profile'].get('company_number', 'unknown')
+        selected = self._available_ixbrl_filings[:num_years]
+        downloaded_paths = []
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                for i, (filing_date, metadata_path) in enumerate(selected):
+                    if self.cancel_flag.is_set():
+                        return
+                    self.safe_update(
+                        self.status_var.set,
+                        f"Downloading account {i + 1} of {len(selected)}..."
+                    )
+
+                    dest = os.path.join(tmpdir, f"{cnum}_{filing_date}.xhtml")
+                    path, err = ch_download_document_content(
+                        self.api_key, self.ch_token_bucket, metadata_path, dest
+                    )
+                    if err:
+                        log_message(
+                            f"Failed to download iXBRL for {cnum} ({filing_date}): {err}"
+                        )
+                        continue
+                    downloaded_paths.append(path)
+
+                if not downloaded_paths:
+                    self.safe_update(
+                        self.accounts_status_label.config,
+                        text="Failed to download any accounts.", foreground='red'
+                    )
+                    self.safe_update(self.status_var.set, "Account download failed.")
+                    return
+
+                # Parse downloaded files through existing pipeline
+                self.safe_update(self.status_var.set, "Parsing downloaded accounts...")
+                self.financial_analyzer = FinancialAnalyzer()
+                df = self.financial_analyzer.load_files(downloaded_paths)
+
+                if df.empty:
+                    self.safe_update(
+                        self.accounts_status_label.config,
+                        text="Downloaded files contained no parseable data.",
+                        foreground='red'
+                    )
+                    self.safe_update(self.status_var.set, "No data found in accounts.")
+                    return
+
+                self.accounts_loaded = True
+                years = sorted(df['Year'].unique())
+                fetched = len(years)
+                requested = num_years
+
+                if fetched < requested:
+                    label_text = (
+                        f"Loaded {fetched} of {requested} requested years "
+                        f"({years[0]}-{years[-1]})"
+                    )
+                else:
+                    label_text = f"Loaded {fetched} years ({years[0]}-{years[-1]})"
+
+                self.safe_update(
+                    self.accounts_status_label.config,
+                    text=label_text, foreground='green'
+                )
+
+                # Validate accounts match (safety check)
+                if self.company_data:
+                    is_valid, message = self._validate_accounts_match_company()
+                    if not is_valid:
+                        self.safe_update(
+                            self.accounts_status_label.config,
+                            text=f"{label_text} - WARNING: Possible mismatch",
+                            foreground='orange'
+                        )
+                        log_message(f"Auto-fetched accounts mismatch: {message}")
+
+                self.safe_update(self._update_accounts_checkboxes)
+                self.safe_update(
+                    self.status_var.set,
+                    "Accounts fetched and loaded successfully."
+                )
+
+        except Exception as e:
+            log_message(f"Error in auto-fetch accounts: {e}\n{traceback.format_exc()}")
+            self.safe_update(
+                self.accounts_status_label.config,
+                text="Error fetching accounts.", foreground='red'
+            )
+            self.safe_update(
+                self.status_var.set, f"Error fetching accounts: {e}"
+            )
+        finally:
+            self.safe_update(self.auto_fetch_btn.config, state='normal')
+            self.safe_update(self.upload_btn.config, state='normal')
 
     def _validate_accounts_match_company(self):
         """Check if uploaded accounts match the selected company."""
@@ -1667,6 +1823,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         cnum = clean_company_number(cnum_raw)
 
         self.fetch_btn.config(state='disabled')
+        self.auto_fetch_btn.config(state='disabled')
+        self._available_ixbrl_filings = []
+        self.ixbrl_availability_label.config(text="", foreground='grey')
         self.status_var.set(f"Fetching data for {cnum}...")
 
         threading.Thread(target=self._fetch_company_thread, args=(cnum,), daemon=True).start()
@@ -1701,11 +1860,15 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 'pscs': pscs,
                 'filing_history': filing_history,
             }
-            
+
             self.after(100, self._display_company_summary)
-            self.safe_update(self.status_var.set, "Company data loaded successfully.")
+            self.safe_update(self.status_var.set, "Company data loaded. Checking iXBRL availability...")
             self.safe_update(self.generate_btn.config, {'state': 'normal'})
             self.safe_update(self._update_accounts_checkboxes)
+
+            # Pre-check which account filings have iXBRL available
+            self._check_ixbrl_availability(cnum)
+            self.safe_update(self.status_var.set, "Company data loaded successfully.")
             
         except Exception as e:
             log_message(f"Error fetching company data: {e}")
@@ -1713,7 +1876,80 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             self.safe_update(self.status_var.set, "Error fetching company data.")
         finally:
             self.safe_update(self.fetch_btn.config, {'state': 'normal'})
-    
+
+    def _check_ixbrl_availability(self, cnum):
+        """Check which account filings have iXBRL format available.
+
+        Called from _fetch_company_thread (background thread). Queries the
+        accounts-only filing history and probes the Document API metadata for
+        each filing to determine if an iXBRL version exists.  Results are
+        stored in self._available_ixbrl_filings and the UI is updated.
+        """
+        self._available_ixbrl_filings = []
+
+        # Fetch accounts-only filing history (separate from the full history
+        # already fetched, to guarantee we get enough accounts items).
+        accounts_data, err = ch_get_data(
+            self.api_key, self.ch_token_bucket,
+            f"/company/{cnum}/filing-history?category=accounts&items_per_page=15"
+        )
+        if err or not accounts_data:
+            log_message(f"Could not fetch accounts filing history for {cnum}: {err}")
+            self.safe_update(
+                self.ixbrl_availability_label.config,
+                text="Could not check iXBRL availability.", foreground='grey'
+            )
+            return
+
+        items = accounts_data.get('items', [])
+        if not items:
+            self.safe_update(
+                self.ixbrl_availability_label.config,
+                text="No accounts filings found for this company.", foreground='grey'
+            )
+            return
+
+        # Sort by date descending (most recent first) and check up to 7
+        items_with_dates = [
+            it for it in items
+            if it.get('links', {}).get('document_metadata') and it.get('date')
+        ]
+        items_with_dates.sort(key=lambda x: x['date'], reverse=True)
+
+        available = []
+        for filing in items_with_dates[:7]:
+            metadata_path = filing['links']['document_metadata']
+            metadata, meta_err = ch_get_document_metadata(
+                self.api_key, self.ch_token_bucket, metadata_path
+            )
+            if meta_err or not metadata:
+                continue
+            resources = metadata.get('resources', {})
+            if 'application/xhtml+xml' in resources:
+                available.append((filing['date'], metadata_path))
+
+        self._available_ixbrl_filings = available
+        count = len(available)
+
+        if count == 0:
+            self.safe_update(
+                self.ixbrl_availability_label.config,
+                text="No iXBRL accounts available \u2014 consider manual input.",
+                foreground='grey'
+            )
+            self.safe_update(self.auto_fetch_btn.config, state='disabled')
+        else:
+            cap = min(count, 5)
+            default = min(3, cap)
+            self.safe_update(
+                self.ixbrl_availability_label.config,
+                text=f"{count} year{'s' if count != 1 else ''} of iXBRL accounts available.",
+                foreground='green'
+            )
+            self.safe_update(self.years_spinbox.config, from_=1, to=cap)
+            self.safe_update(self.years_var.set, str(default))
+            self.safe_update(self.auto_fetch_btn.config, state='normal')
+
     def _display_company_summary(self):
         """Display basic company info in the summary box."""
         profile = self.company_data['profile']

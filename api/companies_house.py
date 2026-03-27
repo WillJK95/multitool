@@ -7,7 +7,10 @@ import urllib.parse
 import requests
 from typing import Tuple, Optional, Any, Dict
 
-from ..constants import API_BASE_URL, DEFAULT_MAX_RETRIES, DEFAULT_BACKOFF_FACTOR
+from ..constants import (
+    API_BASE_URL, CH_DOCUMENT_API_BASE_URL,
+    DEFAULT_MAX_RETRIES, DEFAULT_BACKOFF_FACTOR,
+)
 from ..utils.helpers import log_message
 
 # Thread-safe success-only cache (errors are never cached so retries work)
@@ -355,3 +358,143 @@ def check_api_status(api_key: str, token_bucket) -> bool:
     # Use a known company number for the health check
     data, error = ch_get_data(api_key, token_bucket, "/company/00000006")
     return data is not None
+
+
+def ch_get_document_metadata(
+    api_key: str,
+    token_bucket,
+    metadata_path: str,
+    retries: int = DEFAULT_MAX_RETRIES,
+    backoff_factor: float = DEFAULT_BACKOFF_FACTOR
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Fetch document metadata from the Companies House Document API.
+
+    The Document API is a separate service from the main CH REST API.
+    Each filing's metadata describes which file formats are available
+    (e.g. PDF, iXBRL).
+
+    Args:
+        api_key: Companies House API key
+        token_bucket: TokenBucket instance for rate limiting
+        metadata_path: Path from filing['links']['document_metadata']
+                       (e.g. '/document/abc123')
+        retries: Maximum retry attempts
+        backoff_factor: Base delay multiplier for exponential backoff
+
+    Returns:
+        Tuple of (metadata dict or None, error message or None)
+    """
+    token_bucket.consume()
+    url = f"{CH_DOCUMENT_API_BASE_URL}{metadata_path}"
+    last_error = "Unknown Error"
+
+    for i in range(retries):
+        try:
+            response = requests.get(url, auth=(api_key, ""), timeout=30)
+            token_bucket.sync_from_headers(response.headers)
+
+            if response.status_code in [404, 401, 403]:
+                return None, f"Client Error: {response.status_code}"
+
+            if response.status_code == 429:
+                last_error = "Rate Limited (429)"
+                reset_wait = token_bucket.get_wait_from_reset(response.headers)
+                wait_time = reset_wait if reset_wait else backoff_factor * (2 ** i)
+                log_message(f"Rate limited on document metadata. Waiting {wait_time:.1f}s...")
+                time.sleep(wait_time)
+                continue
+
+            if response.status_code in [500, 502, 503, 504]:
+                last_error = f"Server Error ({response.status_code})"
+                wait_time = backoff_factor * (2 ** i)
+                log_message(f"Document API returned {response.status_code}. Retrying in {wait_time:.2f}s...")
+                time.sleep(wait_time)
+                continue
+
+            response.raise_for_status()
+            return response.json(), None
+
+        except requests.exceptions.RequestException as e:
+            last_error = f"Connection Error: {e}"
+            wait_time = backoff_factor * (2 ** i)
+            log_message(f"Document metadata request failed: {e}. Retrying in {wait_time:.2f}s...")
+            time.sleep(wait_time)
+
+    return None, last_error
+
+
+def ch_download_document_content(
+    api_key: str,
+    token_bucket,
+    metadata_path: str,
+    dest_path: str,
+    retries: int = DEFAULT_MAX_RETRIES,
+    backoff_factor: float = DEFAULT_BACKOFF_FACTOR
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Download iXBRL document content from the Companies House Document API.
+
+    Requests the content endpoint with an Accept header for iXBRL format.
+    The Document API returns an HTTP 302 redirect to an AWS S3 bucket;
+    the requests library automatically strips the Authorization header
+    on cross-domain redirects, which is the correct behaviour.
+
+    Args:
+        api_key: Companies House API key
+        token_bucket: TokenBucket instance for rate limiting
+        metadata_path: Path from filing['links']['document_metadata']
+        dest_path: Local file path to save the downloaded content
+        retries: Maximum retry attempts
+        backoff_factor: Base delay multiplier for exponential backoff
+
+    Returns:
+        Tuple of (saved file path or None, error message or None)
+    """
+    token_bucket.consume()
+    url = f"{CH_DOCUMENT_API_BASE_URL}{metadata_path}/content"
+    headers = {"Accept": "application/xhtml+xml"}
+    last_error = "Unknown Error"
+
+    for i in range(retries):
+        try:
+            response = requests.get(
+                url,
+                auth=(api_key, ""),
+                headers=headers,
+                allow_redirects=True,
+                timeout=60,
+            )
+            token_bucket.sync_from_headers(response.headers)
+
+            if response.status_code in [404, 401, 403]:
+                return None, f"Client Error: {response.status_code}"
+
+            if response.status_code == 429:
+                last_error = "Rate Limited (429)"
+                reset_wait = token_bucket.get_wait_from_reset(response.headers)
+                wait_time = reset_wait if reset_wait else backoff_factor * (2 ** i)
+                log_message(f"Rate limited on document download. Waiting {wait_time:.1f}s...")
+                time.sleep(wait_time)
+                continue
+
+            if response.status_code in [500, 502, 503, 504]:
+                last_error = f"Server Error ({response.status_code})"
+                wait_time = backoff_factor * (2 ** i)
+                log_message(f"Document download returned {response.status_code}. Retrying in {wait_time:.2f}s...")
+                time.sleep(wait_time)
+                continue
+
+            response.raise_for_status()
+
+            with open(dest_path, "wb") as f:
+                f.write(response.content)
+            return dest_path, None
+
+        except requests.exceptions.RequestException as e:
+            last_error = f"Connection Error: {e}"
+            wait_time = backoff_factor * (2 ** i)
+            log_message(f"Document download failed: {e}. Retrying in {wait_time:.2f}s...")
+            time.sleep(wait_time)
+
+    return None, last_error
