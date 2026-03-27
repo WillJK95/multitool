@@ -445,7 +445,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             cache_dir = os.path.join(CONFIG_DIR, "accounts_cache", cnum)
             os.makedirs(cache_dir, exist_ok=True)
 
-            for i, (filing_date, metadata_url) in enumerate(selected):
+            for i, (filing_date, metadata_url, mime) in enumerate(selected):
                 if self.cancel_flag.is_set():
                     return
                 self.safe_update(
@@ -455,7 +455,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
                 dest = os.path.join(cache_dir, f"{cnum}_{filing_date}.xhtml")
                 path, err = ch_download_document_content(
-                    self.api_key, self.ch_token_bucket, metadata_url, dest
+                    self.api_key, self.ch_token_bucket, metadata_url, dest,
+                    accept_mime=mime,
                 )
                 if err:
                     log_message(
@@ -1927,7 +1928,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 continue
             resources = metadata.get('resources', {})
             if 'application/xhtml+xml' in resources:
-                available.append((filing['date'], metadata_url))
+                mime = 'application/xhtml+xml'
+            elif 'application/xml' in resources:
+                mime = 'application/xml'
+            else:
+                continue
+            available.append((filing['date'], metadata_url, mime))
 
         self._available_ixbrl_filings = available
         count = len(available)

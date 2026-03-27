@@ -1,7 +1,6 @@
 # multitool/api/companies_house.py
 """Companies House API client."""
 
-import base64
 import threading
 import time
 import urllib.parse
@@ -358,15 +357,6 @@ def check_api_status(api_key: str, token_bucket) -> bool:
     return data is not None
 
 
-def _doc_api_headers(api_key: str, accept: str) -> dict:
-    """Build auth + accept headers for the CH Document API."""
-    encoded = base64.b64encode(f"{api_key}:".encode()).decode()
-    return {
-        "Authorization": f"Basic {encoded}",
-        "Accept": accept,
-    }
-
-
 def ch_get_document_metadata(
     api_key: str,
     token_bucket,
@@ -399,7 +389,8 @@ def ch_get_document_metadata(
         try:
             response = requests.get(
                 url,
-                headers=_doc_api_headers(api_key, "application/json"),
+                auth=(api_key, ""),
+                headers={"Accept": "application/json"},
                 timeout=30,
             )
 
@@ -437,22 +428,26 @@ def ch_download_document_content(
     token_bucket,
     metadata_url: str,
     dest_path: str,
+    accept_mime: str = "application/xhtml+xml",
     retries: int = DEFAULT_MAX_RETRIES,
     backoff_factor: float = DEFAULT_BACKOFF_FACTOR
 ) -> Tuple[Optional[str], Optional[str]]:
     """
-    Download iXBRL document content from the Companies House Document API.
+    Download document content from the Companies House Document API.
 
-    Requests the content endpoint with an Accept header for iXBRL format.
-    The Document API returns an HTTP 302 redirect to an AWS S3 bucket;
-    the requests library automatically strips the Authorization header
-    on cross-domain redirects, which is the correct behaviour.
+    Requests the content endpoint with an Accept header for the given MIME
+    type. The Document API returns an HTTP 302 redirect to an AWS S3 bucket;
+    using auth=(api_key, "") ensures requests strips the Authorization header
+    automatically on the cross-domain redirect to S3.
 
     Args:
         api_key: Companies House API key
         token_bucket: TokenBucket instance for rate limiting
-        metadata_url: Full URL from filing['links']['document_metadata']
+        metadata_url: Full URL from filing['links']['document_metadata'];
+                      '/content' is appended to form the content endpoint.
         dest_path: Local file path to save the downloaded content
+        accept_mime: MIME type to request (default 'application/xhtml+xml').
+                     Pass 'application/xml' for older-format filings.
         retries: Maximum retry attempts
         backoff_factor: Base delay multiplier for exponential backoff
 
@@ -460,8 +455,6 @@ def ch_download_document_content(
         Tuple of (saved file path or None, error message or None)
     """
     token_bucket.consume()
-    # metadata_url is the full document_metadata link; append /content to
-    # request the actual file from the Document API.
     url = f"{metadata_url}/content"
     last_error = "Unknown Error"
 
@@ -469,7 +462,8 @@ def ch_download_document_content(
         try:
             response = requests.get(
                 url,
-                headers=_doc_api_headers(api_key, "application/xhtml+xml"),
+                auth=(api_key, ""),
+                headers={"Accept": accept_mime},
                 allow_redirects=True,
                 timeout=60,
             )
