@@ -1,6 +1,7 @@
 # multitool/api/companies_house.py
 """Companies House API client."""
 
+import base64
 import threading
 import time
 import urllib.parse
@@ -357,6 +358,15 @@ def check_api_status(api_key: str, token_bucket) -> bool:
     return data is not None
 
 
+def _doc_api_headers(api_key: str, accept: str) -> dict:
+    """Build auth + accept headers for the CH Document API."""
+    encoded = base64.b64encode(f"{api_key}:".encode()).decode()
+    return {
+        "Authorization": f"Basic {encoded}",
+        "Accept": accept,
+    }
+
+
 def ch_get_document_metadata(
     api_key: str,
     token_bucket,
@@ -384,22 +394,21 @@ def ch_get_document_metadata(
     token_bucket.consume()
     url = metadata_url
     last_error = "Unknown Error"
-    headers = {"Accept": "application/json"}
 
     for i in range(retries):
         try:
             response = requests.get(
-                url, auth=(api_key, ""), headers=headers, timeout=30
+                url,
+                headers=_doc_api_headers(api_key, "application/json"),
+                timeout=30,
             )
-            token_bucket.sync_from_headers(response.headers)
 
             if response.status_code in [404, 401, 403]:
                 return None, f"Client Error: {response.status_code}"
 
             if response.status_code == 429:
                 last_error = "Rate Limited (429)"
-                reset_wait = token_bucket.get_wait_from_reset(response.headers)
-                wait_time = reset_wait if reset_wait else backoff_factor * (2 ** i)
+                wait_time = backoff_factor * (2 ** i)
                 log_message(f"Rate limited on document metadata. Waiting {wait_time:.1f}s...")
                 time.sleep(wait_time)
                 continue
@@ -451,28 +460,26 @@ def ch_download_document_content(
         Tuple of (saved file path or None, error message or None)
     """
     token_bucket.consume()
+    # metadata_url is the full document_metadata link; append /content to
+    # request the actual file from the Document API.
     url = f"{metadata_url}/content"
-    headers = {"Accept": "application/xhtml+xml"}
     last_error = "Unknown Error"
 
     for i in range(retries):
         try:
             response = requests.get(
                 url,
-                auth=(api_key, ""),
-                headers=headers,
+                headers=_doc_api_headers(api_key, "application/xhtml+xml"),
                 allow_redirects=True,
                 timeout=60,
             )
-            token_bucket.sync_from_headers(response.headers)
 
             if response.status_code in [404, 401, 403]:
                 return None, f"Client Error: {response.status_code}"
 
             if response.status_code == 429:
                 last_error = "Rate Limited (429)"
-                reset_wait = token_bucket.get_wait_from_reset(response.headers)
-                wait_time = reset_wait if reset_wait else backoff_factor * (2 ** i)
+                wait_time = backoff_factor * (2 ** i)
                 log_message(f"Rate limited on document download. Waiting {wait_time:.1f}s...")
                 time.sleep(wait_time)
                 continue
