@@ -416,9 +416,10 @@ class App(tk.Tk):
             self._working_set_tree.delete(
                 *self._working_set_tree.get_children()
             )
-            for ent in entities:
+            for idx, ent in enumerate(entities):
                 self._working_set_tree.insert(
                     "", tk.END,
+                    iid=f"ws-{idx}",
                     values=(ent.get("name", "Unknown"),
                             ent.get("company_number", ent.get("number", "")))
                 )
@@ -1574,8 +1575,8 @@ class App(tk.Tk):
                 self._home_ws_header.configure(text="No entities in working set")
 
             self._home_ws_tree.delete(*self._home_ws_tree.get_children())
-            for ent in entities:
-                self._home_ws_tree.insert("", tk.END, values=(
+            for idx, ent in enumerate(entities):
+                self._home_ws_tree.insert("", tk.END, iid=f"ws-{idx}", values=(
                     ent.get("name", "Unknown"),
                     ent.get("company_number", ent.get("number", ""))
                 ))
@@ -1612,8 +1613,29 @@ class App(tk.Tk):
         except tk.TclError:
             sel = ()
         if sel:
-            indices = [tree.index(item) for item in sel]
-            return [entities[i] for i in indices if i < len(entities)]
+            selected_entities = []
+            for item in sel:
+                # Prefer stable iid mapping (set in _refresh_working_set_indicator).
+                if item.startswith("ws-"):
+                    try:
+                        idx = int(item.split("-", 1)[1])
+                    except (ValueError, IndexError):
+                        idx = None
+                    if idx is not None and 0 <= idx < len(entities):
+                        selected_entities.append(entities[idx])
+                        continue
+
+                # Fallback for any legacy/non-standard iid.
+                try:
+                    idx = tree.index(item)
+                except tk.TclError:
+                    idx = None
+                if idx is not None and 0 <= idx < len(entities):
+                    selected_entities.append(entities[idx])
+
+            if selected_entities:
+                return selected_entities
+            return []
         return entities
 
     def _classify_ws_selection(self, tree):
