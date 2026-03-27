@@ -416,10 +416,9 @@ class App(tk.Tk):
             self._working_set_tree.delete(
                 *self._working_set_tree.get_children()
             )
-            for idx, ent in enumerate(entities):
+            for ent in entities:
                 self._working_set_tree.insert(
                     "", tk.END,
-                    iid=f"ws-{idx}",
                     values=(ent.get("name", "Unknown"),
                             ent.get("company_number", ent.get("number", "")))
                 )
@@ -1282,13 +1281,6 @@ class App(tk.Tk):
             (e.get("name", ""), e.get("company_number", ""), e.get("entity_type", ""))
             for e in self.app_state.ubo_working_set
         }
-        num = str(num).strip()
-        name = str(name).strip()
-        if entity_type == "company":
-            name = name or f"Company {num}"
-        elif entity_type == "charity":
-            name = name or f"Charity {num}"
-
         if num and (name, num, entity_type) not in existing:
             self.app_state.ubo_working_set.append({
                 "name": name, "company_number": num, "active": is_active,
@@ -1582,8 +1574,8 @@ class App(tk.Tk):
                 self._home_ws_header.configure(text="No entities in working set")
 
             self._home_ws_tree.delete(*self._home_ws_tree.get_children())
-            for idx, ent in enumerate(entities):
-                self._home_ws_tree.insert("", tk.END, iid=f"ws-{idx}", values=(
+            for ent in entities:
+                self._home_ws_tree.insert("", tk.END, values=(
                     ent.get("name", "Unknown"),
                     ent.get("company_number", ent.get("number", ""))
                 ))
@@ -1610,13 +1602,8 @@ class App(tk.Tk):
             return "break"
         # Not selected — let default Treeview behavior handle it
 
-    def _get_ws_selected_entities(self, tree, require_selection: bool = False):
-        """Return selected entities from a working set tree.
-
-        If ``require_selection`` is False and no rows are selected, all working-set
-        entities are returned (legacy behavior). If True, an empty selection returns
-        [] after showing an informational prompt.
-        """
+    def _get_ws_selected_entities(self, tree):
+        """Return selected entities from a working set tree, or all if none selected."""
         entities = self._collect_working_set_entities()
         if not entities:
             return []
@@ -1624,33 +1611,9 @@ class App(tk.Tk):
             sel = tree.selection()
         except tk.TclError:
             sel = ()
-        if require_selection and not sel:
-            messagebox.showinfo("No Selection", "Please select one or more rows first.")
-            return []
         if sel:
-            selected_entities = []
-            for item in sel:
-                # Prefer stable iid mapping (set in _refresh_working_set_indicator).
-                if item.startswith("ws-"):
-                    try:
-                        idx = int(item.split("-", 1)[1])
-                    except (ValueError, IndexError):
-                        idx = None
-                    if idx is not None and 0 <= idx < len(entities):
-                        selected_entities.append(entities[idx])
-                        continue
-
-                # Fallback for any legacy/non-standard iid.
-                try:
-                    idx = tree.index(item)
-                except tk.TclError:
-                    idx = None
-                if idx is not None and 0 <= idx < len(entities):
-                    selected_entities.append(entities[idx])
-
-            if selected_entities:
-                return selected_entities
-            return []
+            indices = [tree.index(item) for item in sel]
+            return [entities[i] for i in indices if i < len(entities)]
         return entities
 
     def _classify_ws_selection(self, tree):
@@ -1773,43 +1736,12 @@ class App(tk.Tk):
     def _send_ws_to_ubo(self, tree) -> None:
         """Send selected companies from working set to UBO Tracer."""
         try:
-            # Match Bulk Entity Search send behavior: require explicit selection.
-            selected = self._get_ws_selected_entities(tree, require_selection=True)
+            selected = self._get_ws_selected_entities(tree)
             if not selected:
                 return
 
-            companies = []
-            others = []
-            for ent in selected:
-                if not isinstance(ent, dict):
-                    others.append(ent)
-                    continue
-
-                etype = ent.get("entity_type", "company")
-                if etype != "company":
-                    others.append(ent)
-                    continue
-
-                # Normalize payload shape to what UBO Tracer expects so mixed
-                # working-set sources cannot pass malformed values that may
-                # break UBO prefill initialization.
-                company_number = str(
-                    ent.get("company_number", ent.get("number", ""))
-                ).strip()
-                company_name = str(ent.get("name", ent.get("company_name", ""))).strip()
-
-                if not company_number:
-                    others.append(ent)
-                    continue
-
-                # Align payload shape with Bulk Entity Search _entity_to_ws_dict
-                # so UBO prefill always receives the exact same schema.
-                companies.append({
-                    "entity_type": "company",
-                    "company_number": company_number,
-                    "name": company_name or f"Company {company_number}",
-                    "active": bool(ent.get("active", True)),
-                })
+            companies = [e for e in selected if e.get("entity_type", "company") == "company"]
+            others = [e for e in selected if e.get("entity_type", "company") != "company"]
 
             if not companies:
                 messagebox.showinfo("UBO Tracer",
@@ -1823,16 +1755,12 @@ class App(tk.Tk):
                 if not ok:
                     return
 
-            log_message(
-                "Working Set -> UBO send: "
-                f"selected={len(selected)} companies={len(companies)} others={len(others)}"
-            )
             if len(companies) == 1:
                 c = companies[0]
                 prefill_company = c.get("company_number", c.get("number", ""))
                 prefill_name = c.get("name", "")
-                # Defer navigation to idle to avoid destroying active menu/tree
-                # widgets mid-callback.
+                # Defer navigation to idle so widget teardown does not happen
+                # mid menu/tree callback.
                 self.after_idle(
                     lambda: self.show_ubo_investigation(
                         prefill_company=prefill_company,
@@ -1841,8 +1769,8 @@ class App(tk.Tk):
                 )
             else:
                 payload = [dict(c) for c in companies]
-                # Defer navigation to idle to avoid destroying active menu/tree
-                # widgets mid-callback.
+                # Defer navigation to idle so widget teardown does not happen
+                # mid menu/tree callback.
                 self.after_idle(
                     lambda: self.show_ubo_investigation(prefill_entities=payload)
                 )
