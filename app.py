@@ -1090,13 +1090,32 @@ class App(tk.Tk):
             return None, None
 
         # Fetch full profile of first match
-        number = items[0].get("company_number", "")
+        top_match = items[0]
+        number = top_match.get("company_number", "")
+        match_note = None
+        matches = top_match.get("matches") or {}
+        title_matches = matches.get("title") or []
+        snippet_matches = matches.get("snippet") or []
+        description_identifiers = top_match.get("description_identifier") or []
+        if isinstance(description_identifiers, str):
+            description_identifiers = [description_identifiers]
+        query_norm = re.sub(r"[^a-z0-9]+", "", query.lower())
+        title_norm = re.sub(r"[^a-z0-9]+", "", str(top_match.get("title", "")).lower())
+        query_not_in_current_title = bool(query_norm and query_norm not in title_norm)
+        former_hint = any("former" in str(v).lower() for v in description_identifiers)
+        if query_not_in_current_title and (snippet_matches or former_hint or not title_matches):
+            match_note = "Matched via a former company name."
+
         if number:
             profile, perr = ch_get_company(
                 self.api_key, self.ch_token_bucket, number
             )
+            if profile and match_note:
+                profile["_quick_launch_match_note"] = match_note
             return profile, perr
-        return items[0], None
+        if match_note:
+            top_match["_quick_launch_match_note"] = match_note
+        return top_match, None
 
     def _ql_resolve_charity(self, query: str):
         """Resolve a charity by registration number or name search."""
@@ -1121,10 +1140,9 @@ class App(tk.Tk):
             if score > best_score:
                 best_match, best_score = item, score
 
-        if best_match and best_score >= 95:
+        if best_match:
+            best_match["_quick_launch_match_score"] = round(best_score)
             return best_match, None
-        elif best_match:
-            return None, f"No exact match found (best: {best_match.get('charity_name', '?')} at {best_score:.0f}%)"
         return None, None
 
     def _ql_display_result(self, result, entity_type: str, error) -> None:
@@ -1174,6 +1192,13 @@ class App(tk.Tk):
                 text=f"Company No: {number}  |  Status: {status}  |  Incorporated: {date_disp}",
                 font=("Segoe UI", 9), foreground="gray"
             ).pack(anchor="w", pady=(2, 0))
+            if result.get("_quick_launch_match_note"):
+                ttk.Label(
+                    card,
+                    text=f"ℹ {result.get('_quick_launch_match_note')}",
+                    font=("Segoe UI", 9),
+                    foreground="#fd7e14",
+                ).pack(anchor="w", pady=(2, 0))
 
         elif entity_type == "charity":
             name = result.get("charity_name", result.get("name", "Unknown"))
@@ -1194,7 +1219,6 @@ class App(tk.Tk):
                 card, text=f"Reg No: {reg_num}  |  Status: {status}",
                 font=("Segoe UI", 9), foreground="gray"
             ).pack(anchor="w", pady=(2, 0))
-
             if not is_active:
                 ttk.Label(
                     card,
@@ -1591,6 +1615,9 @@ class App(tk.Tk):
 
     def _toggle_tree_selection(self, event, tree) -> None:
         """Toggle selection on click: deselect if already selected, else default."""
+        region = tree.identify_region(event.x, event.y)
+        if region in ("heading", "separator"):
+            return
         item = tree.identify_row(event.y)
         if not item:
             # Click on empty area — clear all selection
@@ -1615,6 +1642,17 @@ class App(tk.Tk):
             indices = [tree.index(item) for item in sel]
             return [entities[i] for i in indices if i < len(entities)]
         return entities
+
+    def _ensure_ws_selection(self, tree) -> bool:
+        """Ensure the working set has an explicit selection before Send To actions."""
+        try:
+            selected = tree.selection()
+        except tk.TclError:
+            selected = ()
+        if not selected:
+            messagebox.showinfo("Working Set", "No entities selected.")
+            return False
+        return True
 
     def _classify_ws_selection(self, tree):
         """Classify the current selection in a working set tree.
@@ -1712,6 +1750,8 @@ class App(tk.Tk):
 
     def _send_tree_selection_to_edd(self, tree) -> None:
         """Send a single selected entity from any working set tree to EDD."""
+        if not self._ensure_ws_selection(tree):
+            return
         selected = self._get_ws_selected_entities(tree)
         if not selected:
             return
@@ -1736,6 +1776,8 @@ class App(tk.Tk):
     def _send_ws_to_ubo(self, tree) -> None:
         """Send selected companies from working set to UBO Tracer."""
         try:
+            if not self._ensure_ws_selection(tree):
+                return
             selected = self._get_ws_selected_entities(tree)
             if not selected:
                 return
@@ -1781,6 +1823,8 @@ class App(tk.Tk):
 
     def _send_ws_to_bulk_search(self, tree) -> None:
         """Send selected companies/charities from working set to Bulk Entity Search."""
+        if not self._ensure_ws_selection(tree):
+            return
         selected = self._get_ws_selected_entities(tree)
         if not selected:
             return
@@ -1802,6 +1846,8 @@ class App(tk.Tk):
 
     def _send_ws_to_grants(self, tree) -> None:
         """Send selected companies/charities from working set to Grants Search."""
+        if not self._ensure_ws_selection(tree):
+            return
         selected = self._get_ws_selected_entities(tree)
         if not selected:
             return
@@ -1819,10 +1865,12 @@ class App(tk.Tk):
                                 f"Skipping {len(persons)} person(s). "
                                 f"Sending {len(valid)} companies/charities.")
 
-        self.show_grants_investigation(prefill_entities=valid)
+        self.show_grants_investigation(prefill_entities=valid, prefill_source="Working Set")
 
     def _send_ws_to_director(self, tree) -> None:
         """Send selected person from working set to Director Search."""
+        if not self._ensure_ws_selection(tree):
+            return
         selected = self._get_ws_selected_entities(tree)
         if not selected:
             return
@@ -2172,13 +2220,15 @@ class App(tk.Tk):
             messagebox.showinfo("Working Set", "No entities in working set.")
             return
 
-        # Honour tree selection if any items are selected
+        # Honour explicit tree selection
         if tree is not None:
             try:
                 sel = tree.selection()
-                if sel:
-                    indices = [tree.index(item) for item in sel]
-                    entities = [entities[i] for i in indices if i < len(entities)]
+                if not sel:
+                    messagebox.showinfo("Working Set", "No entities selected.")
+                    return
+                indices = [tree.index(item) for item in sel]
+                entities = [entities[i] for i in indices if i < len(entities)]
             except tk.TclError:
                 pass
 
@@ -2477,12 +2527,13 @@ class App(tk.Tk):
         self._update_sidebar_active("ubo_tracer")
         self._refresh_working_set_indicator()
     
-    def show_grants_investigation(self, prefill_entities=None) -> None:
+    def show_grants_investigation(self, prefill_entities=None, prefill_source=None) -> None:
         """Show the Grants Search module."""
         self.clear_container()
         from .modules.grants_search import GrantsSearch
         GrantsSearch(self, self.api_key, self.show_main_menu,
-                     prefill_entities=prefill_entities)
+                     prefill_entities=prefill_entities,
+                     prefill_source=prefill_source)
         self._update_sidebar_active("grants_search")
         self._refresh_working_set_indicator()
     

@@ -221,16 +221,15 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
 
         # --- Hierarchical Treeview ---
         tree_frame = ttk.Frame(self.results_tab)
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        tree_frame.pack(fill=tk.X, padx=10, pady=5)
         tree_frame.columnconfigure(0, weight=1)
-        tree_frame.rowconfigure(0, weight=1)
 
         self.results_tree = ttk.Treeview(
             tree_frame,
             columns=("kind", "nationality", "shareholding"),
             show="tree headings",
             selectmode="extended",
-            height=22,
+            height=16,
         )
         self.results_tree.heading("#0", text="Entity", anchor=tk.W)
         self.results_tree.heading("kind", text="Kind", anchor=tk.W)
