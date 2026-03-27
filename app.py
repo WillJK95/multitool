@@ -1829,11 +1829,23 @@ class App(tk.Tk):
             )
             if len(companies) == 1:
                 c = companies[0]
-                self.show_ubo_investigation(
-                    prefill_company=c.get("company_number", c.get("number", "")),
-                    prefill_company_name=c.get("name", ""))
+                prefill_company = c.get("company_number", c.get("number", ""))
+                prefill_name = c.get("name", "")
+                # Defer navigation to idle to avoid destroying active menu/tree
+                # widgets mid-callback.
+                self.after_idle(
+                    lambda: self.show_ubo_investigation(
+                        prefill_company=prefill_company,
+                        prefill_company_name=prefill_name
+                    )
+                )
             else:
-                self.show_ubo_investigation(prefill_entities=companies)
+                payload = [dict(c) for c in companies]
+                # Defer navigation to idle to avoid destroying active menu/tree
+                # widgets mid-callback.
+                self.after_idle(
+                    lambda: self.show_ubo_investigation(prefill_entities=payload)
+                )
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send to UBO Tracer:\n{e}")
             import traceback
