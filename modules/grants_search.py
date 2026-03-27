@@ -31,9 +31,10 @@ from .base import InvestigationModuleBase
 
 
 class GrantsSearch(InvestigationModuleBase):
-    def __init__(self, parent_app, api_key, back_callback, prefill_entities=None):
+    def __init__(self, parent_app, api_key, back_callback, prefill_entities=None, prefill_source=None):
         super().__init__(parent_app, back_callback, api_key)
         self._prefill_entities = prefill_entities
+        self._prefill_source = prefill_source
         self._tree_row_data = {}
         self._tree_root_entities = {}
         self._selected_grant_fields = []
@@ -170,9 +171,8 @@ class GrantsSearch(InvestigationModuleBase):
     def _build_results_tab(self):
         """Build Results tab widgets."""
         tree_frame = ttk.Frame(self.results_tab)
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 5))
+        tree_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
         tree_frame.columnconfigure(0, weight=1)
-        tree_frame.rowconfigure(0, weight=1)
 
         self.results_tree = ttk.Treeview(
             tree_frame,
@@ -253,8 +253,9 @@ class GrantsSearch(InvestigationModuleBase):
 
         self.original_data = rows
         self.original_headers = headers
+        source_text = self._prefill_source or "another module"
         self.file_status_label.config(
-            text=f"Prefilled: {len(rows)} entities from Bulk Entity Search.",
+            text=f"Prefilled: {len(rows)} entities from {source_text}.",
             foreground="green",
         )
         self._display_column_selection_ui()
@@ -494,10 +495,7 @@ class GrantsSearch(InvestigationModuleBase):
             state="normal" if has_selection and has_company else "disabled",
         )
         self._send_menu.entryconfigure(2, state="normal" if has_selection else "disabled")
-        if has_selection and has_charity and not has_company:
-            self._send_menu_btn.configure(text="Send to… ▼ (companies only disabled)")
-        else:
-            self._send_menu_btn.configure(text="Send to… ▼")
+        self._send_menu_btn.configure(text="Send to… ▼")
 
     def _resolve_entities_for_state(self):
         """Resolve selected entities without UI prompts, used for state changes."""
