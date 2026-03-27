@@ -1603,8 +1603,13 @@ class App(tk.Tk):
             return "break"
         # Not selected — let default Treeview behavior handle it
 
-    def _get_ws_selected_entities(self, tree):
-        """Return selected entities from a working set tree, or all if none selected."""
+    def _get_ws_selected_entities(self, tree, require_selection: bool = False):
+        """Return selected entities from a working set tree.
+
+        If ``require_selection`` is False and no rows are selected, all working-set
+        entities are returned (legacy behavior). If True, an empty selection returns
+        [] after showing an informational prompt.
+        """
         entities = self._collect_working_set_entities()
         if not entities:
             return []
@@ -1612,6 +1617,9 @@ class App(tk.Tk):
             sel = tree.selection()
         except tk.TclError:
             sel = ()
+        if require_selection and not sel:
+            messagebox.showinfo("No Selection", "Please select one or more rows first.")
+            return []
         if sel:
             selected_entities = []
             for item in sel:
@@ -1758,7 +1766,8 @@ class App(tk.Tk):
     def _send_ws_to_ubo(self, tree) -> None:
         """Send selected companies from working set to UBO Tracer."""
         try:
-            selected = self._get_ws_selected_entities(tree)
+            # Match Bulk Entity Search send behavior: require explicit selection.
+            selected = self._get_ws_selected_entities(tree, require_selection=True)
             if not selected:
                 return
 
