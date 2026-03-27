@@ -7,7 +7,12 @@ import urllib.parse
 import requests
 from typing import Tuple, Optional, Any, Dict
 
-from ..constants import API_BASE_URL, DEFAULT_MAX_RETRIES, DEFAULT_BACKOFF_FACTOR
+from ..constants import (
+    API_BASE_URL,
+    DOCUMENT_API_BASE_URL,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_BACKOFF_FACTOR,
+)
 from ..utils.helpers import log_message
 
 # Thread-safe success-only cache (errors are never cached so retries work)
@@ -22,6 +27,14 @@ def _safe_json(response: requests.Response) -> Optional[Dict[str, Any]]:
         return response.json()
     except (ValueError, AttributeError):
         return None
+
+
+def _normalize_document_metadata_url(metadata_url: str) -> str:
+    """Normalize Document API metadata links to a fully-qualified URL."""
+    parsed = urllib.parse.urlparse(metadata_url or "")
+    if parsed.scheme and parsed.netloc:
+        return metadata_url
+    return urllib.parse.urljoin(DOCUMENT_API_BASE_URL, metadata_url or "")
 
 
 def ch_get_data(
@@ -382,7 +395,7 @@ def ch_get_document_metadata(
         Tuple of (metadata dict or None, error message or None)
     """
     token_bucket.consume()
-    url = metadata_url
+    url = _normalize_document_metadata_url(metadata_url)
     last_error = "Unknown Error"
 
     for i in range(retries):
@@ -455,7 +468,8 @@ def ch_download_document_content(
         Tuple of (saved file path or None, error message or None)
     """
     token_bucket.consume()
-    url = f"{metadata_url}/content"
+    metadata_url = _normalize_document_metadata_url(metadata_url)
+    url = f"{metadata_url.rstrip('/')}/content"
     last_error = "Unknown Error"
 
     for i in range(retries):

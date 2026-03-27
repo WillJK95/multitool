@@ -1893,7 +1893,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         # already fetched, to guarantee we get enough accounts items).
         accounts_data, err = ch_get_data(
             self.api_key, self.ch_token_bucket,
-            f"/company/{cnum}/filing-history?category=accounts&items_per_page=15"
+            f"/company/{cnum}/filing-history?category=accounts&items_per_page=100"
         )
         if err or not accounts_data:
             log_message(f"Could not fetch accounts filing history for {cnum}: {err}")
@@ -1911,7 +1911,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             )
             return
 
-        # Sort by date descending (most recent first) and check up to 7
+        # Sort by date descending (most recent first) and check a reasonable
+        # window of recent filings. Many companies have several consecutive
+        # PDF-only submissions before an iXBRL period appears.
         items_with_dates = [
             it for it in items
             if it.get('links', {}).get('document_metadata') and it.get('date')
@@ -1919,7 +1921,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         items_with_dates.sort(key=lambda x: x['date'], reverse=True)
 
         available = []
-        for filing in items_with_dates[:7]:
+        for filing in items_with_dates[:25]:
             metadata_url = filing['links']['document_metadata']
             metadata, meta_err = ch_get_document_metadata(
                 self.api_key, self.ch_token_bucket, metadata_url
