@@ -14,6 +14,7 @@ from ..utils.helpers import log_message
 _cache = {}
 _cache_lock = threading.Lock()
 _CACHE_MAX_SIZE = 1024
+_DOCUMENT_API_BASE_URL = "https://document-api.company-information.service.gov.uk"
 
 
 def _safe_json(response: requests.Response) -> Optional[Dict[str, Any]]:
@@ -22,6 +23,23 @@ def _safe_json(response: requests.Response) -> Optional[Dict[str, Any]]:
         return response.json()
     except (ValueError, AttributeError):
         return None
+
+
+def _normalise_document_metadata_url(metadata_url: str) -> str:
+    """Return an absolute Document API metadata URL.
+
+    Filing history often returns ``links.document_metadata`` as a relative path
+    like ``/document/{id}``, but this client expects to call the Document API
+    directly. Normalising here supports both relative and absolute forms.
+    """
+    if not metadata_url:
+        return metadata_url
+
+    parsed = urllib.parse.urlparse(metadata_url)
+    if parsed.scheme and parsed.netloc:
+        return metadata_url
+
+    return urllib.parse.urljoin(_DOCUMENT_API_BASE_URL, metadata_url)
 
 
 def ch_get_data(
@@ -382,7 +400,7 @@ def ch_get_document_metadata(
         Tuple of (metadata dict or None, error message or None)
     """
     token_bucket.consume()
-    url = metadata_url
+    url = _normalise_document_metadata_url(metadata_url)
     last_error = "Unknown Error"
 
     for i in range(retries):
@@ -455,7 +473,8 @@ def ch_download_document_content(
         Tuple of (saved file path or None, error message or None)
     """
     token_bucket.consume()
-    url = f"{metadata_url}/content"
+    normalised_metadata_url = _normalise_document_metadata_url(metadata_url).rstrip("/")
+    url = f"{normalised_metadata_url}/content"
     last_error = "Unknown Error"
 
     for i in range(retries):
