@@ -5,6 +5,7 @@ import os
 import re
 import threading
 import time
+import traceback
 import tkinter as tk
 from datetime import datetime
 from tkinter import ttk, filedialog, messagebox
@@ -150,13 +151,29 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         """Pre-populate data from multiple entities sent via the working set."""
         self.original_data = []
         for ent in self._prefill_entities:
+            if not isinstance(ent, dict):
+                continue
+            company_number = str(
+                ent.get("company_number", ent.get("number", ""))
+            ).strip()
+            if not company_number:
+                continue
             self.original_data.append({
-                "company_number": ent.get("company_number", ent.get("number", "")),
-                "company_name": ent.get("name", ""),
+                "company_number": company_number,
+                "company_name": str(ent.get("name", ent.get("company_name", ""))).strip(),
             })
+
+        if not self.original_data:
+            self.file_status_label.config(
+                text="Working Set prefill contained no valid companies.",
+                foreground="red"
+            )
+            self.run_btn.config(state="disabled")
+            return
+
         self.original_headers = ["company_number", "company_name"]
         self.file_status_label.config(
-            text=f"Working Set: {len(self._prefill_entities)} companies",
+            text=f"Working Set: {len(self.original_data)} companies",
             foreground="green"
         )
         self._display_column_selection_ui()
@@ -893,7 +910,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         self._auto_map_columns(headers)
 
         # Force geometry calculation then update scroll region
-        self.app.after(50, self._force_scroll_update)
+        self._tracked_after(50, self._force_scroll_update)
 
     def _auto_map_columns(self, headers):
         """Try to auto-detect company number and name columns from headers."""
@@ -948,6 +965,11 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             self.scroller.canvas.itemconfig(self.scroller.frame_id, height=max(required_height, visible_height))
         except tk.TclError:
             pass
+        except Exception:
+            log_message(
+                "UBO _force_scroll_update unexpected error:\n"
+                f"{traceback.format_exc()}"
+            )
 
     def _auto_confirm_columns(self, event=None):
         """Silently confirm column selection and enable Run button."""
