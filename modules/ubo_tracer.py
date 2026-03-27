@@ -230,7 +230,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             columns=("kind", "nationality", "shareholding"),
             show="tree headings",
             selectmode="extended",
-            height=22,
+            height=16,
         )
         self.results_tree.heading("#0", text="Entity", anchor=tk.W)
         self.results_tree.heading("kind", text="Kind", anchor=tk.W)

@@ -1090,13 +1090,25 @@ class App(tk.Tk):
             return None, None
 
         # Fetch full profile of first match
-        number = items[0].get("company_number", "")
+        top_match = items[0]
+        number = top_match.get("company_number", "")
+        match_note = None
+        matches = top_match.get("matches") or {}
+        title_matches = matches.get("title") or []
+        snippet_matches = matches.get("snippet") or []
+        if not title_matches and snippet_matches:
+            match_note = "Matched via a former company name."
+
         if number:
             profile, perr = ch_get_company(
                 self.api_key, self.ch_token_bucket, number
             )
+            if profile and match_note:
+                profile["_quick_launch_match_note"] = match_note
             return profile, perr
-        return items[0], None
+        if match_note:
+            top_match["_quick_launch_match_note"] = match_note
+        return top_match, None
 
     def _ql_resolve_charity(self, query: str):
         """Resolve a charity by registration number or name search."""
@@ -1121,10 +1133,9 @@ class App(tk.Tk):
             if score > best_score:
                 best_match, best_score = item, score
 
-        if best_match and best_score >= 95:
+        if best_match:
+            best_match["_quick_launch_match_score"] = round(best_score)
             return best_match, None
-        elif best_match:
-            return None, f"No exact match found (best: {best_match.get('charity_name', '?')} at {best_score:.0f}%)"
         return None, None
 
     def _ql_display_result(self, result, entity_type: str, error) -> None:
@@ -1174,6 +1185,13 @@ class App(tk.Tk):
                 text=f"Company No: {number}  |  Status: {status}  |  Incorporated: {date_disp}",
                 font=("Segoe UI", 9), foreground="gray"
             ).pack(anchor="w", pady=(2, 0))
+            if result.get("_quick_launch_match_note"):
+                ttk.Label(
+                    card,
+                    text=f"ℹ {result.get('_quick_launch_match_note')}",
+                    font=("Segoe UI", 9),
+                    foreground="#fd7e14",
+                ).pack(anchor="w", pady=(2, 0))
 
         elif entity_type == "charity":
             name = result.get("charity_name", result.get("name", "Unknown"))
@@ -1194,6 +1212,13 @@ class App(tk.Tk):
                 card, text=f"Reg No: {reg_num}  |  Status: {status}",
                 font=("Segoe UI", 9), foreground="gray"
             ).pack(anchor="w", pady=(2, 0))
+            if result.get("_quick_launch_match_score", 100) < 95:
+                ttk.Label(
+                    card,
+                    text=f"ℹ Best name match ({result.get('_quick_launch_match_score')}%)",
+                    font=("Segoe UI", 9),
+                    foreground="#fd7e14",
+                ).pack(anchor="w", pady=(2, 0))
 
             if not is_active:
                 ttk.Label(

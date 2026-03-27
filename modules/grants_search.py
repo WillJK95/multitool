@@ -37,6 +37,9 @@ class GrantsSearch(InvestigationModuleBase):
         self._tree_row_data = {}
         self._tree_root_entities = {}
         self._selected_grant_fields = []
+        self._results_view_mode = "recipient"
+        self._results_sort_col = None
+        self._results_sort_reverse = False
 
         # --- Notebook with Configuration and Results tabs ---
         self.notebook = ttk.Notebook(self.content_frame)
@@ -176,7 +179,7 @@ class GrantsSearch(InvestigationModuleBase):
             columns=(),
             show="tree headings",
             selectmode="extended",
-            height=22,
+            height=16,
         )
         self.results_tree.heading("#0", text="Entity / Grant", anchor=tk.W)
         self.results_tree.column("#0", width=360, minwidth=220)
@@ -201,7 +204,15 @@ class GrantsSearch(InvestigationModuleBase):
         )
         self.export_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-        self._send_menu_btn = ttk.Menubutton(bottom_bar, text="Send to… ▼")
+        self._sort_mode_btn = ttk.Button(
+            bottom_bar,
+            text="Sort by Funder",
+            command=self._toggle_results_grouping_mode,
+            state="disabled",
+        )
+        self._sort_mode_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self._send_menu_btn = ttk.Menubutton(bottom_bar, text="Send to… ▼", bootstyle="primary-outline")
         self._send_menu = tk.Menu(self._send_menu_btn, tearoff=0)
         self._send_menu.add_command(label="Working Set", command=self._send_to_working_set)
         self._send_menu.add_command(label="UBO Tracer (companies only)", command=self._send_to_ubo_tracer)
@@ -253,7 +264,7 @@ class GrantsSearch(InvestigationModuleBase):
         if "charity_number" in headers:
             self.charity_num_col_var.set("charity_number")
         # Auto-confirm
-        self._confirm_column()
+        self._auto_confirm_columns()
 
     def _get_selected_grant_fields(self):
         """Return selected grant field tuples preserving configured order."""
@@ -271,8 +282,59 @@ class GrantsSearch(InvestigationModuleBase):
         self.results_tree.configure(columns=tuple(col_ids))
         for idx, (_, label) in enumerate(selected):
             col_id = col_ids[idx]
-            self.results_tree.heading(col_id, text=label, anchor=tk.W)
+            self.results_tree.heading(
+                col_id,
+                text=label,
+                anchor=tk.W,
+                command=lambda c=col_id: self._sort_results_tree(c),
+            )
             self.results_tree.column(col_id, width=180, minwidth=120, anchor=tk.W)
+        self.results_tree.heading(
+            "#0",
+            text="Entity / Grant",
+            anchor=tk.W,
+            command=lambda: self._sort_results_tree("#0"),
+        )
+
+    def _funder_sort_available(self):
+        return any(label == "Funder Name" for _, label in self._selected_grant_fields)
+
+    def _toggle_results_grouping_mode(self):
+        self._results_view_mode = "funder" if self._results_view_mode == "recipient" else "recipient"
+        self._populate_results_tree()
+
+    def _update_results_toolbar_state(self):
+        funder_available = self._funder_sort_available()
+        if funder_available:
+            self._sort_mode_btn.config(
+                state="normal",
+                text="Sort by Recipient" if self._results_view_mode == "funder" else "Sort by Funder",
+            )
+        else:
+            self._results_view_mode = "recipient"
+            self._sort_mode_btn.config(state="disabled", text="Sort by Funder")
+
+    def _sort_results_tree(self, col_id):
+        if self._results_sort_col == col_id:
+            self._results_sort_reverse = not self._results_sort_reverse
+        else:
+            self._results_sort_col = col_id
+            self._results_sort_reverse = False
+        self._populate_results_tree()
+
+    def _row_sort_key(self, row):
+        if not self._results_sort_col:
+            return ""
+        if self._results_sort_col == "#0":
+            if self._results_view_mode == "funder":
+                return str(row.get("Funder Name", "") or row.get("Title", "")).lower()
+            return str(self._row_to_entity(row).get("name", "")).lower()
+        col_ids = [f"col_{idx}" for idx, _ in enumerate(self._selected_grant_fields)]
+        if self._results_sort_col in col_ids:
+            col_idx = col_ids.index(self._results_sort_col)
+            _, label = self._selected_grant_fields[col_idx]
+            return str(row.get(label, "")).lower()
+        return ""
 
     def _populate_results_tree(self):
         """Populate results tree grouped by root entity."""
@@ -281,48 +343,78 @@ class GrantsSearch(InvestigationModuleBase):
         tree.delete(*tree.get_children())
         self._tree_row_data.clear()
         self._tree_root_entities.clear()
+        self._update_results_toolbar_state()
 
         if not self.results_data:
             self._update_send_menu_state()
             return
 
+        rows = list(self.results_data)
+        if self._results_sort_col:
+            rows.sort(key=self._row_sort_key, reverse=self._results_sort_reverse)
+
         grouped = OrderedDict()
-        for row in self.results_data:
-            root_entity = self._row_to_entity(row)
-            key = (
-                root_entity.get("name", ""),
-                root_entity.get("company_number", ""),
-                root_entity.get("entity_type", ""),
-            )
-            if key not in grouped:
-                grouped[key] = {"entity": root_entity, "rows": []}
-            grouped[key]["rows"].append(row)
+        if self._results_view_mode == "funder" and self._funder_sort_available():
+            for row in rows:
+                funder = str(row.get("Funder Name", "")).strip() or "Unknown funder"
+                if funder not in grouped:
+                    grouped[funder] = {"funder": funder, "rows": []}
+                grouped[funder]["rows"].append(row)
 
-        for group in grouped.values():
-            entity = group["entity"]
-            label = f'{entity["name"]} ({entity["company_number"]})'
-            root_iid = tree.insert("", "end", text=label, open=True, values=("",) * len(self._selected_grant_fields))
-            self._tree_row_data[root_iid] = dict(entity)
-            self._tree_root_entities[root_iid] = dict(entity)
+            for group in grouped.values():
+                funder = group["funder"]
+                root_iid = tree.insert("", "end", text=funder, open=True, values=("",) * len(self._selected_grant_fields))
+                pseudo_entity = {"name": funder, "company_number": "", "entity_type": "funder"}
+                self._tree_row_data[root_iid] = dict(pseudo_entity)
+                self._tree_root_entities[root_iid] = dict(pseudo_entity)
 
-            grants = [r for r in group["rows"] if r.get("grant_search_status", "").startswith("Grants found via")]
-            if not grants:
-                child_iid = tree.insert(
-                    root_iid,
-                    "end",
-                    text="No grants found",
-                    values=("",) * len(self._selected_grant_fields),
+                grants = [r for r in group["rows"] if r.get("grant_search_status", "").startswith("Grants found via")]
+                for row in grants:
+                    recipient = self._row_to_entity(row)
+                    display = f'{recipient["name"]} ({recipient["company_number"]})'
+                    values = tuple(row.get(label, "") for _, label in self._selected_grant_fields)
+                    child_iid = tree.insert(root_iid, "end", text=display, values=values)
+                    grant_entry = row.copy()
+                    grant_entry["_root_iid"] = root_iid
+                    grant_entry["_recipient_entity"] = recipient
+                    self._tree_row_data[child_iid] = grant_entry
+        else:
+            for row in rows:
+                root_entity = self._row_to_entity(row)
+                key = (
+                    root_entity.get("name", ""),
+                    root_entity.get("company_number", ""),
+                    root_entity.get("entity_type", ""),
                 )
-                self._tree_row_data[child_iid] = {"_is_placeholder": True, "_root_iid": root_iid}
-                continue
+                if key not in grouped:
+                    grouped[key] = {"entity": root_entity, "rows": []}
+                grouped[key]["rows"].append(row)
 
-            for row in grants:
-                display = row.get("Title") or row.get("Funding Org: Name") or "Grant"
-                values = tuple(row.get(label, "") for _, label in self._selected_grant_fields)
-                child_iid = tree.insert(root_iid, "end", text=display, values=values)
-                grant_entry = row.copy()
-                grant_entry["_root_iid"] = root_iid
-                self._tree_row_data[child_iid] = grant_entry
+            for group in grouped.values():
+                entity = group["entity"]
+                label = f'{entity["name"]} ({entity["company_number"]})'
+                root_iid = tree.insert("", "end", text=label, open=True, values=("",) * len(self._selected_grant_fields))
+                self._tree_row_data[root_iid] = dict(entity)
+                self._tree_root_entities[root_iid] = dict(entity)
+
+                grants = [r for r in group["rows"] if r.get("grant_search_status", "").startswith("Grants found via")]
+                if not grants:
+                    child_iid = tree.insert(
+                        root_iid,
+                        "end",
+                        text="No grants found",
+                        values=("",) * len(self._selected_grant_fields),
+                    )
+                    self._tree_row_data[child_iid] = {"_is_placeholder": True, "_root_iid": root_iid}
+                    continue
+
+                for row in grants:
+                    display = row.get("Title") or row.get("Funder Name") or "Grant"
+                    values = tuple(row.get(label, "") for _, label in self._selected_grant_fields)
+                    child_iid = tree.insert(root_iid, "end", text=display, values=values)
+                    grant_entry = row.copy()
+                    grant_entry["_root_iid"] = root_iid
+                    self._tree_row_data[child_iid] = grant_entry
 
         self._update_send_menu_state()
 
@@ -360,10 +452,20 @@ class GrantsSearch(InvestigationModuleBase):
                 root_iid = row.get("_root_iid")
             elif iid in self._tree_root_entities:
                 root_iid = iid
+            elif self._results_view_mode == "funder" and row.get("_recipient_entity"):
+                entity = row.get("_recipient_entity")
+                key = (entity.get("name", ""), entity.get("company_number", ""), entity.get("entity_type", ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                resolved.append(dict(entity))
+                continue
             else:
                 root_iid = row.get("_root_iid") or self.results_tree.parent(iid)
             entity = self._tree_root_entities.get(root_iid)
             if not entity:
+                continue
+            if entity.get("entity_type") == "funder":
                 continue
             key = (entity.get("name", ""), entity.get("company_number", ""), entity.get("entity_type", ""))
             if key in seen:
@@ -410,10 +512,19 @@ class GrantsSearch(InvestigationModuleBase):
                 root_iid = row.get("_root_iid")
             elif iid in self._tree_root_entities:
                 root_iid = iid
+            elif self._results_view_mode == "funder" and row.get("_recipient_entity"):
+                entity = row.get("_recipient_entity")
+                key = (entity.get("name", ""), entity.get("company_number", ""), entity.get("entity_type", ""))
+                if key not in seen:
+                    seen.add(key)
+                    resolved.append(dict(entity))
+                continue
             else:
                 root_iid = row.get("_root_iid") or self.results_tree.parent(iid)
             entity = self._tree_root_entities.get(root_iid)
             if not entity:
+                continue
+            if entity.get("entity_type") == "funder":
                 continue
             key = (entity.get("name", ""), entity.get("company_number", ""), entity.get("entity_type", ""))
             if key not in seen:
@@ -501,7 +612,6 @@ class GrantsSearch(InvestigationModuleBase):
                 foreground="green",
             )
             self._display_column_selection_ui()
-            self.run_btn.config(state="disabled")
         else:
             self.file_status_label.config(text="Error loading file.", foreground="red")
 
@@ -551,16 +661,48 @@ class GrantsSearch(InvestigationModuleBase):
         ch_combo.pack(fill="x", pady=5)
         ch_combo.set("___NONE___")
 
-        # Confirm Button
-        ttk.Button(
-            self.column_selection_frame,
-            text="Confirm Columns",
-            command=self._confirm_column,
-        ).pack(side=tk.BOTTOM, pady=10)
+        c_combo.bind("<<ComboboxSelected>>", self._auto_confirm_columns)
+        ch_combo.bind("<<ComboboxSelected>>", self._auto_confirm_columns)
+
+        self._auto_map_columns()
+        self._auto_confirm_columns()
 
         self.app.after(1, self._update_scrollregion)
 
-    def _confirm_column(self):
+    def _auto_map_columns(self):
+        """Try to auto-detect identifier columns from header names."""
+        headers = getattr(self, "original_headers", [])
+        if not headers:
+            return
+        headers_lower = {h: h.lower() for h in headers}
+
+        company_keywords = [
+            "company_number", "company number", "company no", "company_no",
+            "registration number", "crn", "comp no",
+        ]
+        charity_keywords = [
+            "charity_number", "charity number", "charity no", "charity_no",
+            "registered charity number", "reg_charity_number",
+        ]
+
+        for keyword in company_keywords:
+            for header, lower in headers_lower.items():
+                if keyword == lower or keyword in lower:
+                    self.company_num_col_var.set(header)
+                    break
+            if self.company_num_col_var.get():
+                break
+
+        for keyword in charity_keywords:
+            for header, lower in headers_lower.items():
+                if keyword == lower or keyword in lower:
+                    if header != self.company_num_col_var.get():
+                        self.charity_num_col_var.set(header)
+                        break
+            if self.charity_num_col_var.get():
+                break
+
+    def _auto_confirm_columns(self, event=None):
         self.company_num_col = self.company_num_col_var.get()
         self.charity_num_col = self.charity_num_col_var.get()
 
@@ -570,20 +712,18 @@ class GrantsSearch(InvestigationModuleBase):
         if self.charity_num_col == "___NONE___":
             self.charity_num_col = None
 
+        if self.company_num_col or self.charity_num_col:
+            self.run_btn.config(state="normal")
+        else:
+            self.run_btn.config(state="disabled")
+
+    def start_investigation(self):
         if not self.company_num_col and not self.charity_num_col:
             messagebox.showerror(
                 "Selection Error",
-                "You must select a column for Company Number OR Charity Number.",
+                "You must map a Company Number or Charity Number column.",
             )
             return
-
-        messagebox.showinfo(
-            "Columns Confirmed",
-            "Column selection confirmed. You can now run the investigation.",
-        )
-        self.run_btn.config(state="normal")
-
-    def start_investigation(self):
         self.cancel_flag.clear()
         self.run_btn.pack_forget()
         self.cancel_btn.pack(side=tk.LEFT, padx=5)
