@@ -4,7 +4,6 @@
 import os
 import base64
 import html
-import tempfile
 import threading
 import traceback
 import webbrowser
@@ -443,47 +442,49 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         downloaded_paths = []
 
         try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                for i, (filing_date, metadata_path) in enumerate(selected):
-                    if self.cancel_flag.is_set():
-                        return
-                    self.safe_update(
-                        self.status_var.set,
-                        f"Downloading account {i + 1} of {len(selected)}..."
-                    )
+            cache_dir = os.path.join(CONFIG_DIR, "accounts_cache", cnum)
+            os.makedirs(cache_dir, exist_ok=True)
 
-                    dest = os.path.join(tmpdir, f"{cnum}_{filing_date}.xhtml")
-                    path, err = ch_download_document_content(
-                        self.api_key, self.ch_token_bucket, metadata_path, dest
-                    )
-                    if err:
-                        log_message(
-                            f"Failed to download iXBRL for {cnum} ({filing_date}): {err}"
-                        )
-                        continue
-                    downloaded_paths.append(path)
-
-                if not downloaded_paths:
-                    self.safe_update(
-                        self.accounts_status_label.config,
-                        text="Failed to download any accounts.", foreground='red'
-                    )
-                    self.safe_update(self.status_var.set, "Account download failed.")
+            for i, (filing_date, metadata_url) in enumerate(selected):
+                if self.cancel_flag.is_set():
                     return
+                self.safe_update(
+                    self.status_var.set,
+                    f"Downloading account {i + 1} of {len(selected)}..."
+                )
 
-                # Parse downloaded files through existing pipeline
-                self.safe_update(self.status_var.set, "Parsing downloaded accounts...")
-                self.financial_analyzer = FinancialAnalyzer()
-                df = self.financial_analyzer.load_files(downloaded_paths)
-
-                if df.empty:
-                    self.safe_update(
-                        self.accounts_status_label.config,
-                        text="Downloaded files contained no parseable data.",
-                        foreground='red'
+                dest = os.path.join(cache_dir, f"{cnum}_{filing_date}.xhtml")
+                path, err = ch_download_document_content(
+                    self.api_key, self.ch_token_bucket, metadata_url, dest
+                )
+                if err:
+                    log_message(
+                        f"Failed to download iXBRL for {cnum} ({filing_date}): {err}"
                     )
-                    self.safe_update(self.status_var.set, "No data found in accounts.")
-                    return
+                    continue
+                downloaded_paths.append(path)
+
+            if not downloaded_paths:
+                self.safe_update(
+                    self.accounts_status_label.config,
+                    text="Failed to download any accounts.", foreground='red'
+                )
+                self.safe_update(self.status_var.set, "Account download failed.")
+                return
+
+            # Parse downloaded files through existing pipeline
+            self.safe_update(self.status_var.set, "Parsing downloaded accounts...")
+            self.financial_analyzer = FinancialAnalyzer()
+            df = self.financial_analyzer.load_files(downloaded_paths)
+
+            if df.empty:
+                self.safe_update(
+                    self.accounts_status_label.config,
+                    text="Downloaded files contained no parseable data.",
+                    foreground='red'
+                )
+                self.safe_update(self.status_var.set, "No data found in accounts.")
+                return
 
                 self.accounts_loaded = True
                 years = sorted(df['Year'].unique())
@@ -1918,15 +1919,15 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         available = []
         for filing in items_with_dates[:7]:
-            metadata_path = filing['links']['document_metadata']
+            metadata_url = filing['links']['document_metadata']
             metadata, meta_err = ch_get_document_metadata(
-                self.api_key, self.ch_token_bucket, metadata_path
+                self.api_key, self.ch_token_bucket, metadata_url
             )
             if meta_err or not metadata:
                 continue
             resources = metadata.get('resources', {})
             if 'application/xhtml+xml' in resources:
-                available.append((filing['date'], metadata_path))
+                available.append((filing['date'], metadata_url))
 
         self._available_ixbrl_filings = available
         count = len(available)

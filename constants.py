@@ -5,7 +5,6 @@ import os
 
 # --- API Configuration ---
 API_BASE_URL = "https://api.company-information.service.gov.uk"
-CH_DOCUMENT_API_BASE_URL = "https://document-api.company-information.service.gov.uk"
 GRANTNAV_API_BASE_URL = "https://api.threesixtygiving.org/api/v1"
 CHARITY_API_BASE_URL = "https://api.charitycommission.gov.uk/register/api"
 CONTRACTS_FINDER_BASE_URL = "https://www.contractsfinder.service.gov.uk"

@@ -7,10 +7,7 @@ import urllib.parse
 import requests
 from typing import Tuple, Optional, Any, Dict
 
-from ..constants import (
-    API_BASE_URL, CH_DOCUMENT_API_BASE_URL,
-    DEFAULT_MAX_RETRIES, DEFAULT_BACKOFF_FACTOR,
-)
+from ..constants import API_BASE_URL, DEFAULT_MAX_RETRIES, DEFAULT_BACKOFF_FACTOR
 from ..utils.helpers import log_message
 
 # Thread-safe success-only cache (errors are never cached so retries work)
@@ -363,7 +360,7 @@ def check_api_status(api_key: str, token_bucket) -> bool:
 def ch_get_document_metadata(
     api_key: str,
     token_bucket,
-    metadata_path: str,
+    metadata_url: str,
     retries: int = DEFAULT_MAX_RETRIES,
     backoff_factor: float = DEFAULT_BACKOFF_FACTOR
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -377,8 +374,7 @@ def ch_get_document_metadata(
     Args:
         api_key: Companies House API key
         token_bucket: TokenBucket instance for rate limiting
-        metadata_path: Path from filing['links']['document_metadata']
-                       (e.g. '/document/abc123')
+        metadata_url: Full URL from filing['links']['document_metadata']
         retries: Maximum retry attempts
         backoff_factor: Base delay multiplier for exponential backoff
 
@@ -386,7 +382,7 @@ def ch_get_document_metadata(
         Tuple of (metadata dict or None, error message or None)
     """
     token_bucket.consume()
-    url = f"{CH_DOCUMENT_API_BASE_URL}{metadata_path}"
+    url = metadata_url
     last_error = "Unknown Error"
 
     for i in range(retries):
@@ -427,7 +423,7 @@ def ch_get_document_metadata(
 def ch_download_document_content(
     api_key: str,
     token_bucket,
-    metadata_path: str,
+    metadata_url: str,
     dest_path: str,
     retries: int = DEFAULT_MAX_RETRIES,
     backoff_factor: float = DEFAULT_BACKOFF_FACTOR
@@ -443,7 +439,7 @@ def ch_download_document_content(
     Args:
         api_key: Companies House API key
         token_bucket: TokenBucket instance for rate limiting
-        metadata_path: Path from filing['links']['document_metadata']
+        metadata_url: Full URL from filing['links']['document_metadata']
         dest_path: Local file path to save the downloaded content
         retries: Maximum retry attempts
         backoff_factor: Base delay multiplier for exponential backoff
@@ -452,7 +448,7 @@ def ch_download_document_content(
         Tuple of (saved file path or None, error message or None)
     """
     token_bucket.consume()
-    url = f"{CH_DOCUMENT_API_BASE_URL}{metadata_path}/content"
+    url = f"{metadata_url}/content"
     headers = {"Accept": "application/xhtml+xml"}
     last_error = "Unknown Error"
 
