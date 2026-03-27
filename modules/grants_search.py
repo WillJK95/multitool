@@ -6,6 +6,7 @@ import csv
 import textwrap
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- Tkinter ---
@@ -33,9 +34,22 @@ class GrantsSearch(InvestigationModuleBase):
     def __init__(self, parent_app, api_key, back_callback, prefill_entities=None):
         super().__init__(parent_app, back_callback, api_key)
         self._prefill_entities = prefill_entities
+        self._tree_row_data = {}
+        self._tree_root_entities = {}
+        self._selected_grant_fields = []
 
+        # --- Notebook with Configuration and Results tabs ---
+        self.notebook = ttk.Notebook(self.content_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        self.config_tab = ttk.Frame(self.notebook)
+        self.results_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.config_tab, text="Configuration")
+        self.notebook.add(self.results_tab, text="Results")
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+        # --- Configuration tab ---
         upload_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 1: Upload File", padding=10
+            self.config_tab, text="Step 1: Upload File", padding=10
         )
         upload_frame.pack(fill=tk.X, pady=5, padx=10)
         ttk.Button(
@@ -45,12 +59,12 @@ class GrantsSearch(InvestigationModuleBase):
         self.file_status_label.pack(pady=5)
 
         self.column_selection_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 2: Select Company Number Column", padding=10
+            self.config_tab, text="Step 2: Select Company Number Column", padding=10
         )
         self.column_selection_frame.pack(fill=tk.X, pady=5, padx=10)
 
         config_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 3: Select Grant Data Fields", padding=10
+            self.config_tab, text="Step 3: Select Grant Data Fields", padding=10
         )
         config_frame.pack(fill=tk.X, pady=5, padx=10)
         self.data_fields_vars = {
@@ -97,7 +111,7 @@ class GrantsSearch(InvestigationModuleBase):
             ).pack(anchor="w")
 
         run_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 4: Run & Export", padding=10
+            self.config_tab, text="Step 4: Run Investigation", padding=10
         )
         run_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=10)
         run_buttons_frame = ttk.Frame(run_frame)
@@ -112,10 +126,6 @@ class GrantsSearch(InvestigationModuleBase):
         self.cancel_btn = ttk.Button(
             run_buttons_frame, text="Cancel", command=self.cancel_investigation
         )
-        self.export_btn = ttk.Button(
-            run_frame, text="Export Results", state="disabled", command=self.export_csv
-        )
-        self.export_btn.pack(pady=5)
         self.progress_bar = ttk.Progressbar(
             run_frame, orient="horizontal", length=300, mode="determinate"
         )
@@ -125,9 +135,81 @@ class GrantsSearch(InvestigationModuleBase):
         self.status_var = tk.StringVar(value="Ready.")
         ttk.Label(run_frame, textvariable=self.status_var).pack(anchor=tk.W)
 
+        self._build_results_tab()
+
         # Apply prefill from Bulk Entity Search
         if self._prefill_entities:
             self._apply_prefill()
+
+    # ------------------------------------------------------------------
+    # Tab management
+    # ------------------------------------------------------------------
+
+    def _on_tab_changed(self, event=None):
+        """Toggle outer scroller when switching between Configuration and Results."""
+        selected = self.notebook.select()
+        on_results = (selected == str(self.results_tab))
+        if on_results:
+            self.scroller.scrollbar.pack_forget()
+            self.scroller.canvas.yview_moveto(0)
+            self.scroller.canvas.configure(yscrollcommand=lambda *a: None)
+            self.scroller._disabled = True
+        else:
+            self.scroller.scrollbar.pack(side="right", fill="y")
+            self.scroller.canvas.configure(yscrollcommand=self.scroller.scrollbar.set)
+            self.scroller._disabled = False
+            self._update_scrollregion()
+
+    # ------------------------------------------------------------------
+    # Results tab
+    # ------------------------------------------------------------------
+
+    def _build_results_tab(self):
+        """Build Results tab widgets."""
+        tree_frame = ttk.Frame(self.results_tab)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 5))
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+
+        self.results_tree = ttk.Treeview(
+            tree_frame,
+            columns=(),
+            show="tree headings",
+            selectmode="extended",
+            height=22,
+        )
+        self.results_tree.heading("#0", text="Entity / Grant", anchor=tk.W)
+        self.results_tree.column("#0", width=360, minwidth=220)
+
+        yscroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.results_tree.yview)
+        xscroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.results_tree.xview)
+        self.results_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+
+        self.results_tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+
+        self.results_tree.bind("<<TreeviewSelect>>", self._on_tree_selection_changed)
+        self.results_tree.bind(
+            "<Button-1>", lambda e: self.app._toggle_tree_selection(e, self.results_tree)
+        )
+
+        bottom_bar = ttk.Frame(self.results_tab)
+        bottom_bar.pack(fill=tk.X, padx=10, pady=(5, 10))
+        self.export_btn = ttk.Button(
+            bottom_bar, text="Export Results", state="disabled", command=self.export_csv
+        )
+        self.export_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self._send_menu_btn = ttk.Menubutton(bottom_bar, text="Send to… ▼")
+        self._send_menu = tk.Menu(self._send_menu_btn, tearoff=0)
+        self._send_menu.add_command(label="Working Set", command=self._send_to_working_set)
+        self._send_menu.add_command(label="UBO Tracer (companies only)", command=self._send_to_ubo_tracer)
+        self._send_menu.add_command(label="Bulk Entity Search", command=self._send_to_bulk_entity_search)
+        self._send_menu_btn.configure(menu=self._send_menu)
+        self._send_menu_btn.pack(side=tk.LEFT, padx=(0, 5))
+
+        self._update_send_menu_state()
 
     def _apply_prefill(self):
         """Pre-populate data from entities sent by another module."""
@@ -172,6 +254,238 @@ class GrantsSearch(InvestigationModuleBase):
             self.charity_num_col_var.set("charity_number")
         # Auto-confirm
         self._confirm_column()
+
+    def _get_selected_grant_fields(self):
+        """Return selected grant field tuples preserving configured order."""
+        selected = []
+        for key, label in GRANT_DATA_FIELDS.items():
+            if self.data_fields_vars[key].get():
+                selected.append((key, label))
+        return selected
+
+    def _configure_results_tree_columns(self):
+        """Apply dynamic tree columns based on selected grant fields."""
+        selected = self._get_selected_grant_fields()
+        self._selected_grant_fields = selected
+        col_ids = [f"col_{idx}" for idx, _ in enumerate(selected)]
+        self.results_tree.configure(columns=tuple(col_ids))
+        for idx, (_, label) in enumerate(selected):
+            col_id = col_ids[idx]
+            self.results_tree.heading(col_id, text=label, anchor=tk.W)
+            self.results_tree.column(col_id, width=180, minwidth=120, anchor=tk.W)
+
+    def _populate_results_tree(self):
+        """Populate results tree grouped by root entity."""
+        self._configure_results_tree_columns()
+        tree = self.results_tree
+        tree.delete(*tree.get_children())
+        self._tree_row_data.clear()
+        self._tree_root_entities.clear()
+
+        if not self.results_data:
+            self._update_send_menu_state()
+            return
+
+        grouped = OrderedDict()
+        for row in self.results_data:
+            root_entity = self._row_to_entity(row)
+            key = (
+                root_entity.get("name", ""),
+                root_entity.get("company_number", ""),
+                root_entity.get("entity_type", ""),
+            )
+            if key not in grouped:
+                grouped[key] = {"entity": root_entity, "rows": []}
+            grouped[key]["rows"].append(row)
+
+        for group in grouped.values():
+            entity = group["entity"]
+            label = f'{entity["name"]} ({entity["company_number"]})'
+            root_iid = tree.insert("", "end", text=label, open=True, values=("",) * len(self._selected_grant_fields))
+            self._tree_row_data[root_iid] = dict(entity)
+            self._tree_root_entities[root_iid] = dict(entity)
+
+            grants = [r for r in group["rows"] if r.get("grant_search_status", "").startswith("Grants found via")]
+            if not grants:
+                child_iid = tree.insert(
+                    root_iid,
+                    "end",
+                    text="No grants found",
+                    values=("",) * len(self._selected_grant_fields),
+                )
+                self._tree_row_data[child_iid] = {"_is_placeholder": True, "_root_iid": root_iid}
+                continue
+
+            for row in grants:
+                display = row.get("Title") or row.get("Funding Org: Name") or "Grant"
+                values = tuple(row.get(label, "") for _, label in self._selected_grant_fields)
+                child_iid = tree.insert(root_iid, "end", text=display, values=values)
+                grant_entry = row.copy()
+                grant_entry["_root_iid"] = root_iid
+                self._tree_row_data[child_iid] = grant_entry
+
+        self._update_send_menu_state()
+
+    def _row_to_entity(self, row):
+        """Convert a results row to standard entity dictionary format."""
+        company_number = str(row.get(self.company_num_col, "")).strip() if self.company_num_col else ""
+        charity_number = str(row.get(self.charity_num_col, "")).strip() if self.charity_num_col else ""
+        entity_type = "company" if company_number else "charity"
+        number = company_number if company_number else charity_number
+
+        name = ""
+        for key in ("entity_name", "name", "company_name", "charity_name"):
+            if row.get(key):
+                name = str(row.get(key)).strip()
+                break
+
+        if not name:
+            prefix = "Company" if entity_type == "company" else "Charity"
+            name = f"{prefix} {number}" if number else "Unknown Entity"
+
+        return {"name": name, "company_number": number, "entity_type": entity_type}
+
+    def _resolve_selected_root_entities(self):
+        """Resolve current tree selection to unique root entities."""
+        selection = self.results_tree.selection()
+        if not selection:
+            messagebox.showinfo("No Selection", "Please select one or more entities first.")
+            return []
+
+        resolved = []
+        seen = set()
+        for iid in selection:
+            row = self._tree_row_data.get(iid, {})
+            if row.get("_is_placeholder"):
+                root_iid = row.get("_root_iid")
+            elif iid in self._tree_root_entities:
+                root_iid = iid
+            else:
+                root_iid = row.get("_root_iid") or self.results_tree.parent(iid)
+            entity = self._tree_root_entities.get(root_iid)
+            if not entity:
+                continue
+            key = (entity.get("name", ""), entity.get("company_number", ""), entity.get("entity_type", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            resolved.append(dict(entity))
+        return resolved
+
+    def _on_tree_selection_changed(self, event=None):
+        self._update_send_menu_state()
+
+    def _update_send_menu_state(self):
+        """Enable/disable send menu options based on selected items."""
+        selection = self.results_tree.selection()
+        has_selection = bool(selection)
+        has_company = False
+        has_charity = False
+        for entity in self._resolve_entities_for_state():
+            if entity.get("entity_type") == "company":
+                has_company = True
+            if entity.get("entity_type") == "charity":
+                has_charity = True
+        self._send_menu.entryconfigure(0, state="normal" if has_selection else "disabled")
+        self._send_menu.entryconfigure(
+            1,
+            state="normal" if has_selection and has_company else "disabled",
+        )
+        self._send_menu.entryconfigure(2, state="normal" if has_selection else "disabled")
+        if has_selection and has_charity and not has_company:
+            self._send_menu_btn.configure(text="Send to… ▼ (companies only disabled)")
+        else:
+            self._send_menu_btn.configure(text="Send to… ▼")
+
+    def _resolve_entities_for_state(self):
+        """Resolve selected entities without UI prompts, used for state changes."""
+        selection = self.results_tree.selection()
+        if not selection:
+            return []
+        resolved = []
+        seen = set()
+        for iid in selection:
+            row = self._tree_row_data.get(iid, {})
+            if row.get("_is_placeholder"):
+                root_iid = row.get("_root_iid")
+            elif iid in self._tree_root_entities:
+                root_iid = iid
+            else:
+                root_iid = row.get("_root_iid") or self.results_tree.parent(iid)
+            entity = self._tree_root_entities.get(root_iid)
+            if not entity:
+                continue
+            key = (entity.get("name", ""), entity.get("company_number", ""), entity.get("entity_type", ""))
+            if key not in seen:
+                seen.add(key)
+                resolved.append(dict(entity))
+        return resolved
+
+    def _send_to_working_set(self):
+        entities = self._resolve_selected_root_entities()
+        if not entities:
+            return
+        if self.app_state.ubo_working_set is None:
+            self.app_state.ubo_working_set = []
+        existing = {
+            (e.get("name", ""), e.get("company_number", ""), e.get("entity_type", ""))
+            for e in self.app_state.ubo_working_set
+        }
+        added = 0
+        for ent in entities:
+            key = (ent.get("name", ""), ent.get("company_number", ""), ent.get("entity_type", ""))
+            if key not in existing:
+                self.app_state.ubo_working_set.append(ent)
+                existing.add(key)
+                added += 1
+        self.app._refresh_working_set_indicator()
+        try:
+            self.app._refresh_home_working_set()
+        except Exception:
+            pass
+        if added:
+            messagebox.showinfo("Working Set", f"Added {added} entities to working set.")
+
+    def _send_to_ubo_tracer(self):
+        entities = self._resolve_selected_root_entities()
+        if not entities:
+            return
+        companies = [e for e in entities if e.get("entity_type") == "company"]
+        charities = [e for e in entities if e.get("entity_type") == "charity"]
+
+        if charities and not companies:
+            messagebox.showinfo(
+                "UBO Tracer",
+                "UBO Tracer supports companies only. No companies were selected.",
+            )
+            return
+
+        if charities:
+            ok = messagebox.askyesno(
+                "UBO Tracer",
+                f"{len(companies)} companies and {len(charities)} charities selected. "
+                f"UBO Tracer supports companies only. Send {len(companies)} companies?",
+            )
+            if not ok:
+                return
+
+        if len(companies) == 1:
+            c = companies[0]
+            self.after(
+                0,
+                lambda: self.app.show_ubo_investigation(
+                    prefill_company=c["company_number"],
+                    prefill_company_name=c["name"],
+                ),
+            )
+        else:
+            self.after(0, lambda: self.app.show_ubo_investigation(prefill_entities=companies))
+
+    def _send_to_bulk_entity_search(self):
+        entities = self._resolve_selected_root_entities()
+        if not entities:
+            return
+        self.after(0, lambda: self.app.show_unified_search(prefill_entities=entities))
 
     def toggle_all_fields(self, select):
         for var in self.data_fields_vars.values():
@@ -276,6 +590,10 @@ class GrantsSearch(InvestigationModuleBase):
         self.export_btn.config(state="disabled")
         self.progress_bar["value"] = 0
         self.results_data = []
+        self.results_tree.delete(*self.results_tree.get_children())
+        self._tree_row_data.clear()
+        self._tree_root_entities.clear()
+        self._update_send_menu_state()
         threading.Thread(target=self._run_investigation_thread, daemon=True).start()
 
     def cancel_investigation(self):
@@ -363,7 +681,7 @@ class GrantsSearch(InvestigationModuleBase):
         MAX_WORKERS = 2
 
         total = len(self.original_data)
-        self.app.after(0, lambda: self.status_var.set(f"Processing {total} rows..."))
+        self.safe_ui_call(self.status_var.set, f"Processing {total} rows...")
         rows_to_process = list(enumerate(self.original_data))
 
         start_time = time.monotonic()
@@ -383,8 +701,8 @@ class GrantsSearch(InvestigationModuleBase):
                         for f in futures:
                             f.cancel()
                         log_message("Grant investigation cancelled by user.")
-                        self.app.after(0, lambda: self.status_entity_var.set(""))
-                        self.app.after(0, lambda: self.status_var.set("Investigation cancelled."))
+                        self.safe_ui_call(self.status_entity_var.set, "")
+                        self.safe_ui_call(self.status_var.set, "Investigation cancelled.")
                         break
 
                     row_tuple = futures[future]
@@ -417,7 +735,7 @@ class GrantsSearch(InvestigationModuleBase):
                         self.status_entity_var.set(e)
                         self.status_var.set(s)
                         self.app.update_idletasks()
-                    self.app.after(0, update_progress)
+                    self.safe_ui_call(update_progress)
 
             except Exception as e:
                 log_message(f"An error occurred during grant investigation: {e}")
@@ -427,7 +745,9 @@ class GrantsSearch(InvestigationModuleBase):
 
         self.safe_ui_call(self.status_entity_var.set, "")
         if not self.cancel_flag.is_set():
-            self.app.after(0, lambda: self.status_var.set("Investigation complete!"))
+            self.safe_ui_call(self.status_var.set, "Investigation complete!")
+            self.safe_ui_call(self._populate_results_tree)
+            self.safe_ui_call(self.notebook.select, self.results_tab)
 
         self.after(100, self._finish_investigation)
 
@@ -471,6 +791,7 @@ class GrantsSearch(InvestigationModuleBase):
             # Enable the export button if there are results to export
             if self.results_data:
                 self.export_btn.config(state="normal")
+                self._update_send_menu_state()
 
         except tk.TclError:
             # This is a safeguard. If the widgets were destroyed by another
