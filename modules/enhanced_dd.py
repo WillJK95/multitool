@@ -1927,6 +1927,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                         company_age_months=company_age_months,
                         accounts_type=accounts_type,
                         igm_mode=self._igm_mode,
+                        entity_type='company',
                         thresholds=self._ca_thresholds,
                     )
                 except Exception as e:
@@ -2127,6 +2128,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                         company_age_months=charity_age_months,
                         accounts_type=None,
                         igm_mode=self._igm_mode,
+                        entity_type='charity',
                         thresholds=self._ca_thresholds,
                     )
                 except Exception as e:
@@ -4488,7 +4490,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             limited_rules = [r for r in report.results if r.confidence == 'LIMITED']
 
             html_output += '<li><strong>Cross-Analysis:</strong> '
-            html_output += f'{len(assessed_rules)} of 6 rules were assessed. '
+            html_output += f'{len(assessed_rules)} of {len(report.results)} rules were assessed. '
             if auto_rules:
                 html_output += f'{len(auto_rules)} based entirely on auto-parsed data. '
             if enriched_rules:

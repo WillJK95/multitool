@@ -1476,6 +1476,7 @@ def run_cross_analysis(
     company_age_months: Optional[float] = None,
     accounts_type: Optional[str] = None,
     igm_mode: bool = False,
+    entity_type: str = "company",
     thresholds: CrossAnalysisThresholds = None,
 ) -> CrossAnalysisReport:
     """Run all cross-analysis rules and assemble the report.
@@ -1497,14 +1498,18 @@ def run_cross_analysis(
         rule_g1_match_funding_capacity(unified, proposed_award, payment_mechanism, thresholds),
         grant_rule,
         rule_f1_capital_erosion(unified, thresholds),
-        rule_f2_intangible_asset_bloat(unified, thresholds),
         rule_f3_working_capital_deterioration(unified, thresholds),
-        rule_f4_leverage_creep(unified, thresholds),
         rule_roe_trend(unified, thresholds),
         rule_asset_turnover(unified, thresholds),
         rule_profit_margin(unified, thresholds),
         rule_staff_cost_burden(unified, thresholds),
     ]
+    # F2/F4 depend on account line-items that are generally unavailable in
+    # Charity Commission datasets. Excluding these in charity mode avoids
+    # showing non-actionable "skipped" checks in the report summary.
+    if entity_type != "charity":
+        results.insert(3, rule_f2_intangible_asset_bloat(unified, thresholds))
+        results.insert(5, rule_f4_leverage_creep(unified, thresholds))
 
     # Composite warning
     high_count = sum(1 for r in results if r.risk_flag == "HIGH")
