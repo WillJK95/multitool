@@ -486,40 +486,40 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 self.safe_update(self.status_var.set, "No data found in accounts.")
                 return
 
-                self.accounts_loaded = True
-                years = sorted(df['Year'].unique())
-                fetched = len(years)
-                requested = num_years
+            self.accounts_loaded = True
+            years = sorted(df['Year'].unique())
+            fetched = len(years)
+            requested = num_years
 
-                if fetched < requested:
-                    label_text = (
-                        f"Loaded {fetched} of {requested} requested years "
-                        f"({years[0]}-{years[-1]})"
+            if fetched < requested:
+                label_text = (
+                    f"Loaded {fetched} of {requested} requested years "
+                    f"({years[0]}-{years[-1]})"
+                )
+            else:
+                label_text = f"Loaded {fetched} years ({years[0]}-{years[-1]})"
+
+            self.safe_update(
+                self.accounts_status_label.config,
+                text=label_text, foreground='green'
+            )
+
+            # Validate accounts match (safety check)
+            if self.company_data:
+                is_valid, message = self._validate_accounts_match_company()
+                if not is_valid:
+                    self.safe_update(
+                        self.accounts_status_label.config,
+                        text=f"{label_text} - WARNING: Possible mismatch",
+                        foreground='orange'
                     )
-                else:
-                    label_text = f"Loaded {fetched} years ({years[0]}-{years[-1]})"
+                    log_message(f"Auto-fetched accounts mismatch: {message}")
 
-                self.safe_update(
-                    self.accounts_status_label.config,
-                    text=label_text, foreground='green'
-                )
-
-                # Validate accounts match (safety check)
-                if self.company_data:
-                    is_valid, message = self._validate_accounts_match_company()
-                    if not is_valid:
-                        self.safe_update(
-                            self.accounts_status_label.config,
-                            text=f"{label_text} - WARNING: Possible mismatch",
-                            foreground='orange'
-                        )
-                        log_message(f"Auto-fetched accounts mismatch: {message}")
-
-                self.safe_update(self._update_accounts_checkboxes)
-                self.safe_update(
-                    self.status_var.set,
-                    "Accounts fetched and loaded successfully."
-                )
+            self.safe_update(self._update_accounts_checkboxes)
+            self.safe_update(
+                self.status_var.set,
+                "Accounts fetched and loaded successfully."
+            )
 
         except Exception as e:
             log_message(f"Error in auto-fetch accounts: {e}\n{traceback.format_exc()}")

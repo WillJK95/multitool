@@ -384,10 +384,13 @@ def ch_get_document_metadata(
     token_bucket.consume()
     url = metadata_url
     last_error = "Unknown Error"
+    headers = {"Accept": "application/json"}
 
     for i in range(retries):
         try:
-            response = requests.get(url, auth=(api_key, ""), timeout=30)
+            response = requests.get(
+                url, auth=(api_key, ""), headers=headers, timeout=30
+            )
             token_bucket.sync_from_headers(response.headers)
 
             if response.status_code in [404, 401, 403]:
