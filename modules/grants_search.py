@@ -179,7 +179,7 @@ class GrantsSearch(InvestigationModuleBase):
             columns=(),
             show="tree headings",
             selectmode="extended",
-            height=16,
+            height=24,
         )
         self.results_tree.heading("#0", text="Entity / Grant", anchor=tk.W)
         self.results_tree.column("#0", width=360, minwidth=220)
