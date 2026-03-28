@@ -107,7 +107,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self.charity_data = {}
         self.financial_analyzer = None
         self.accounts_loaded = False
-        self._available_ixbrl_filings = []  # [(filing_date, metadata_path), ...]
+        self._available_ixbrl_filings = []  # [(filing_date, metadata_url, mime, content_url), ...]
         self._entity_type = 'company'  # 'company' or 'charity'
         
         # Default thresholds (used by all check methods and cross-analysis rules)
@@ -257,7 +257,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             textvariable=self.years_var, state='readonly'
         )
         self.years_spinbox.pack(side=tk.LEFT, padx=(0, 3))
-        ttk.Label(buttons_frame, text="years").pack(side=tk.LEFT)
+        ttk.Label(buttons_frame, text="filings").pack(side=tk.LEFT)
 
         # Status row
         status_row = ttk.Frame(upload_frame)
@@ -501,16 +501,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
             self.accounts_loaded = True
             years = sorted(df['Year'].unique())
-            fetched = len(years)
-            requested = num_years
-
-            if fetched < requested:
-                label_text = (
-                    f"Loaded {fetched} of {requested} requested years "
-                    f"({years[0]}-{years[-1]})"
-                )
-            else:
-                label_text = f"Loaded {fetched} years ({years[0]}-{years[-1]})"
+            num_files = len(downloaded_paths)
+            label_text = (
+                f"Fetched {num_files} filing{'s' if num_files != 1 else ''}, "
+                f"{len(years)} years of data ({years[0]}\u2013{years[-1]})"
+            )
 
             self.safe_ui_call(
                 self.accounts_status_label.config,
@@ -1974,7 +1969,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             default = min(3, cap)
             self.safe_ui_call(
                 self.ixbrl_availability_label.config,
-                text=f"{count} year{'s' if count != 1 else ''} of iXBRL accounts available.",
+                text=f"{count} iXBRL account filing{'s' if count != 1 else ''} available.",
                 foreground='green'
             )
             self.safe_ui_call(self.years_spinbox.config, from_=1, to=cap)
