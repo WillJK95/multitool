@@ -440,13 +440,15 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         cnum = self.company_data['profile'].get('company_number', 'unknown')
         selected = self._available_ixbrl_filings[:num_years]
         downloaded_paths = []
+        log_message(f"[iXBRL] Auto-fetch starting: {len(selected)} filings for {cnum}")
 
         try:
             cache_dir = os.path.join(CONFIG_DIR, "accounts_cache", cnum)
             os.makedirs(cache_dir, exist_ok=True)
 
-            for i, (filing_date, metadata_url, mime) in enumerate(selected):
+            for i, (filing_date, metadata_url, mime, content_url) in enumerate(selected):
                 if self.cancel_flag.is_set():
+                    log_message(f"[iXBRL] Auto-fetch cancelled at filing {i+1}")
                     return
                 self.safe_update(
                     self.status_var.set,
@@ -454,16 +456,23 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 )
 
                 dest = os.path.join(cache_dir, f"{cnum}_{filing_date}.xhtml")
+                log_message(f"[iXBRL] Downloading filing {i+1}/{len(selected)}: "
+                            f"date={filing_date}, mime={mime}, "
+                            f"content_url={content_url}, dest={dest}")
                 path, err = ch_download_document_content(
                     self.api_key, self.ch_token_bucket, metadata_url, dest,
-                    accept_mime=mime,
+                    accept_mime=mime, content_url=content_url,
                 )
                 if err:
                     log_message(
-                        f"Failed to download iXBRL for {cnum} ({filing_date}): {err}"
+                        f"[iXBRL] Failed to download for {cnum} ({filing_date}): {err}"
                     )
                     continue
+                file_size = os.path.getsize(path) if path else 0
+                log_message(f"[iXBRL] Downloaded {filing_date}: {path} ({file_size} bytes)")
                 downloaded_paths.append(path)
+
+            log_message(f"[iXBRL] Download phase complete: {len(downloaded_paths)}/{len(selected)} files")
 
             if not downloaded_paths:
                 self.safe_update(
@@ -475,8 +484,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
             # Parse downloaded files through existing pipeline
             self.safe_update(self.status_var.set, "Parsing downloaded accounts...")
+            log_message(f"[iXBRL] Parsing {len(downloaded_paths)} files with FinancialAnalyzer")
             self.financial_analyzer = FinancialAnalyzer()
             df = self.financial_analyzer.load_files(downloaded_paths)
+            log_message(f"[iXBRL] FinancialAnalyzer result: {len(df)} rows, "
+                        f"columns={list(df.columns) if not df.empty else '(empty)'}")
 
             if df.empty:
                 self.safe_update(
@@ -1891,12 +1903,13 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         # Fetch accounts-only filing history (separate from the full history
         # already fetched, to guarantee we get enough accounts items).
+        log_message(f"[iXBRL] Checking iXBRL availability for {cnum}")
         accounts_data, err = ch_get_data(
             self.api_key, self.ch_token_bucket,
             f"/company/{cnum}/filing-history?category=accounts&items_per_page=15"
         )
         if err or not accounts_data:
-            log_message(f"Could not fetch accounts filing history for {cnum}: {err}")
+            log_message(f"[iXBRL] Could not fetch accounts filing history for {cnum}: {err}")
             self.safe_update(
                 self.ixbrl_availability_label.config,
                 text="Could not check iXBRL availability.", foreground='grey'
@@ -1904,6 +1917,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             return
 
         items = accounts_data.get('items', [])
+        log_message(f"[iXBRL] Found {len(items)} accounts filing items for {cnum}")
         if not items:
             self.safe_update(
                 self.ixbrl_availability_label.config,
@@ -1917,26 +1931,36 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             if it.get('links', {}).get('document_metadata') and it.get('date')
         ]
         items_with_dates.sort(key=lambda x: x['date'], reverse=True)
+        log_message(f"[iXBRL] {len(items_with_dates)} filings have metadata links, checking up to 7")
 
         available = []
         for filing in items_with_dates[:7]:
+            filing_date = filing['date']
             metadata_url = filing['links']['document_metadata']
+            log_message(f"[iXBRL] Checking filing {filing_date}: {metadata_url}")
             metadata, meta_err = ch_get_document_metadata(
                 self.api_key, self.ch_token_bucket, metadata_url
             )
             if meta_err or not metadata:
+                log_message(f"[iXBRL] Metadata fetch failed for {filing_date}: {meta_err}")
                 continue
             resources = metadata.get('resources', {})
+            content_url = metadata.get('links', {}).get('document')
+            log_message(f"[iXBRL] Filing {filing_date}: resources={list(resources.keys())}, "
+                        f"content_url={content_url}")
             if 'application/xhtml+xml' in resources:
                 mime = 'application/xhtml+xml'
             elif 'application/xml' in resources:
                 mime = 'application/xml'
             else:
+                log_message(f"[iXBRL] Filing {filing_date}: no iXBRL format available, skipping")
                 continue
-            available.append((filing['date'], metadata_url, mime))
+            log_message(f"[iXBRL] Filing {filing_date}: iXBRL available ({mime})")
+            available.append((filing_date, metadata_url, mime, content_url))
 
         self._available_ixbrl_filings = available
         count = len(available)
+        log_message(f"[iXBRL] Availability check complete: {count} iXBRL filings found for {cnum}")
 
         if count == 0:
             self.safe_update(
