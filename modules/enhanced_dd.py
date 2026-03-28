@@ -475,7 +475,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             log_message(f"[iXBRL] Download phase complete: {len(downloaded_paths)}/{len(selected)} files")
 
             if not downloaded_paths:
-                self.safe_update(
+                self.safe_ui_call(
                     self.accounts_status_label.config,
                     text="Failed to download any accounts.", foreground='red'
                 )
@@ -491,7 +491,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                         f"columns={list(df.columns) if not df.empty else '(empty)'}")
 
             if df.empty:
-                self.safe_update(
+                self.safe_ui_call(
                     self.accounts_status_label.config,
                     text="Downloaded files contained no parseable data.",
                     foreground='red'
@@ -512,7 +512,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             else:
                 label_text = f"Loaded {fetched} years ({years[0]}-{years[-1]})"
 
-            self.safe_update(
+            self.safe_ui_call(
                 self.accounts_status_label.config,
                 text=label_text, foreground='green'
             )
@@ -521,7 +521,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             if self.company_data:
                 is_valid, message = self._validate_accounts_match_company()
                 if not is_valid:
-                    self.safe_update(
+                    self.safe_ui_call(
                         self.accounts_status_label.config,
                         text=f"{label_text} - WARNING: Possible mismatch",
                         foreground='orange'
@@ -536,7 +536,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         except Exception as e:
             log_message(f"Error in auto-fetch accounts: {e}\n{traceback.format_exc()}")
-            self.safe_update(
+            self.safe_ui_call(
                 self.accounts_status_label.config,
                 text="Error fetching accounts.", foreground='red'
             )
@@ -544,8 +544,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 self.status_var.set, f"Error fetching accounts: {e}"
             )
         finally:
-            self.safe_update(self.auto_fetch_btn.config, state='normal')
-            self.safe_update(self.upload_btn.config, state='normal')
+            self.safe_ui_call(self.auto_fetch_btn.config, state='normal')
+            self.safe_ui_call(self.upload_btn.config, state='normal')
 
     def _validate_accounts_match_company(self):
         """Check if uploaded accounts match the selected company."""
@@ -1910,7 +1910,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         )
         if err or not accounts_data:
             log_message(f"[iXBRL] Could not fetch accounts filing history for {cnum}: {err}")
-            self.safe_update(
+            self.safe_ui_call(
                 self.ixbrl_availability_label.config,
                 text="Could not check iXBRL availability.", foreground='grey'
             )
@@ -1919,7 +1919,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         items = accounts_data.get('items', [])
         log_message(f"[iXBRL] Found {len(items)} accounts filing items for {cnum}")
         if not items:
-            self.safe_update(
+            self.safe_ui_call(
                 self.ixbrl_availability_label.config,
                 text="No accounts filings found for this company.", foreground='grey'
             )
@@ -1963,23 +1963,23 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         log_message(f"[iXBRL] Availability check complete: {count} iXBRL filings found for {cnum}")
 
         if count == 0:
-            self.safe_update(
+            self.safe_ui_call(
                 self.ixbrl_availability_label.config,
                 text="No iXBRL accounts available \u2014 consider manual input.",
                 foreground='grey'
             )
-            self.safe_update(self.auto_fetch_btn.config, state='disabled')
+            self.safe_ui_call(self.auto_fetch_btn.config, state='disabled')
         else:
             cap = min(count, 5)
             default = min(3, cap)
-            self.safe_update(
+            self.safe_ui_call(
                 self.ixbrl_availability_label.config,
                 text=f"{count} year{'s' if count != 1 else ''} of iXBRL accounts available.",
                 foreground='green'
             )
-            self.safe_update(self.years_spinbox.config, from_=1, to=cap)
-            self.safe_update(self.years_var.set, str(default))
-            self.safe_update(self.auto_fetch_btn.config, state='normal')
+            self.safe_ui_call(self.years_spinbox.config, from_=1, to=cap)
+            self.safe_ui_call(self.years_var.set, str(default))
+            self.safe_ui_call(self.auto_fetch_btn.config, state='normal')
 
     def _display_company_summary(self):
         """Display basic company info in the summary box."""
