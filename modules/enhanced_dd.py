@@ -577,7 +577,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         for i, entity in enumerate(self._entities):
             if entity.get('treeview_id') == item_id:
                 self._active_entity_idx = i
+                self._set_active_entity_state(entity)
                 self._load_entity_manual_data(entity)
+                self._update_accounts_checkboxes()
                 if hasattr(self, '_active_entity_label'):
                     self._active_entity_label.config(
                         text=f"Editing: {entity['name']} ({entity['number']})",
