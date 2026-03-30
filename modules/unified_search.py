@@ -684,6 +684,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
         send_menu.add_command(
             label="Network Analytics Workbench", command=self._send_to_network_analytics
         )
+        send_menu.add_command(label="Enhanced Due Diligence", command=self._send_to_edd)
         send_menu.add_command(label="UBO Tracer", command=self._send_to_ubo_tracer)
         send_menu.add_command(label="Grants Search", command=self._send_to_grants_search)
         self._send_menu_btn.configure(menu=send_menu)
@@ -1117,6 +1118,33 @@ class CompanyCharitySearch(InvestigationModuleBase):
         else:
             # Multiple companies — pass directly to UBO Tracer
             self.app.show_ubo_investigation(prefill_entities=companies)
+
+    def _send_to_edd(self):
+        """Send selected companies/charities to Enhanced Due Diligence."""
+        entities = self._get_selected_entities()
+        if not entities:
+            return
+
+        payload = []
+        for _, row in entities:
+            ws = self._entity_to_ws_dict(row)
+            etype = ws.get("entity_type", "company")
+            if etype == "person":
+                continue
+            dd_type = "charity" if etype == "charity" else "company"
+            eid = str(ws.get("company_number", "")).strip()
+            if not eid:
+                continue
+            payload.append({"type": dd_type, "id": eid})
+
+        if not payload:
+            messagebox.showinfo(
+                "EDD",
+                "No compatible companies or charities were selected.",
+            )
+            return
+
+        self.app.show_enhanced_dd(prefill_entities=payload)
 
     def _send_to_grants_search(self):
         """Send selected entities to Grants Search with prefill."""
@@ -1880,5 +1908,4 @@ class CompanyCharitySearch(InvestigationModuleBase):
             )
 
         return G
-
 

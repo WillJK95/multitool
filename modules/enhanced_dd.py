@@ -98,11 +98,12 @@ from ..utils.charity_financial_data import CharityFinancialData
 
 class EnhancedDueDiligence(InvestigationModuleBase):
     def __init__(self, parent_app, api_key, back_callback, ch_token_bucket,
-                 charity_api_key=None, prefill_entity=None):
+                 charity_api_key=None, prefill_entity=None, prefill_entities=None):
         super().__init__(parent_app, back_callback, api_key, help_key=None)
         self.ch_token_bucket = ch_token_bucket
         self.charity_api_key = charity_api_key
         self._prefill_entity = prefill_entity
+        self._prefill_entities = prefill_entities or []
 
         # --- Bulk entity support ---
         self._entities = []           # List of entity dicts (see _make_entity_dict)
@@ -182,8 +183,10 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         
         self._build_ui()
 
-        # Apply prefill if provided (from Quick Launch)
-        if self._prefill_entity:
+        # Apply prefill(s) if provided (from working set / quick launch)
+        if self._prefill_entities:
+            self.after(200, self._apply_prefill_entities)
+        elif self._prefill_entity:
             etype = self._prefill_entity.get("type", "company")
             eid = self._prefill_entity.get("id", "")
             self.entity_type_var.set(etype)
@@ -191,6 +194,31 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             self.company_num_var.set(eid)
             if eid:
                 self.after(200, self.fetch_entity_profile)
+
+    def _apply_prefill_entities(self):
+        """Queue-fetch multiple prefilled entities into the EDD bulk tree."""
+        valid = []
+        for ent in self._prefill_entities:
+            etype = ent.get("type", "company")
+            if etype not in ("company", "charity"):
+                continue
+            eid = str(ent.get("id", "")).strip()
+            if not eid:
+                continue
+            valid.append({"type": etype, "id": eid})
+
+        if not valid:
+            return
+
+        for i, ent in enumerate(valid):
+            self.after(200 + (i * 250), lambda e=ent: self._prefill_single_entity(e))
+
+    def _prefill_single_entity(self, ent):
+        """Populate inputs and trigger fetch for one prefilled entity."""
+        self.entity_type_var.set(ent["type"])
+        self._on_entity_type_changed()
+        self.company_num_var.set(ent["id"])
+        self.fetch_entity_profile()
 
     # ------------------------------------------------------------------
     # Entity helpers
@@ -549,7 +577,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         for i, entity in enumerate(self._entities):
             if entity.get('treeview_id') == item_id:
                 self._active_entity_idx = i
+                self._set_active_entity_state(entity)
                 self._load_entity_manual_data(entity)
+                self._update_accounts_checkboxes()
                 if hasattr(self, '_active_entity_label'):
                     self._active_entity_label.config(
                         text=f"Editing: {entity['name']} ({entity['number']})",
@@ -895,7 +925,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         }
         local_vars = {}
         effective_thresholds = dict(self.thresholds)
-        if is_charity:
+        if has_charity:
             effective_thresholds.update(CHARITY_EDD_THRESHOLDS)
         for key, val in effective_thresholds.items():
             if key in _INT_KEYS:
