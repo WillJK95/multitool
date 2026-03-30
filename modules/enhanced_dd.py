@@ -103,6 +103,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self.ch_token_bucket = ch_token_bucket
         self.charity_api_key = charity_api_key
         self._prefill_entity = prefill_entity
+
+        # --- Bulk entity support ---
+        self._entities = []           # List of entity dicts (see _make_entity_dict)
+        self._active_entity_idx = None  # Index of currently selected entity
+
+        # Legacy flat state — set from active entity during report generation
         self.company_data = {}
         self.charity_data = {}
         self.financial_analyzer = None
@@ -186,10 +192,81 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             if eid:
                 self.after(200, self.fetch_entity_profile)
 
+    # ------------------------------------------------------------------
+    # Entity helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_entity_dict(entity_type, number, name=''):
+        """Create a blank entity dict."""
+        return {
+            'type': entity_type,        # 'company' or 'charity'
+            'number': number,
+            'name': name,
+            'company_data': None,
+            'charity_data': None,
+            'financial_analyzer': None,
+            'accounts_loaded': False,
+            'available_ixbrl_filings': [],
+            'ixbrl_count': 0,
+            'manual_data': None,
+            'proposed_award': 0.0,
+            'payment_mechanism': 'Unknown',
+            'treeview_id': None,
+            'fetch_status': 'pending',   # pending | fetching | done | error
+        }
+
+    def _set_active_entity_state(self, entity):
+        """Copy entity data into the flat instance variables used by check methods."""
+        self._entity_type = entity['type']
+        if entity['type'] == 'company':
+            self.company_data = entity['company_data'] or {}
+            self.charity_data = {}
+        else:
+            self.charity_data = entity['charity_data'] or {}
+            self.company_data = {}
+        self.financial_analyzer = entity['financial_analyzer']
+        self.accounts_loaded = entity['accounts_loaded']
+        self._available_ixbrl_filings = entity['available_ixbrl_filings']
+
+    def _save_active_entity_manual_data(self):
+        """Persist current manual-input form state back to the active entity."""
+        if self._active_entity_idx is None or self._active_entity_idx >= len(self._entities):
+            return
+        entity = self._entities[self._active_entity_idx]
+        entity['manual_data'] = self._collect_manual_input()
+        try:
+            raw = self.proposed_award_var.get().strip().replace(',', '').replace('\u00a3', '')
+            entity['proposed_award'] = float(raw) if raw else 0.0
+        except ValueError:
+            entity['proposed_award'] = 0.0
+        entity['payment_mechanism'] = self.payment_mechanism_var.get()
+
+    def _load_entity_manual_data(self, entity):
+        """Load an entity's manual data into the form fields."""
+        self.proposed_award_var.set(
+            str(entity['proposed_award']) if entity['proposed_award'] else ''
+        )
+        self.payment_mechanism_var.set(entity.get('payment_mechanism', 'Unknown'))
+        # Clear existing supplementary panels and rebuild from entity data
+        self._manual_year_panels.clear()
+        if hasattr(self, '_supp_status_label'):
+            self._supp_status_label.config(text="No data entered.", foreground='grey')
+
+    def _get_active_entity(self):
+        """Return the currently active entity dict, or None."""
+        if self._active_entity_idx is not None and self._active_entity_idx < len(self._entities):
+            return self._entities[self._active_entity_idx]
+        return None
+
+    def _entity_types_present(self):
+        """Return set of entity types currently in the list."""
+        return {e['type'] for e in self._entities}
+
     def _build_ui(self):
         # Step 1: Entity Lookup
         self._lookup_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 1: Enter Company Number", padding=10
+            self.content_frame, text="Step 1: Entity Lookup", padding=10
         )
         self._lookup_frame.pack(fill=tk.X, pady=5, padx=10)
 
@@ -219,12 +296,42 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         )
         self.fetch_btn.pack(side=tk.LEFT, padx=5)
 
-        self.company_summary_text = tk.Text(self._lookup_frame, height=6, wrap=tk.WORD, state='disabled')
-        self.company_summary_text.pack(fill=tk.X, pady=5)
+        # Entity treeview (replaces single-entity summary text)
+        tree_frame = ttk.Frame(self._lookup_frame)
+        tree_frame.pack(fill=tk.X, pady=5)
 
-        # Step 2: Upload Accounts (hidden for charity)
+        cols = ('name', 'number', 'type', 'accounts')
+        self.entity_tree = ttk.Treeview(
+            tree_frame, columns=cols, show='headings', height=5, selectmode='browse'
+        )
+        self.entity_tree.heading('name', text='Organisation Name')
+        self.entity_tree.heading('number', text='Number')
+        self.entity_tree.heading('type', text='Type')
+        self.entity_tree.heading('accounts', text='Accounts Available')
+        self.entity_tree.column('name', width=250, minwidth=120)
+        self.entity_tree.column('number', width=100, minwidth=70)
+        self.entity_tree.column('type', width=80, minwidth=60)
+        self.entity_tree.column('accounts', width=160, minwidth=100)
+
+        tree_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.entity_tree.yview)
+        self.entity_tree.configure(yscrollcommand=tree_scroll.set)
+        self.entity_tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.entity_tree.bind('<<TreeviewSelect>>', self._on_entity_selected)
+        self.entity_tree.bind('<Button-3>', self._on_entity_right_click)
+
+        # Right-click context menu for treeview
+        self._entity_ctx_menu = tk.Menu(self.entity_tree, tearoff=0)
+        self._entity_ctx_menu.add_command(label="Remove", command=self._remove_selected_entity)
+
+        # Keep a hidden Text widget for compatibility with summary display methods
+        self.company_summary_text = tk.Text(self._lookup_frame, height=0)
+        self.company_summary_text.pack_forget()
+
+        # Step 2: Fetch Filings (unified for companies and charities)
         self._upload_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 2: iXBRL Accounts (Optional)", padding=10
+            self.content_frame, text="Step 2: Fetch Filings", padding=10
         )
         upload_frame = self._upload_frame
         upload_frame.pack(fill=tk.X, pady=5, padx=10)
@@ -232,26 +339,13 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         buttons_frame = ttk.Frame(upload_frame)
         buttons_frame.pack(fill=tk.X, pady=5)
 
-        self.upload_btn = ttk.Button(
-            buttons_frame, text="Upload Accounts Files...", command=self.load_accounts
-        )
-        self.upload_btn.pack(side=tk.LEFT, padx=(0, 5))
-
-        ttk.Button(
-            buttons_frame, text="Clear Files", command=self.clear_accounts
-        ).pack(side=tk.LEFT, padx=5)
-
-        ttk.Separator(buttons_frame, orient=tk.VERTICAL).pack(
-            side=tk.LEFT, padx=10, fill=tk.Y, pady=2
-        )
-
         self.auto_fetch_btn = ttk.Button(
-            buttons_frame, text="Auto-fetch from CH",
+            buttons_frame, text="Auto-Fetch Filings",
             command=self._auto_fetch_accounts, state='disabled'
         )
         self.auto_fetch_btn.pack(side=tk.LEFT, padx=(0, 3))
 
-        self.years_var = tk.StringVar(value="3")
+        self.years_var = tk.StringVar(value="4")
         self.years_spinbox = ttk.Spinbox(
             buttons_frame, from_=1, to=5, width=3,
             textvariable=self.years_var, state='readonly'
@@ -259,11 +353,25 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self.years_spinbox.pack(side=tk.LEFT, padx=(0, 3))
         ttk.Label(buttons_frame, text="filings").pack(side=tk.LEFT)
 
+        Tooltip(
+            self.auto_fetch_btn,
+            "Fetch account filings for all entities. Each company filing "
+            "typically includes the previous year as a comparative, so "
+            "4 filings \u2248 5 years of data. Charity data is trimmed to "
+            "the equivalent number of years."
+        )
+        Tooltip(
+            self.years_spinbox,
+            "Number of account filings to retrieve. Each filing usually "
+            "includes the prior year's figures, so filings \u2260 years. "
+            "e.g. 4 filings \u2248 5 years of accounts data."
+        )
+
         # Status row
         status_row = ttk.Frame(upload_frame)
         status_row.pack(fill=tk.X, pady=(0, 2))
 
-        self.accounts_status_label = ttk.Label(status_row, text="No accounts loaded.")
+        self.accounts_status_label = ttk.Label(status_row, text="No filings fetched.")
         self.accounts_status_label.pack(side=tk.LEFT, padx=10)
 
         self.ixbrl_availability_label = ttk.Label(
@@ -271,17 +379,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         )
         self.ixbrl_availability_label.pack(side=tk.RIGHT, padx=10)
 
-        # Charity mode note (replaces upload frame when charity selected)
-        self._charity_accounts_note = ttk.LabelFrame(
-            self.content_frame, text="Step 2: Financial Data", padding=10
-        )
-        ttk.Label(
-            self._charity_accounts_note,
-            text="Financial data for charities is retrieved automatically from the "
-                 "Charity Commission API. No accounts upload is required.",
-            wraplength=600,
-        ).pack(anchor='w')
-        # Not packed by default — shown only for charity mode
+        # Keep upload_btn reference for code that disables it during fetch
+        self.upload_btn = None
 
         # Step 2b: Manual Input Form (collapsible)
         self._build_manual_input_form()
@@ -320,6 +419,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         ownership_var = tk.BooleanVar(value=True)
         self.check_vars['ownership_graph'] = ownership_var
 
+        self._rules_global_note = ttk.Label(
+            config_frame,
+            text="Rules and thresholds apply to all entities.",
+            foreground='#555', font=('', 9, 'italic'),
+        )
+        self._rules_global_note.pack(anchor='w', pady=(0, 2))
         ttk.Label(
             config_frame,
             text="All standard due diligence checks run automatically. Select additional options:"
@@ -382,7 +487,21 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             self.content_frame, text="Step 4: Generate Report", padding=10
         )
         generate_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=10)
-        
+
+        # Report output mode
+        mode_row = ttk.Frame(generate_frame)
+        mode_row.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(mode_row, text="Output:").pack(side=tk.LEFT, padx=(0, 5))
+        self._report_mode_var = tk.StringVar(value='stacked')
+        ttk.Radiobutton(
+            mode_row, text="Open in Browser \u2014 Stacked Reports",
+            variable=self._report_mode_var, value='stacked',
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Radiobutton(
+            mode_row, text="Separate Reports \u2014 Save to File",
+            variable=self._report_mode_var, value='separate',
+        ).pack(side=tk.LEFT)
+
         self.generate_btn = ttk.Button(
             generate_frame,
             text="Generate Due Diligence Report",
@@ -391,54 +510,205 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             bootstyle='success'
         )
         self.generate_btn.pack(pady=10, ipady=5)
-        
+
         self.progress_bar = ttk.Progressbar(
             generate_frame, orient="horizontal", length=300, mode="determinate"
         )
         self.progress_bar.pack(pady=10)
-        
-        self.status_var = tk.StringVar(value="Ready. Enter a company number to begin.")
+
+        self.status_var = tk.StringVar(value="Ready. Enter a company or charity number to begin.")
         ttk.Label(generate_frame, textvariable=self.status_var).pack()
+
+        # "Open Folder" button — shown after separate-mode generation
+        self._open_folder_btn = ttk.Button(
+            generate_frame, text="Open Folder to View Reports",
+            command=self._open_config_folder,
+        )
+        # Not packed by default — shown only after separate report generation
+
+    # ------------------------------------------------------------------
+    # Treeview event handlers & entity management
+    # ------------------------------------------------------------------
+
+    def _on_entity_selected(self, _event=None):
+        """Handle entity selection change in treeview."""
+        # Save current entity's manual data before switching
+        self._save_active_entity_manual_data()
+
+        sel = self.entity_tree.selection()
+        if not sel:
+            self._active_entity_idx = None
+            if hasattr(self, '_active_entity_label'):
+                self._active_entity_label.config(
+                    text="Select an entity in Step 1 to edit its grant details.",
+                    foreground='grey',
+                )
+            return
+
+        item_id = sel[0]
+        for i, entity in enumerate(self._entities):
+            if entity.get('treeview_id') == item_id:
+                self._active_entity_idx = i
+                self._load_entity_manual_data(entity)
+                if hasattr(self, '_active_entity_label'):
+                    self._active_entity_label.config(
+                        text=f"Editing: {entity['name']} ({entity['number']})",
+                        foreground='#0066cc',
+                    )
+                break
+
+    def _on_entity_right_click(self, event):
+        """Show context menu on right-click in treeview."""
+        item = self.entity_tree.identify_row(event.y)
+        if item:
+            self.entity_tree.selection_set(item)
+            self._entity_ctx_menu.post(event.x_root, event.y_root)
+
+    def _remove_selected_entity(self):
+        """Remove the currently selected entity from the treeview and entities list."""
+        sel = self.entity_tree.selection()
+        if not sel:
+            return
+        item_id = sel[0]
+        for i, entity in enumerate(self._entities):
+            if entity.get('treeview_id') == item_id:
+                self._entities.pop(i)
+                self.entity_tree.delete(item_id)
+                if self._active_entity_idx == i:
+                    self._active_entity_idx = None
+                elif self._active_entity_idx is not None and self._active_entity_idx > i:
+                    self._active_entity_idx -= 1
+                break
+        # Update generate button state
+        if not self._entities:
+            self.generate_btn.config(state='disabled')
+            self.auto_fetch_btn.config(state='disabled')
+        self._update_rules_display()
+
+    def _open_config_folder(self):
+        """Open the config folder in the system file explorer."""
+        import sys
+        import subprocess
+        if not os.path.exists(CONFIG_DIR):
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+        try:
+            if sys.platform == "win32":
+                os.startfile(CONFIG_DIR)
+            elif sys.platform == "darwin":
+                subprocess.run(["open", CONFIG_DIR], check=True)
+            else:
+                subprocess.run(["xdg-open", CONFIG_DIR], check=True)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open config folder: {e}")
+
+    def _update_rules_display(self):
+        """Update Step 3 checkboxes based on which entity types are present."""
+        types = self._entity_types_present()
+        has_company = 'company' in types
+        has_charity = 'charity' in types
+        # Ownership graph only applies to companies
+        if 'ownership_graph' in self.check_widgets:
+            state = 'normal' if has_company else 'disabled'
+            self.check_widgets['ownership_graph'].config(state=state)
+        # Deep investigation only applies to companies
+        if 'director_history' in self.check_widgets:
+            state = 'normal' if has_company else 'disabled'
+            self.check_widgets['director_history'].config(state=state)
 
     def clear_accounts(self):
         """Clear loaded accounts."""
         self.financial_analyzer = None
         self.accounts_loaded = False
-        self.accounts_status_label.config(text="No accounts loaded.", foreground="black")
+        self.accounts_status_label.config(text="No filings fetched.", foreground="black")
         self._update_accounts_checkboxes()
         self.status_var.set("Accounts cleared.")
 
     def _auto_fetch_accounts(self):
-        """Kick off automatic iXBRL accounts download from Companies House."""
-        if not self._available_ixbrl_filings:
+        """Kick off automatic filings fetch for ALL entities."""
+        if not self._entities:
+            messagebox.showwarning("No Entities", "Add at least one entity first.")
+            return
+
+        # Check if any company entity has available filings
+        has_fetchable = any(
+            e['type'] == 'charity' or e.get('available_ixbrl_filings')
+            for e in self._entities
+        )
+        if not has_fetchable:
             messagebox.showwarning(
-                "No iXBRL Available",
-                "No iXBRL accounts were found for this company."
+                "No Filings Available",
+                "No fetchable filings found for any entity."
             )
             return
 
         try:
             num_years = int(self.years_var.get())
         except ValueError:
-            num_years = 3
-        num_years = max(1, min(num_years, len(self._available_ixbrl_filings)))
+            num_years = 4
+        num_years = max(1, min(num_years, 5))
 
         self.auto_fetch_btn.config(state='disabled')
-        self.upload_btn.config(state='disabled')
         self.accounts_status_label.config(
-            text="Fetching accounts from Companies House...", foreground='blue'
+            text="Fetching filings for all entities...", foreground='blue'
         )
 
         threading.Thread(
-            target=self._auto_fetch_accounts_thread,
+            target=self._auto_fetch_all_thread,
             args=(num_years,),
             daemon=True,
         ).start()
 
-    def _auto_fetch_accounts_thread(self, num_years):
-        """Background thread to download iXBRL accounts and load them."""
-        cnum = self.company_data['profile'].get('company_number', 'unknown')
-        selected = self._available_ixbrl_filings[:num_years]
+    def _auto_fetch_all_thread(self, num_filings):
+        """Background thread to fetch filings for ALL entities."""
+        total = len(self._entities)
+        success_count = 0
+        # Charity year equivalence: N filings ≈ N+1 years of data
+        charity_years = num_filings + 1
+
+        try:
+            for idx, entity in enumerate(self._entities):
+                if self.cancel_flag.is_set():
+                    return
+                name = entity['name'] or entity['number']
+                self.safe_update(
+                    self.status_var.set,
+                    f"Fetching filings for {name} ({idx+1}/{total})..."
+                )
+
+                if entity['type'] == 'company':
+                    ok = self._fetch_company_filings(entity, num_filings)
+                else:
+                    ok = self._trim_charity_data(entity, charity_years)
+
+                if ok:
+                    success_count += 1
+                # Update treeview accounts column
+                self._update_entity_tree_row(entity)
+
+            label = f"Filings fetched for {success_count}/{total} entities."
+            fg = 'green' if success_count == total else 'orange'
+            self.safe_ui_call(self.accounts_status_label.config, text=label, foreground=fg)
+            self.safe_update(self.status_var.set, label)
+
+        except Exception as e:
+            log_message(f"Error in bulk auto-fetch: {e}\n{traceback.format_exc()}")
+            self.safe_ui_call(
+                self.accounts_status_label.config,
+                text="Error fetching filings.", foreground='red'
+            )
+        finally:
+            self.safe_ui_call(self.auto_fetch_btn.config, state='normal')
+
+    def _fetch_company_filings(self, entity, num_filings):
+        """Download iXBRL filings for a single company entity. Returns True on success."""
+        available = entity.get('available_ixbrl_filings', [])
+        if not available:
+            return False
+
+        num_to_fetch = min(num_filings, len(available))
+        # Select the N most recent filings (list is sorted most-recent-first)
+        selected = available[:num_to_fetch]
+        cnum = entity['number']
         downloaded_paths = []
         log_message(f"[iXBRL] Auto-fetch starting: {len(selected)} filings for {cnum}")
 
@@ -448,99 +718,88 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
             for i, (filing_date, metadata_url, mime, content_url) in enumerate(selected):
                 if self.cancel_flag.is_set():
-                    log_message(f"[iXBRL] Auto-fetch cancelled at filing {i+1}")
-                    return
-                self.safe_update(
-                    self.status_var.set,
-                    f"Downloading account {i + 1} of {len(selected)}..."
-                )
-
+                    return False
                 dest = os.path.join(cache_dir, f"{cnum}_{filing_date}.xhtml")
                 log_message(f"[iXBRL] Downloading filing {i+1}/{len(selected)}: "
-                            f"date={filing_date}, mime={mime}, "
-                            f"content_url={content_url}, dest={dest}")
+                            f"date={filing_date}, mime={mime}, dest={dest}")
                 path, err = ch_download_document_content(
                     self.api_key, self.ch_token_bucket, metadata_url, dest,
                     accept_mime=mime, content_url=content_url,
                 )
                 if err:
-                    log_message(
-                        f"[iXBRL] Failed to download for {cnum} ({filing_date}): {err}"
-                    )
+                    log_message(f"[iXBRL] Failed to download for {cnum} ({filing_date}): {err}")
                     continue
-                file_size = os.path.getsize(path) if path else 0
-                log_message(f"[iXBRL] Downloaded {filing_date}: {path} ({file_size} bytes)")
                 downloaded_paths.append(path)
 
-            log_message(f"[iXBRL] Download phase complete: {len(downloaded_paths)}/{len(selected)} files")
-
             if not downloaded_paths:
-                self.safe_ui_call(
-                    self.accounts_status_label.config,
-                    text="Failed to download any accounts.", foreground='red'
-                )
-                self.safe_update(self.status_var.set, "Account download failed.")
-                return
+                return False
 
-            # Parse downloaded files through existing pipeline
-            self.safe_update(self.status_var.set, "Parsing downloaded accounts...")
-            log_message(f"[iXBRL] Parsing {len(downloaded_paths)} files with FinancialAnalyzer")
-            self.financial_analyzer = FinancialAnalyzer()
-            df = self.financial_analyzer.load_files(downloaded_paths)
-            log_message(f"[iXBRL] FinancialAnalyzer result: {len(df)} rows, "
-                        f"columns={list(df.columns) if not df.empty else '(empty)'}")
-
+            analyzer = FinancialAnalyzer()
+            df = analyzer.load_files(downloaded_paths)
             if df.empty:
-                self.safe_ui_call(
-                    self.accounts_status_label.config,
-                    text="Downloaded files contained no parseable data.",
-                    foreground='red'
-                )
-                self.safe_update(self.status_var.set, "No data found in accounts.")
-                return
+                return False
 
-            self.accounts_loaded = True
-            years = sorted(df['Year'].unique())
-            num_files = len(downloaded_paths)
-            label_text = (
-                f"Fetched {num_files} filing{'s' if num_files != 1 else ''}, "
-                f"{len(years)} years of data ({years[0]}\u2013{years[-1]})"
-            )
-
-            self.safe_ui_call(
-                self.accounts_status_label.config,
-                text=label_text, foreground='green'
-            )
-
-            # Validate accounts match (safety check)
-            if self.company_data:
-                is_valid, message = self._validate_accounts_match_company()
-                if not is_valid:
-                    self.safe_ui_call(
-                        self.accounts_status_label.config,
-                        text=f"{label_text} - WARNING: Possible mismatch",
-                        foreground='orange'
-                    )
-                    log_message(f"Auto-fetched accounts mismatch: {message}")
-
-            self.safe_update(self._update_accounts_checkboxes)
-            self.safe_update(
-                self.status_var.set,
-                "Accounts fetched and loaded successfully."
-            )
+            entity['financial_analyzer'] = analyzer
+            entity['accounts_loaded'] = True
+            return True
 
         except Exception as e:
-            log_message(f"Error in auto-fetch accounts: {e}\n{traceback.format_exc()}")
-            self.safe_ui_call(
-                self.accounts_status_label.config,
-                text="Error fetching accounts.", foreground='red'
+            log_message(f"Error fetching filings for {cnum}: {e}")
+            return False
+
+    def _trim_charity_data(self, entity, num_years):
+        """Trim charity financial data to the N most recent years. Returns True on success."""
+        cdata = entity.get('charity_data')
+        if not cdata:
+            return False
+
+        # Trim financial_history to most recent N years
+        fin_hist = cdata.get('financial_history')
+        if fin_hist and isinstance(fin_hist, list):
+            # Sort by fiscal year end descending then take N most recent
+            sorted_hist = sorted(
+                fin_hist,
+                key=lambda x: x.get('fin_period_end_date', '') or '',
+                reverse=True,
             )
-            self.safe_update(
-                self.status_var.set, f"Error fetching accounts: {e}"
+            cdata['financial_history'] = sorted_hist[:num_years]
+
+        # Trim assets_liabilities similarly
+        assets = cdata.get('assets_liabilities')
+        if assets and isinstance(assets, list):
+            sorted_assets = sorted(
+                assets,
+                key=lambda x: x.get('fin_period_end_date', '') or '',
+                reverse=True,
             )
-        finally:
-            self.safe_ui_call(self.auto_fetch_btn.config, state='normal')
-            self.safe_ui_call(self.upload_btn.config, state='normal')
+            cdata['assets_liabilities'] = sorted_assets[:num_years]
+
+        entity['accounts_loaded'] = True
+        return True
+
+    def _update_entity_tree_row(self, entity):
+        """Update the treeview row for an entity after fetch."""
+        tid = entity.get('treeview_id')
+        if not tid:
+            return
+        if entity['type'] == 'company':
+            if entity.get('accounts_loaded'):
+                fa = entity.get('financial_analyzer')
+                if fa and not fa.data.empty:
+                    years = sorted(fa.data['Year'].unique())
+                    txt = f"{len(years)} years loaded"
+                else:
+                    txt = "Fetched (no data)"
+            else:
+                count = entity.get('ixbrl_count', 0)
+                txt = f"{count} filings available"
+        else:
+            if entity.get('accounts_loaded'):
+                fin = (entity.get('charity_data') or {}).get('financial_history', [])
+                txt = f"{len(fin)} years loaded"
+            else:
+                txt = "CC API (auto)"
+        self.safe_ui_call(self.entity_tree.set, tid, 'accounts', txt)
 
     def _validate_accounts_match_company(self):
         """Check if uploaded accounts match the selected company."""
@@ -591,9 +850,17 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         """Open the Rule Details & Thresholds modal window."""
         from ..ui.scrollable_frame import ScrollableFrame
 
-        is_charity = self._entity_type == 'charity'
+        types = self._entity_types_present()
+        has_company = 'company' in types
+        has_charity = 'charity' in types
+        # Fall back to current radio-button selection if no entities added yet
+        if not types:
+            has_company = self._entity_type == 'company'
+            has_charity = self._entity_type == 'charity'
+
+        type_key = ('company' if has_company else '') + ('charity' if has_charity else '')
         if hasattr(self, '_rules_window') and self._rules_window.winfo_exists():
-            if getattr(self, '_rules_window_entity_type', None) != self._entity_type:
+            if getattr(self, '_rules_window_entity_type', None) != type_key:
                 self._rules_window.destroy()
             else:
                 self._rules_window.lift()
@@ -601,7 +868,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         win = tk.Toplevel(self)
         self._rules_window = win
-        self._rules_window_entity_type = self._entity_type
+        self._rules_window_entity_type = type_key
+        is_charity = has_charity and not has_company  # Pure charity mode
         win.title("Rule Details & Thresholds")
         win.geometry("820x660")
         win.minsize(640, 500)
@@ -667,8 +935,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             if note:
                 ttk.Label(row, text=note, foreground='grey').pack(side='left', padx=4)
 
-        if is_charity:
-            # ── Tab 1: Charity Governance & Financial Health ───────────────────
+        if has_charity:
+            # ── Charity Governance & Financial Health ───────────────────
             tab1 = make_tab("Charity Core Checks")
 
             s = rule_section(tab1, "Registration & Reporting Status",
@@ -707,26 +975,24 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             trow(s, "Country count threshold for broad-area flag", 'broad_area_country_count', 3, 30, 1)
             trow(s, "Income threshold for broad-area rule (£)", 'broad_area_income_threshold', 10000, 500000, 10000)
 
-            # ── Tab 2: Grants Analysis (shared wording with company mode) ─────
-            tab3 = make_tab("Grants Analysis")
-        else:
-            # ── Tab 1: Financial Analysis ────────────────────────────────────────
-            tab1 = make_tab("Financial Analysis")
+        if has_company:
+            # ── Financial Analysis ────────────────────────────────────────
+            co_tab1 = make_tab("Financial Analysis")
 
-            s = rule_section(tab1, "Solvency — Net Asset Position",
+            s = rule_section(co_tab1, "Solvency — Net Asset Position",
                 "Checks whether net assets are positive and stable. Negative net assets indicate "
                 "technical insolvency. A large year-on-year decline also triggers a warning.")
             trow(s, "Net asset year-on-year decline to flag (%)", 'solvency_decline_pct',
                  5, 80, 5, note="Flags if single-year decline exceeds this %")
 
-            s = rule_section(tab1, "Capital Erosion",
+            s = rule_section(co_tab1, "Capital Erosion",
                 "Tracks whether net assets are declining year on year. Sustained erosion of the "
                 "equity base is a leading indicator of financial distress, particularly if driven "
                 "by operating losses rather than planned distributions.")
             trow(s, "Consecutive net asset decline years — HIGH", 'f1_erosion_high_years', 2, 10, 1)
             trow(s, "Consecutive net asset decline years — MEDIUM", 'f1_erosion_medium_years', 1, 8, 1)
 
-            s = rule_section(tab1, "Liquidity — Current & Quick Ratios",
+            s = rule_section(co_tab1, "Liquidity — Current & Quick Ratios",
                 "Assesses the company's ability to meet short-term obligations. The current ratio "
                 "compares all current assets to current liabilities; the quick ratio excludes "
                 "inventory. Low ratios indicate difficulty paying debts as they fall due.")
@@ -736,20 +1002,20 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             trow(s, "Cash as % of current liabilities — warn if below (%)", 'cash_pct_min',
                  1, 50, 1, note="Flags very low cash relative to short-term debts")
 
-            s = rule_section(tab1, "Working Capital Deterioration",
+            s = rule_section(co_tab1, "Working Capital Deterioration",
                 "Monitors the trend in net current assets (current assets minus current "
                 "liabilities). A single large drop or sustained multi-year decline signals "
                 "worsening short-term financial health.")
             trow(s, "Single-year NCA drop proportion to flag", 'f3_nca_drop_pct', 0.05, 0.90, 0.05,
                  note="e.g. 0.25 = a 25% drop in one year triggers a flag")
 
-            s = rule_section(tab1, "Leverage Creep",
+            s = rule_section(co_tab1, "Leverage Creep",
                 "Checks whether total long-term creditors have been rising consistently while net "
                 "assets are stagnant or declining. Increasing leverage in this context creates "
                 "refinancing and solvency risk.")
             trow(s, "Consecutive creditor-increase years to flag", 'f4_leverage_years', 2, 8, 1)
 
-            s = rule_section(tab1, "Intangible Asset Bloat",
+            s = rule_section(co_tab1, "Intangible Asset Bloat",
                 "Checks whether intangible assets (goodwill, IP, software) represent an unusually "
                 "large share of total assets. High intangible ratios can inflate the balance sheet; "
                 "these assets may not be realisable in a wind-down scenario.")
@@ -757,7 +1023,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                  'f2_intangible_bloat_pct', 0.1, 1.0, 0.05,
                  note="e.g. 0.5 = intangibles > 50% of total assets")
 
-            s = rule_section(tab1, "Revenue & Profitability Trends",
+            s = rule_section(co_tab1, "Revenue & Profitability Trends",
                 "Detects sustained revenue decline or consecutive loss-making years, measured "
                 "against filed accounts. Occasional losses can be acceptable; persistent trends "
                 "are a warning sign.")
@@ -766,14 +1032,14 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             trow(s, "Revenue decline measured over N years", 'revenue_decline_years', 1, 10, 1)
             trow(s, "Consecutive loss-making years to flag", 'consecutive_loss_years', 1, 10, 1)
 
-            s = rule_section(tab1, "Return on Equity (ROE)",
+            s = rule_section(co_tab1, "Return on Equity (ROE)",
                 "Measures how efficiently the company uses its capital base (net assets / "
                 "shareholders' equity) to generate profit. Sustained negative ROE means the "
                 "company is destroying value for its owners. Skipped if net assets are ≤ 0.")
             trow(s, "Consecutive years of negative ROE — MEDIUM", 'roe_negative_years_medium', 1, 8, 1)
             trow(s, "Consecutive years of negative ROE — HIGH", 'roe_negative_years_high', 2, 10, 1)
 
-            s = rule_section(tab1, "Asset Turnover Efficiency",
+            s = rule_section(co_tab1, "Asset Turnover Efficiency",
                 "Measures how effectively the company uses its total asset base to generate "
                 "revenue (Revenue ÷ Total Assets). A declining ratio suggests assets are becoming "
                 "progressively less productive. A very low absolute ratio may indicate dormant "
@@ -782,7 +1048,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             trow(s, "Absolute ratio — warn if below (all years)", 'asset_turnover_min', 0.05, 2.0, 0.05,
                  note="e.g. 0.3 = revenue less than 30% of total assets")
 
-            s = rule_section(tab1, "Profit Margin Compression",
+            s = rule_section(co_tab1, "Profit Margin Compression",
                 "Tracks the net profit margin (Profit/Loss ÷ Revenue) as a trend, separately from "
                 "absolute revenue movements. Margin compression — even with growing revenue — "
                 "signals rising cost pressure or pricing weakness.")
@@ -791,7 +1057,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             trow(s, "Overall margin compression to flag (percentage points)", 'profit_margin_compression_pts',
                  2.0, 50.0, 1.0, note="e.g. 10 = margin fell by 10pp over available period")
 
-            s = rule_section(tab1, "Staff Cost Burden",
+            s = rule_section(co_tab1, "Staff Cost Burden",
                 "Compares staff costs to revenue to assess operational fragility. A very high "
                 "ratio leaves little margin for other costs and makes the organisation vulnerable "
                 "to any revenue shortfall. Requires staff costs to be entered manually in "
@@ -801,7 +1067,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             trow(s, "Staff costs as proportion of revenue — HIGH (critical)", 'staff_cost_ratio_critical',
                  0.50, 1.0, 0.05)
 
-            s = rule_section(tab1, "Predictive Financial Outlook",
+            s = rule_section(co_tab1, "Predictive Financial Outlook",
                 "Uses linear extrapolation of filed accounts to project key metrics one year "
                 "forward. Flags when the trajectory points toward insolvency, worsening losses, "
                 "or revenue collapse. Requires at least 2 years of accounts.")
@@ -809,20 +1075,20 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                  5, 80, 5, note="Applied as: projected worsening exceeds this %")
             trow(s, "Projected revenue decline % to flag", 'predictive_revenue_decline_pct', 5, 50, 5)
 
-            s = rule_section(tab1, "Director & PSC Turnover",
+            s = rule_section(co_tab1, "Director & PSC Turnover",
                 "Counts director appointments and resignations in a rolling window. High turnover "
                 "can indicate governance instability or internal disputes. Exactly double the "
                 "warning threshold triggers Critical severity.")
             trow(s, "Total director changes to flag", 'director_churn_count', 1, 20, 1)
             trow(s, "Rolling window for changes (months)", 'director_churn_months', 3, 60, 3)
 
-            s = rule_section(tab1, "Filing Compliance",
+            s = rule_section(co_tab1, "Filing Compliance",
                 "Checks for late or missing annual returns and accounts. Persistent late filing "
                 "indicates poor governance and may affect the reliability of financial information.")
             trow(s, "Late filings to flag", 'late_filings_count', 1, 10, 1)
             trow(s, "Late filings measured over N years", 'late_filings_period', 1, 10, 1)
 
-            s = rule_section(tab1, "Debt-to-Equity Ratio",
+            s = rule_section(co_tab1, "Debt-to-Equity Ratio",
                 "Compares total debt to shareholders' equity. Retained for future use in the "
                 "report — not currently used to generate a finding.")
             trow(s, "Debt-to-equity ratio — warn if above", 'debt_to_equity_max', 0.5, 10.0, 0.5)
@@ -846,8 +1112,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             trow(s, "Name similarity % to flag as a phoenix match", 'phoenix_similarity_pct', 50, 99, 5)
             trow(s, "Number of officers to check (top N)", 'phoenix_officer_count', 1, 20, 1)
 
-            # ── Tab 3: Grants Analysis ───────────────────────────────────────────
-            tab3 = make_tab("Grants Analysis")
+        # ── Grants Analysis (common to companies and charities) ─────────────
+        tab3 = make_tab("Grants Analysis")
 
         s = rule_section(tab3, "Match-Funding Capacity & Liquidity",
             "Assesses whether the organisation has sufficient liquidity to manage a grant, "
@@ -948,6 +1214,14 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         self.manual_input_frame = ttk.Frame(self.content_frame)
         # Will be packed/unpacked by toggle
+
+        # Active entity indicator
+        self._active_entity_label = ttk.Label(
+            self.manual_input_frame,
+            text="Select an entity in Step 1 to edit its grant details.",
+            foreground='grey', font=('', 9, 'italic'),
+        )
+        self._active_entity_label.pack(anchor='w', padx=5, pady=(2, 5))
 
         # --- Proposed Grant Details ---
         grant_frame = ttk.LabelFrame(
@@ -1633,76 +1907,25 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         return years_data
 
     def _on_entity_type_changed(self):
-        """Update UI when entity type radio button changes."""
+        """Update input labels when entity type radio button changes."""
         is_charity = self.entity_type_var.get() == 'charity'
         self._entity_type = 'charity' if is_charity else 'company'
 
-        # Update Step 1 labels
+        # Update Step 1 input labels only — treeview persists across type changes
         if is_charity:
-            self._lookup_frame.config(text="Step 1: Enter Charity Registration Number")
             self._input_label.config(text="Registration Number:")
             self.fetch_btn.config(text="Fetch Charity Data")
         else:
-            self._lookup_frame.config(text="Step 1: Enter Company Number")
             self._input_label.config(text="Company Number:")
             self.fetch_btn.config(text="Fetch Company Data")
 
-        # Toggle Step 2: upload vs charity note
-        # The manual input toggle (grant details + supplementary accounts) stays
-        # visible for both modes — only the iXBRL upload frame is swapped.
-        if is_charity:
-            self._upload_frame.pack_forget()
-            self._charity_accounts_note.pack(fill=tk.X, pady=5, padx=10,
-                                             after=self._lookup_frame)
-            # Re-place the manual toggle after the charity note
-            if hasattr(self, '_manual_toggle_widget'):
-                self._manual_toggle_widget.pack_forget()
-                self.manual_input_frame.pack_forget()
-                self._manual_toggle_widget.pack(anchor='w', padx=10, pady=(5, 0),
-                                                after=self._charity_accounts_note)
-        else:
-            self._charity_accounts_note.pack_forget()
-            self._upload_frame.pack(fill=tk.X, pady=5, padx=10,
-                                    after=self._lookup_frame)
-            if hasattr(self, '_manual_toggle_widget'):
-                self._manual_toggle_widget.pack_forget()
-                self.manual_input_frame.pack_forget()
-                self._manual_toggle_widget.pack(anchor='w', padx=10, pady=(5, 0),
-                                                after=self._upload_frame)
-
-        # Update Step 3 checkbox labels
-        if 'ownership_graph' in self.check_widgets:
-            text = ("Linked charities & subsidiary structure"
-                    if is_charity
-                    else "Corporate ownership structure graph (makes additional API calls per corporate PSC)")
-            self.check_widgets['ownership_graph'].config(text=text)
-
-        if 'director_history' in self.check_widgets:
-            if is_charity:
-                self.check_vars['director_history'].set(False)
-                self.check_widgets['director_history'].pack_forget()
-            else:
-                self.check_vars['director_history'].set(True)
-                self.check_widgets['director_history'].config(
-                    text="Deep investigation — director insolvency history & phoenix check (slow)"
-                )
-                self.check_widgets['director_history'].pack(anchor='w')
-
-        # Clear previous data and reset
-        self.company_data = {}
-        self.charity_data = {}
-        self._manual_year_panels = []
-        if hasattr(self, '_supp_status_label'):
-            self._supp_status_label.config(text="No data entered.", foreground='grey')
-        self.company_summary_text.config(state='normal')
-        self.company_summary_text.delete('1.0', tk.END)
-        self.company_summary_text.config(state='disabled')
-        self.generate_btn.config(state='disabled')
-        self.status_var.set(f"Ready. Enter a {'charity registration number' if is_charity else 'company number'} to begin.")
+        self.company_num_var.set("")
 
     def fetch_entity_profile(self):
         """Dispatch to company or charity fetch based on entity type."""
-        if self._entity_type == 'charity':
+        etype = self.entity_type_var.get()
+        self._entity_type = etype
+        if etype == 'charity':
             self._fetch_charity_profile()
         else:
             self.fetch_company_profile()
@@ -1741,6 +1964,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         try:
             api_key = self.charity_api_key
 
+            # Check for duplicate
+            for e in self._entities:
+                if e['type'] == 'charity' and e['number'] == reg_num:
+                    self.safe_update(self.status_var.set, "Charity already added.")
+                    return
+
             # Core profile
             details, error = cc_get_charity_details_v2(api_key, reg_num)
             if error or not details:
@@ -1770,7 +1999,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Registration history
             reg_history, _ = cc_get_registration_history(api_key, reg_num)
 
-            self.charity_data = {
+            charity_data = {
                 'details': details,
                 'financial_history': fin_history,
                 'assets_liabilities': assets_liab,
@@ -1780,9 +2009,33 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 'registration_history': reg_history,
             }
 
-            self.after(100, self._display_charity_summary)
+            # Keep flat state for backward compat during session
+            self.charity_data = charity_data
+
+            charity_name = details.get('charity_name', 'Unknown Charity')
+            fin_years = len(fin_history) if fin_history else 0
+            accounts_txt = f"{fin_years} years available" if fin_years else "0 filings available"
+
+            entity = self._make_entity_dict('charity', reg_num, charity_name)
+            entity['charity_data'] = charity_data
+
+            # Add to treeview on UI thread
+            def _add_row():
+                tid = self.entity_tree.insert(
+                    '', 'end',
+                    values=(charity_name, reg_num, 'Charity', accounts_txt),
+                )
+                entity['treeview_id'] = tid
+                self._entities.append(entity)
+                self.entity_tree.selection_set(tid)
+                self.entity_tree.see(tid)
+                self._on_entity_selected()
+                self.generate_btn.config(state='normal')
+                self.auto_fetch_btn.config(state='normal')
+                self._update_rules_display()
+
+            self.safe_update(_add_row)
             self.safe_update(self.status_var.set, "Charity data loaded successfully.")
-            self.safe_update(self.generate_btn.config, {'state': 'normal'})
 
         except Exception as e:
             log_message(f"Error fetching charity data: {e}")
@@ -1832,53 +2085,83 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         cnum = clean_company_number(cnum_raw)
 
         self.fetch_btn.config(state='disabled')
-        self.auto_fetch_btn.config(state='disabled')
-        self._available_ixbrl_filings = []
-        self.ixbrl_availability_label.config(text="", foreground='grey')
         self.status_var.set(f"Fetching data for {cnum}...")
 
         threading.Thread(target=self._fetch_company_thread, args=(cnum,), daemon=True).start()
-    
+
     def _fetch_company_thread(self, cnum):
         """Background thread to fetch all company data."""
         try:
+            # Check for duplicate
+            for e in self._entities:
+                if e['type'] == 'company' and e['number'] == cnum:
+                    self.safe_update(self.status_var.set, "Company already added.")
+                    return
+
             # Fetch profile
             profile, error = ch_get_data(self.api_key, self.ch_token_bucket, f"/company/{cnum}")
             if error or not profile:
                 raise ValueError(f"Could not fetch company {cnum}. Please check the number.")
-            
+
             # Fetch officers
             officers, _ = ch_get_data(
                 self.api_key, self.ch_token_bucket, f"/company/{cnum}/officers?items_per_page=100"
             )
-            
+
             # Fetch PSCs
             pscs, _ = ch_get_data(
                 self.api_key, self.ch_token_bucket,
                 f"/company/{cnum}/persons-with-significant-control?items_per_page=100"
             )
-            
+
             # Fetch filing history
             filing_history, _ = ch_get_data(
                 self.api_key, self.ch_token_bucket, f"/company/{cnum}/filing-history?items_per_page=100"
             )
-            
-            self.company_data = {
+
+            company_data = {
                 'profile': profile,
                 'officers': officers,
                 'pscs': pscs,
                 'filing_history': filing_history,
             }
 
-            self.after(100, self._display_company_summary)
-            self.safe_update(self.status_var.set, "Company data loaded. Checking iXBRL availability...")
-            self.safe_update(self.generate_btn.config, {'state': 'normal'})
-            self.safe_update(self._update_accounts_checkboxes)
+            # Keep flat state for backward compat
+            self.company_data = company_data
 
-            # Pre-check which account filings have iXBRL available
-            self._check_ixbrl_availability(cnum)
+            company_name = profile.get('company_name', 'Unknown Company')
+
+            entity = self._make_entity_dict('company', cnum, company_name)
+            entity['company_data'] = company_data
+
+            # Check iXBRL availability (stores result in entity dict)
+            self.safe_update(self.status_var.set, "Checking iXBRL availability...")
+            ixbrl_filings = self._check_ixbrl_availability_for_entity(cnum)
+            entity['available_ixbrl_filings'] = ixbrl_filings
+            entity['ixbrl_count'] = len(ixbrl_filings)
+
+            count = len(ixbrl_filings)
+            accounts_txt = f"{count} filings available"
+
+            # Add to treeview on UI thread
+            def _add_row():
+                tid = self.entity_tree.insert(
+                    '', 'end',
+                    values=(company_name, cnum, 'Company', accounts_txt),
+                )
+                entity['treeview_id'] = tid
+                self._entities.append(entity)
+                self.entity_tree.selection_set(tid)
+                self.entity_tree.see(tid)
+                self._on_entity_selected()
+                self.generate_btn.config(state='normal')
+                if count > 0:
+                    self.auto_fetch_btn.config(state='normal')
+                self._update_rules_display()
+
+            self.safe_update(_add_row)
             self.safe_update(self.status_var.set, "Company data loaded successfully.")
-            
+
         except Exception as e:
             log_message(f"Error fetching company data: {e}")
             self.safe_update(messagebox.showerror, "Error", str(e))
@@ -1886,18 +2169,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         finally:
             self.safe_update(self.fetch_btn.config, {'state': 'normal'})
 
-    def _check_ixbrl_availability(self, cnum):
+    def _check_ixbrl_availability_for_entity(self, cnum):
         """Check which account filings have iXBRL format available.
 
-        Called from _fetch_company_thread (background thread). Queries the
-        accounts-only filing history and probes the Document API metadata for
-        each filing to determine if an iXBRL version exists.  Results are
-        stored in self._available_ixbrl_filings and the UI is updated.
+        Returns list of (filing_date, metadata_url, mime, content_url) tuples,
+        sorted most-recent-first.
         """
-        self._available_ixbrl_filings = []
-
-        # Fetch accounts-only filing history (separate from the full history
-        # already fetched, to guarantee we get enough accounts items).
         log_message(f"[iXBRL] Checking iXBRL availability for {cnum}")
         accounts_data, err = ch_get_data(
             self.api_key, self.ch_token_bucket,
@@ -1905,20 +2182,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         )
         if err or not accounts_data:
             log_message(f"[iXBRL] Could not fetch accounts filing history for {cnum}: {err}")
-            self.safe_ui_call(
-                self.ixbrl_availability_label.config,
-                text="Could not check iXBRL availability.", foreground='grey'
-            )
-            return
+            return []
 
         items = accounts_data.get('items', [])
         log_message(f"[iXBRL] Found {len(items)} accounts filing items for {cnum}")
         if not items:
-            self.safe_ui_call(
-                self.ixbrl_availability_label.config,
-                text="No accounts filings found for this company.", foreground='grey'
-            )
-            return
+            return []
 
         # Sort by date descending (most recent first) and check up to 7
         items_with_dates = [
@@ -1941,8 +2210,6 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 continue
             resources = metadata.get('resources', {})
             content_url = metadata.get('links', {}).get('document')
-            log_message(f"[iXBRL] Filing {filing_date}: resources={list(resources.keys())}, "
-                        f"content_url={content_url}")
             if 'application/xhtml+xml' in resources:
                 mime = 'application/xhtml+xml'
             elif 'application/xml' in resources:
@@ -1953,28 +2220,14 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             log_message(f"[iXBRL] Filing {filing_date}: iXBRL available ({mime})")
             available.append((filing_date, metadata_url, mime, content_url))
 
-        self._available_ixbrl_filings = available
-        count = len(available)
-        log_message(f"[iXBRL] Availability check complete: {count} iXBRL filings found for {cnum}")
+        # Ensure most-recent-first ordering regardless of probe order
+        available.sort(key=lambda x: x[0], reverse=True)
+        log_message(f"[iXBRL] Availability check complete: {len(available)} iXBRL filings for {cnum}")
+        return available
 
-        if count == 0:
-            self.safe_ui_call(
-                self.ixbrl_availability_label.config,
-                text="No iXBRL accounts available \u2014 consider manual input.",
-                foreground='grey'
-            )
-            self.safe_ui_call(self.auto_fetch_btn.config, state='disabled')
-        else:
-            cap = min(count, 5)
-            default = min(3, cap)
-            self.safe_ui_call(
-                self.ixbrl_availability_label.config,
-                text=f"{count} iXBRL account filing{'s' if count != 1 else ''} available.",
-                foreground='green'
-            )
-            self.safe_ui_call(self.years_spinbox.config, from_=1, to=cap)
-            self.safe_ui_call(self.years_var.set, str(default))
-            self.safe_ui_call(self.auto_fetch_btn.config, state='normal')
+    # Keep old name as alias for any call sites that still use it
+    def _check_ixbrl_availability(self, cnum):
+        self._available_ixbrl_filings = self._check_ixbrl_availability_for_entity(cnum)
 
     def _display_company_summary(self):
         """Display basic company info in the summary box."""
@@ -2068,20 +2321,17 @@ class EnhancedDueDiligence(InvestigationModuleBase):
     
     def start_report_generation(self):
         """Kick off report generation in background thread."""
+        if not self._entities:
+            messagebox.showwarning("No Entities", "Add at least one entity first.")
+            return
+
         self.generate_btn.config(state='disabled')
+        self._open_folder_btn.pack_forget()  # Hide any previous "Open Folder" button
         self.cancel_flag.clear()
 
-        # Collect manual input on main thread (thread-safe)
-        self._manual_data = self._collect_manual_input()
-        self._proposed_award = 0.0
-        self._payment_mechanism = 'Unknown'
-        raw_award = self.proposed_award_var.get().strip().replace(',', '').replace('£', '')
-        if raw_award:
-            try:
-                self._proposed_award = float(raw_award)
-            except ValueError:
-                log_message(f"Invalid proposed award amount: {raw_award}")
-        self._payment_mechanism = self.payment_mechanism_var.get() or 'Unknown'
+        # Save current active entity's manual data
+        self._save_active_entity_manual_data()
+
         self._igm_mode = self.check_vars.get('igm_mode', tk.BooleanVar(value=False)).get()
         # Build cross-analysis thresholds snapshot from current self.thresholds dict
         _ca_keys = set(CrossAnalysisThresholds.__dataclass_fields__)
@@ -2089,12 +2339,57 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             **{k: self.thresholds[k] for k in _ca_keys if k in self.thresholds}
         )
 
-        threading.Thread(target=self._generate_report_thread, daemon=True).start()
-    
-    def _generate_report_thread(self):
-        """Main report generation logic."""
-        if self._entity_type == 'charity':
-            return self._generate_charity_report_thread()
+        threading.Thread(target=self._generate_bulk_report_thread, daemon=True).start()
+
+    def _generate_bulk_report_thread(self):
+        """Generate reports for all entities."""
+        report_mode = self._report_mode_var.get()  # 'stacked' or 'separate'
+        entity_reports = []  # List of (entity, html_content)
+
+        try:
+            total = len(self._entities)
+            for idx, entity in enumerate(self._entities):
+                if self.cancel_flag.is_set():
+                    return
+                name = entity['name'] or entity['number']
+                self.safe_update(
+                    self.status_var.set,
+                    f"Generating report for {name} ({idx+1}/{total})..."
+                )
+
+                # Set flat state from entity for compatibility with check methods
+                self._set_active_entity_state(entity)
+
+                # Load this entity's manual data
+                self._manual_data = entity.get('manual_data')
+                self._proposed_award = entity.get('proposed_award', 0.0)
+                self._payment_mechanism = entity.get('payment_mechanism', 'Unknown')
+
+                if entity['type'] == 'company':
+                    html = self._generate_single_company_report()
+                else:
+                    html = self._generate_single_charity_report()
+
+                if html:
+                    entity_reports.append((entity, html))
+
+            if not entity_reports:
+                self.safe_update(self.status_var.set, "No reports were generated.")
+                return
+
+            if report_mode == 'separate':
+                self._save_separate_reports(entity_reports)
+            else:
+                self._save_stacked_report(entity_reports)
+
+        except Exception as e:
+            log_message(f"Error generating bulk report: {e}\n{traceback.format_exc()}")
+            self.safe_update(messagebox.showerror, "Error", f"Report generation failed: {e}")
+        finally:
+            self.safe_update(self._finish_report_generation)
+
+    def _generate_single_company_report(self):
+        """Generate report HTML for the current company (flat state must be set). Returns HTML string."""
         try:
             self.safe_update(self.status_var.set, "Analyzing company data...")
             
@@ -2231,41 +2526,15 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
             # Generate report HTML
             self.safe_update(self.status_var.set, "Generating report...")
-            html_content = self._build_report_html(findings)
-            
-            # Save and open
-            filename = os.path.join(
-                CONFIG_DIR,
-                f"DD_Report_{self.company_data['profile']['company_number']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-            )
-            
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-            
-            self.safe_update(self.status_var.set, "Report generated! Opening in browser...")
-            webbrowser.open(f"file://{os.path.realpath(filename)}")
-
-            # Record in app_state for home screen
-            self.app_state.recent_edd_reports.insert(0, {
-                "name": self.company_data['profile'].get('company_name', 'Unknown'),
-                "path": os.path.realpath(filename),
-                "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
-            })
-            self.app_state.recent_edd_reports = self.app_state.recent_edd_reports[:5]
-            save_recent_reports(self.app_state.recent_edd_reports)
+            return self._build_report_html(findings)
 
         except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            log_message(f"Error generating report: {e}\n{error_details}")
-            self.safe_update(messagebox.showerror, "Error", f"Report generation failed: {e}")
-        finally:
-        # Add this finally block
-            self.safe_update(self._finish_report_generation)
+            log_message(f"Error generating company report: {e}\n{traceback.format_exc()}")
+            return None
     # --- Charity Report Generation ---
 
-    def _generate_charity_report_thread(self):
-        """Generate a full EDD report for a charity."""
+    def _generate_single_charity_report(self):
+        """Generate report HTML for the current charity. Returns HTML string."""
         try:
             self.safe_update(self.status_var.set, "Analyzing charity data...")
 
@@ -2398,36 +2667,169 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
             # Generate report HTML
             self.safe_update(self.status_var.set, "Generating report...")
-            html_content = self._build_charity_report_html(findings)
+            return self._build_charity_report_html(findings)
 
-            # Save and open
-            filename = os.path.join(
-                CONFIG_DIR,
-                f"DD_Report_Charity_{reg_num}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-            )
+        except Exception as e:
+            log_message(f"Error generating charity report: {e}\n{traceback.format_exc()}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Report save/open helpers
+    # ------------------------------------------------------------------
+
+    def _save_separate_reports(self, entity_reports):
+        """Save each entity's report as a separate HTML file."""
+        for entity, html_content in entity_reports:
+            etype = entity['type']
+            number = entity['number']
+            name = entity['name']
+            if etype == 'company':
+                filename = os.path.join(
+                    CONFIG_DIR,
+                    f"DD_Report_{number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                )
+            else:
+                filename = os.path.join(
+                    CONFIG_DIR,
+                    f"DD_Report_Charity_{number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                )
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(html_content)
 
-            self.safe_update(self.status_var.set, "Report generated! Opening in browser...")
-            webbrowser.open(f"file://{os.path.realpath(filename)}")
-
-            # Record in app_state for home screen
-            details = self.charity_data.get('details', {})
+            # Record in app_state
             self.app_state.recent_edd_reports.insert(0, {
-                "name": details.get('charity_name', 'Unknown Charity'),
+                "name": name,
                 "path": os.path.realpath(filename),
                 "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
             })
-            self.app_state.recent_edd_reports = self.app_state.recent_edd_reports[:5]
-            save_recent_reports(self.app_state.recent_edd_reports)
 
-        except Exception as e:
-            error_details = traceback.format_exc()
-            log_message(f"Error generating charity report: {e}\n{error_details}")
-            self.safe_update(messagebox.showerror, "Error",
-                             f"Report generation failed: {e}")
-        finally:
-            self.safe_update(self._finish_report_generation)
+        self.app_state.recent_edd_reports = self.app_state.recent_edd_reports[:10]
+        save_recent_reports(self.app_state.recent_edd_reports)
+
+        n = len(entity_reports)
+        self.safe_update(
+            self.status_var.set,
+            f"{n} report{'s' if n != 1 else ''} saved to config folder."
+        )
+        # Show the "Open Folder" button
+        self.safe_ui_call(self._open_folder_btn.pack, pady=5)
+
+    def _save_stacked_report(self, entity_reports):
+        """Combine entity reports into a single stacked HTML and open in browser."""
+        if len(entity_reports) == 1:
+            # Single entity — no collapsible wrapper
+            entity, html_content = entity_reports[0]
+            filename = os.path.join(
+                CONFIG_DIR,
+                f"DD_Report_{entity['number']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+            )
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+        else:
+            # Multiple entities — extract body content and wrap in <details>
+            body_sections = []
+            for entity, html_content in entity_reports:
+                # Extract content between <body> and </body>
+                body_start = html_content.find('<body')
+                body_end = html_content.find('</body>')
+                if body_start != -1 and body_end != -1:
+                    # Find the closing > of the <body> tag
+                    body_tag_end = html_content.find('>', body_start)
+                    inner = html_content[body_tag_end + 1:body_end]
+                else:
+                    inner = html_content
+
+                etype_label = 'Company' if entity['type'] == 'company' else 'Charity'
+                esc_name = html.escape(entity['name'])
+                esc_num = html.escape(entity['number'])
+                body_sections.append(
+                    f'<details class="entity-section">\n'
+                    f'<summary>{esc_name} ({esc_num}) \u2014 {etype_label}</summary>\n'
+                    f'<div class="entity-report">\n{inner}\n</div>\n'
+                    f'</details>'
+                )
+
+            # Extract CSS from the first report's <style> block
+            first_html = entity_reports[0][1]
+            style_start = first_html.find('<style')
+            style_end = first_html.find('</style>')
+            if style_start != -1 and style_end != -1:
+                css_block = first_html[style_start:style_end + len('</style>')]
+            else:
+                css_block = '<style></style>'
+
+            n = len(entity_reports)
+            timestamp = datetime.now().strftime('%d %B %Y at %H:%M')
+            combined_html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Bulk Due Diligence Report</title>
+{css_block}
+<style>
+details.entity-section {{
+    margin: 20px 10px;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    overflow: hidden;
+}}
+details.entity-section summary {{
+    cursor: pointer;
+    font-size: 1.2em;
+    font-weight: bold;
+    padding: 14px 18px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    list-style: none;
+}}
+details.entity-section summary::-webkit-details-marker {{ display: none; }}
+details.entity-section summary::before {{
+    content: "\\25B6  ";
+    font-size: 0.8em;
+}}
+details.entity-section[open] summary::before {{
+    content: "\\25BC  ";
+}}
+details.entity-section .entity-report {{
+    padding: 10px;
+}}
+.bulk-header {{
+    text-align: center;
+    padding: 30px 20px 15px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    margin-bottom: 20px;
+}}
+.bulk-header h1 {{ margin: 0 0 8px 0; font-size: 1.8em; }}
+.bulk-header p {{ margin: 0; opacity: 0.9; }}
+</style>
+</head>
+<body>
+<div class="bulk-header">
+<h1>Bulk Enhanced Due Diligence Report</h1>
+<p>Generated: {timestamp} &middot; {n} entities analysed</p>
+</div>
+{''.join(body_sections)}
+</body>
+</html>"""
+            filename = os.path.join(
+                CONFIG_DIR,
+                f"DD_Bulk_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+            )
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(combined_html)
+
+        # Record
+        self.app_state.recent_edd_reports.insert(0, {
+            "name": f"Bulk Report ({len(entity_reports)} entities)" if len(entity_reports) > 1 else entity_reports[0][0]['name'],
+            "path": os.path.realpath(filename),
+            "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
+        })
+        self.app_state.recent_edd_reports = self.app_state.recent_edd_reports[:10]
+        save_recent_reports(self.app_state.recent_edd_reports)
+
+        self.safe_update(self.status_var.set, "Report generated! Opening in browser...")
+        webbrowser.open(f"file://{os.path.realpath(filename)}")
 
     def _build_charity_report_html(self, findings):
         """Generate the full HTML report for a charity."""
