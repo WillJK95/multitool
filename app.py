@@ -196,12 +196,6 @@ class App(tk.Tk):
 
         ttk.Separator(sb, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
 
-        # Network Compatible section
-        ttk.Label(
-            sb, text="Network Compatible",
-            font=("Segoe UI", 9, "italic"), foreground="gray"
-        ).pack(anchor="w", pady=(6, 2))
-
         self._add_sidebar_button(sb, "Bulk Entity Search",
                                  "bulk_entity_search", "primary-outline",
                                  self.show_unified_search)
@@ -215,18 +209,9 @@ class App(tk.Tk):
                                  "ubo_tracer", "primary-outline",
                                  self.show_ubo_investigation)
 
-        # Standalone Tools section
-        ttk.Label(
-            sb, text="Standalone Tools",
-            font=("Segoe UI", 9, "italic"), foreground="gray"
-        ).pack(anchor="w", pady=(10, 2))
-
         self._add_sidebar_button(sb, "Grants Search",
-                                 "grants_search", "secondary-outline",
+                                 "grants_search", "primary-outline",
                                  self.show_grants_investigation)
-        self._add_sidebar_button(sb, "Data Match",
-                                 "data_match", "secondary-outline",
-                                 self.show_data_match_investigation)
 
         ttk.Separator(sb, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(10, 4))
 
@@ -1923,7 +1908,7 @@ class App(tk.Tk):
         for w in self._home_reports_frame.winfo_children():
             w.destroy()
 
-        reports = self.app_state.recent_edd_reports[:5]
+        reports = self.app_state.recent_edd_reports[:10]
         if not reports:
             ttk.Label(
                 self._home_reports_frame, text="No recent reports",
@@ -2545,14 +2530,6 @@ class App(tk.Tk):
                      prefill_entities=prefill_entities,
                      prefill_source=prefill_source)
         self._update_sidebar_active("grants_search")
-        self._refresh_working_set_indicator()
-    
-    def show_data_match_investigation(self) -> None:
-        """Show the Data Match module."""
-        self.clear_container()
-        from .modules.data_match import DataMatch
-        DataMatch(self, self.show_main_menu, self.api_key)
-        self._update_sidebar_active("data_match")
         self._refresh_working_set_indicator()
     
     def show_network_graph_creator(self) -> None:
