@@ -3066,9 +3066,9 @@ details.entity-section .entity-report {{
             border-left: 4px solid #ccc;
             background: #f9f9f9;
         }}
-        .cross-rule-card.high {{ border-left-color: #dc3545; background: #fff5f5; }}
-        .cross-rule-card.medium {{ border-left-color: #ffc107; background: #fffef5; }}
-        .cross-rule-card.low {{ border-left-color: #28a745; background: #f5fff5; }}
+        .cross-rule-card.elevated {{ border-left-color: #fd7e14; background: #fff9f5; }}
+        .cross-rule-card.moderate {{ border-left-color: #ffc107; background: #fffef5; }}
+        .cross-rule-card.low {{ border-left-color: #6c757d; background: #f9f9f9; }}
         .cross-rule-card.not-assessed {{ border-left-color: #6c757d; background: #f9f9f9; }}
         .rule-id-badge {{
             display: inline-block;
@@ -4646,9 +4646,9 @@ details.entity-section .entity-report {{
             border-left: 4px solid #ccc;
             background: #f9f9f9;
         }}
-        .cross-rule-card.high {{ border-left-color: #dc3545; background: #fff5f5; }}
-        .cross-rule-card.medium {{ border-left-color: #ffc107; background: #fffef5; }}
-        .cross-rule-card.low {{ border-left-color: #28a745; background: #f5fff5; }}
+        .cross-rule-card.elevated {{ border-left-color: #fd7e14; background: #fff9f5; }}
+        .cross-rule-card.moderate {{ border-left-color: #ffc107; background: #fffef5; }}
+        .cross-rule-card.low {{ border-left-color: #6c757d; background: #f9f9f9; }}
         .cross-rule-card.not-assessed {{ border-left-color: #6c757d; background: #f9f9f9; }}
         .rule-id-badge {{
             display: inline-block;
@@ -5250,7 +5250,7 @@ details.entity-section .entity-report {{
 
         # Individual rule cards
         for r in report.results:
-            if r.unified_severity == 'Not Assessed':
+            if r.risk_flag == 'NOT_ASSESSED':
                 continue
 
             sev = r.unified_severity
