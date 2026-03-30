@@ -1678,7 +1678,7 @@ class App(tk.Tk):
 
         Menu indices:
           0 = Network Analytics Workbench  — always enabled if entities exist
-          1 = Enhanced Due Diligence       — single company or charity only
+          1 = Enhanced Due Diligence       — companies/charities only (bulk supported)
           2 = UBO Tracer                   — companies only (no charities/persons)
           3 = Bulk Entity Search           — companies + charities (no persons)
           4 = Grants Search                — companies + charities (no persons)
@@ -1701,10 +1701,10 @@ class App(tk.Tk):
         # 0: Network Analytics — always if entities exist
         _set(0, "Network Analytics Workbench", has_any)
 
-        # 1: EDD — single company or single charity
-        edd_ok = (count == 1 and (has_co or has_ch) and not has_per)
+        # 1: EDD — companies/charities only, no persons
+        edd_ok = has_any and (has_co or has_ch) and not has_per
         _set(1, "Enhanced Due Diligence" if edd_ok else
-             "Enhanced Due Diligence (select 1 company/charity)", edd_ok)
+             "Enhanced Due Diligence (companies/charities only)", edd_ok)
 
         # 2: UBO Tracer — companies only, no charities or persons
         ubo_ok = has_any and has_co and not has_per and not has_ch
@@ -1749,29 +1749,39 @@ class App(tk.Tk):
         self._send_tree_selection_to_edd(self._home_ws_tree)
 
     def _send_tree_selection_to_edd(self, tree) -> None:
-        """Send a single selected entity from any working set tree to EDD."""
+        """Send selected companies/charities from any working set tree to EDD."""
         if not self._ensure_ws_selection(tree):
             return
         selected = self._get_ws_selected_entities(tree)
         if not selected:
             return
 
-        if len(selected) != 1:
+        valid = []
+        skipped_persons = 0
+        for ent in selected:
+            etype = ent.get("entity_type", "company")
+            if etype == "person":
+                skipped_persons += 1
+                continue
+            num = str(ent.get("company_number", ent.get("number", ""))).strip()
+            if not num:
+                continue
+            dd_type = "charity" if etype == "charity" else "company"
+            valid.append({"type": dd_type, "id": num})
+
+        if skipped_persons:
             messagebox.showinfo(
-                "Selection Required",
-                "Please select exactly 1 entity to open in Enhanced Due Diligence."
+                "EDD",
+                f"{skipped_persons} person entit{'y' if skipped_persons == 1 else 'ies'} skipped — "
+                "Enhanced Due Diligence supports companies and charities only.",
+            )
+
+        if not valid:
+            messagebox.showinfo(
+                "EDD", "No compatible companies or charities were selected."
             )
             return
-
-        ent = selected[0]
-        num = ent.get("company_number", ent.get("number", ""))
-        etype = ent.get("entity_type", "company")
-        if etype == "person":
-            messagebox.showinfo(
-                "EDD", "Enhanced Due Diligence requires a company or charity.")
-            return
-        dd_type = "charity" if etype == "charity" else "company"
-        self.show_enhanced_dd(prefill_entity={"type": dd_type, "id": str(num)})
+        self.show_enhanced_dd(prefill_entities=valid)
 
     def _send_ws_to_ubo(self, tree) -> None:
         """Send selected companies from working set to UBO Tracer."""
@@ -2559,7 +2569,7 @@ class App(tk.Tk):
         self._update_sidebar_active("network_workbench")
         self._refresh_working_set_indicator()
 
-    def show_enhanced_dd(self, prefill_entity=None) -> None:
+    def show_enhanced_dd(self, prefill_entity=None, prefill_entities=None) -> None:
         """Show the Enhanced Due Diligence module."""
         self.clear_container()
         from .modules.enhanced_dd import EnhancedDueDiligence
@@ -2567,6 +2577,7 @@ class App(tk.Tk):
             self, self.api_key, self.show_main_menu, self.ch_token_bucket,
             charity_api_key=self.charity_api_key,
             prefill_entity=prefill_entity,
+            prefill_entities=prefill_entities,
         )
         self._update_sidebar_active("edd")
         self._refresh_working_set_indicator()

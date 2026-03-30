@@ -215,6 +215,7 @@ class GrantsSearch(InvestigationModuleBase):
         self._send_menu_btn = ttk.Menubutton(bottom_bar, text="Send to… ▼", bootstyle="primary-outline")
         self._send_menu = tk.Menu(self._send_menu_btn, tearoff=0)
         self._send_menu.add_command(label="Working Set", command=self._send_to_working_set)
+        self._send_menu.add_command(label="Enhanced Due Diligence", command=self._send_to_edd)
         self._send_menu.add_command(label="UBO Tracer (companies only)", command=self._send_to_ubo_tracer)
         self._send_menu.add_command(label="Bulk Entity Search", command=self._send_to_bulk_entity_search)
         self._send_menu_btn.configure(menu=self._send_menu)
@@ -490,11 +491,12 @@ class GrantsSearch(InvestigationModuleBase):
             if entity.get("entity_type") == "charity":
                 has_charity = True
         self._send_menu.entryconfigure(0, state="normal" if has_selection else "disabled")
+        self._send_menu.entryconfigure(1, state="normal" if has_selection else "disabled")
         self._send_menu.entryconfigure(
-            1,
+            2,
             state="normal" if has_selection and has_company else "disabled",
         )
-        self._send_menu.entryconfigure(2, state="normal" if has_selection else "disabled")
+        self._send_menu.entryconfigure(3, state="normal" if has_selection else "disabled")
         self._send_menu_btn.configure(text="Send to… ▼")
 
     def _resolve_entities_for_state(self):
@@ -589,6 +591,25 @@ class GrantsSearch(InvestigationModuleBase):
             )
         else:
             self.after(0, lambda: self.app.show_ubo_investigation(prefill_entities=companies))
+
+    def _send_to_edd(self):
+        entities = self._resolve_selected_root_entities()
+        if not entities:
+            return
+        payload = []
+        for ent in entities:
+            etype = ent.get("entity_type", "company")
+            if etype == "funder":
+                continue
+            dd_type = "charity" if etype == "charity" else "company"
+            eid = str(ent.get("company_number", "")).strip()
+            if not eid:
+                continue
+            payload.append({"type": dd_type, "id": eid})
+        if not payload:
+            messagebox.showinfo("EDD", "No compatible companies or charities were selected.")
+            return
+        self.after(0, lambda: self.app.show_enhanced_dd(prefill_entities=payload))
 
     def _send_to_bulk_entity_search(self):
         entities = self._resolve_selected_root_entities()

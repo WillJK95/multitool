@@ -450,11 +450,8 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             # Mixed → only WS + NA
             pass
         elif has_companies and not has_persons:
-            if count == 1:
-                edd_state = "normal"
-                grants_state = "normal"
-            else:
-                grants_state = "normal"
+            edd_state = "normal"
+            grants_state = "normal"
         elif has_persons and not has_companies:
             if count == 1:
                 director_state = "normal"
@@ -769,16 +766,21 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         threading.Thread(target=_build, daemon=True).start()
 
     def _send_to_edd(self):
-        """Send single selected company to Enhanced Due Diligence."""
+        """Send selected companies to Enhanced Due Diligence."""
         entities = self._get_selected_entities()
         if not entities:
             return
-        row = entities[0]
-        cnum = row.get("psc_company_number", "") or row.get("root_company", "")
-        if not cnum:
-            messagebox.showwarning("EDD", "No company number found for this entity.")
+        payload = []
+        for row in entities:
+            cnum = row.get("psc_company_number", "") or row.get("root_company", "")
+            cnum = str(cnum).strip()
+            if not cnum:
+                continue
+            payload.append({"type": "company", "id": cnum})
+        if not payload:
+            messagebox.showwarning("EDD", "No company number found for selected entities.")
             return
-        self.app.show_enhanced_dd(prefill_entity={"type": "company", "id": cnum})
+        self.app.show_enhanced_dd(prefill_entities=payload)
 
     def _send_to_grants_search(self):
         """Send selected companies to Grants Search."""
