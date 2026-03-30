@@ -122,7 +122,7 @@ def save_recent_reports(reports: list) -> None:
     os.makedirs(CONFIG_DIR, exist_ok=True)
     valid = [r for r in reports if os.path.exists(r.get("path", ""))]
     with open(RECENT_REPORTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(valid[:5], f, indent=2)
+        json.dump(valid[:10], f, indent=2)
 
 
 def load_recent_reports() -> list:

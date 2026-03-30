@@ -22,9 +22,6 @@ Build and analyse corporate networks starting from seed companies or exported fi
 ### 💰 Grants Search
 Search the 360Giving database for grants awarded to organisations. Supports lookup by company number, charity number, or organisation name with full pagination support.
 
-### 🔗 Data Match
-Match records between two datasets using exact or fuzzy matching. Configurable matching thresholds and multiple matching strategies for deduplication and record linkage.
-
 ### 📊 Enhanced Due Diligence
 Comprehensive due diligence reports combining data from all sources. Automated risk detection including:
 - Insolvency indicators
@@ -126,7 +123,6 @@ multitool/
 │   ├── network_analytics.py
 │   ├── contracts_finder.py
 │   ├── grants_search.py
-│   ├── data_match.py
 │   └── enhanced_dd.py
 ├── ui/                  # Reusable UI components
 │   ├── help_window.py

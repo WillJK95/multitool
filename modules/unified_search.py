@@ -451,7 +451,6 @@ class CompanyCharitySearch(InvestigationModuleBase):
                     foreground="green",
                 )
                 self._display_column_selection_ui()
-                self.run_btn.config(state="disabled")
         except Exception:
             pass
 
@@ -465,7 +464,6 @@ class CompanyCharitySearch(InvestigationModuleBase):
                 foreground="green",
             )
             self._display_column_selection_ui()
-            self.run_btn.config(state="disabled")
         else:
             self.file_status_label.config(text="Error loading file.", foreground="red")
 
@@ -1908,4 +1906,3 @@ class CompanyCharitySearch(InvestigationModuleBase):
             )
 
         return G
-

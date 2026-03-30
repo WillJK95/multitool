@@ -5,7 +5,7 @@ Contracts Finder Investigation Module.
 This module allows users to:
 1. Search awarded contracts by buyer organisation
 2. Extract and enrich supplier information via Companies House
-3. Export data for use with Data Match and Network Analytics modules
+3. Export data for use with Network Analytics
 """
 
 import csv
@@ -210,7 +210,7 @@ class ContractsFinderInvestigation(InvestigationModuleBase):
         # Help text
         help_text = ttk.Label(
             export_frame,
-            text="Tip: Use exported data with Data Match for conflict detection, or Network Analytics for visualisation.",
+            text="Tip: Use exported data with Network Analytics for visualisation.",
             foreground="gray",
             font=("Segoe UI", 8, "italic")
         )
