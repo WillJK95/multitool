@@ -26,6 +26,26 @@ class CrossAnalysisResult:
     trend_data: List[Dict] = field(default_factory=list)
     value_format: str = 'currency'  # 'currency', 'percentage', 'multiplier'
 
+    @property
+    def unified_severity(self) -> str:
+        """Map cross-analysis risk flags to the unified taxonomy."""
+        return {
+            'HIGH': 'Elevated',
+            'MEDIUM': 'Moderate',
+            'LOW': 'Low',
+            'NOT_ASSESSED': 'Not Assessed',
+        }.get(self.risk_flag, self.risk_flag)
+
+    @property
+    def unified_confidence_label(self) -> str:
+        """Human-readable confidence label."""
+        return {
+            'AUTO': 'Based on filed accounts',
+            'ENRICHED': 'Supplemented by user-provided data',
+            'LIMITED': 'Limited data available',
+            'SKIPPED': 'Insufficient data',
+        }.get(self.confidence, self.confidence)
+
 
 @dataclass
 class CrossAnalysisReport:
@@ -464,14 +484,21 @@ def rule_g2_grant_dependency(
     narratives = []
     risk_flag = "LOW"
 
-    # Always flag HIGH if net assets negative
-    if net_assets < 0:
-        risk_flag = "HIGH"
-        narratives.append(
-            f"The company has negative net assets (£{net_assets:,.0f}). "
-            f"It is insolvent before grant dependency is considered."
+    if net_assets <= 0:
+        return CrossAnalysisResult(
+            rule_id="G2", title=title,
+            risk_flag="NOT_ASSESSED", confidence=confidence,
+            narrative=(
+                f"Net assets are negative (£{net_assets:,.0f}). Grant dependency ratio "
+                "cannot be meaningfully calculated when the entity is insolvent. "
+                "See the financial health findings for solvency assessment."
+            ),
+            recommendation=(
+                "Address the underlying solvency position before assessing grant dependency."
+            ),
         )
-    elif net_assets > 0:
+
+    if net_assets > 0:
         grant_dependency_ratio = total_grants_3yr / net_assets
         narratives.append(
             f"Total grants received in the last {thresholds.g2_lookback_years} years: £{total_grants_3yr:,.0f} "

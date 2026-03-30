@@ -2554,6 +2554,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 except Exception as e:
                     log_message(f"Error generating ownership graph: {e}")
 
+            # Generate positive findings (after all other checks)
+            findings.extend(self._generate_positive_findings(findings))
+
             # Generate report HTML
             self.safe_update(self.status_var.set, "Generating report...")
             return self._build_report_html(findings)
@@ -2922,6 +2925,7 @@ details.entity-section .entity-report {{
         .finding.critical {{ border-left-color: #dc3545; background: #fff5f5; }}
         .finding.elevated {{ border-left-color: #fd7e14; background: #fff9f5; }}
         .finding.moderate {{ border-left-color: #ffc107; background: #fffef5; }}
+        .finding.low {{ border-left-color: #6c757d; background: #f9f9f9; }}
         .finding.positive {{ border-left-color: #28a745; background: #f5fff5; }}
         .finding h3 {{ margin: 0 0 10px 0; color: #333; }}
         .finding .severity {{
@@ -2935,6 +2939,7 @@ details.entity-section .entity-report {{
         .severity.critical {{ background: #dc3545; color: white; }}
         .severity.elevated {{ background: #fd7e14; color: white; }}
         .severity.moderate {{ background: #ffc107; color: #333; }}
+        .severity.low {{ background: #6c757d; color: white; }}
         .severity.positive {{ background: #28a745; color: white; }}
         .recommendation {{
             margin-top: 10px;
@@ -3029,9 +3034,9 @@ details.entity-section .entity-report {{
             border-bottom: 1px solid #eee;
             font-size: 13px;
         }}
-        .risk-high {{ background: #dc3545; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
-        .risk-medium {{ background: #ffc107; color: #333; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
-        .risk-low {{ background: #28a745; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
+        .risk-elevated {{ background: #fd7e14; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
+        .risk-moderate {{ background: #ffc107; color: #333; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
+        .risk-low {{ color: #6c757d; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; background: #e9ecef; }}
         .risk-not-assessed {{ background: #6c757d; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
         .confidence-auto {{ background: #667eea; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
         .confidence-enriched {{ background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
@@ -3210,21 +3215,21 @@ details.entity-section .entity-report {{
         # Cross-analysis summary
         report = getattr(self, '_cross_analysis_report', None)
         if report:
-            high_count = sum(1 for r in report.results if r.risk_flag == 'HIGH')
-            medium_count = sum(1 for r in report.results if r.risk_flag == 'MEDIUM')
+            elevated_ca = sum(1 for r in report.results if r.unified_severity == 'Elevated')
+            moderate_ca = sum(1 for r in report.results if r.unified_severity == 'Moderate')
             assessed = sum(
                 1 for r in report.results
-                if r.risk_flag != 'NOT_ASSESSED' and r.confidence != 'SKIPPED'
+                if r.unified_severity not in ('Not Assessed',) and r.confidence != 'SKIPPED'
             )
             if assessed > 0:
-                summary += f"<br><br><strong>Cross-analysis ({assessed} rules assessed):</strong> "
-                if high_count > 0:
-                    summary += f"{high_count} high-risk and {medium_count} medium-risk indicator(s) identified. "
-                elif medium_count > 0:
-                    summary += f"{medium_count} medium-risk indicator(s) identified. "
+                summary += f"<br><br><strong>Financial &amp; grant analysis ({assessed} rules assessed):</strong> "
+                if elevated_ca > 0:
+                    summary += f"{elevated_ca} elevated and {moderate_ca} moderate indicator(s) identified. "
+                elif moderate_ca > 0:
+                    summary += f"{moderate_ca} moderate indicator(s) identified. "
                 else:
-                    summary += "No high or medium-risk indicators identified. "
-                summary += "See the Financial &amp; Grant Cross-Analysis section for details."
+                    summary += "No elevated or moderate indicators identified. "
+                summary += "See the relevant sections below for details."
 
         return summary
 
@@ -3336,7 +3341,6 @@ details.entity-section .entity-report {{
         accounts_years = []
         late_cs_filings = []
         charge_filings = []
-        resolution_count = 0
 
         # Collect all AA filing action_dates to identify the earliest (first-year filing)
         aa_action_dates = []
@@ -3411,9 +3415,6 @@ details.entity-section .entity-report {{
             if f_type.startswith('MR01'):
                 charge_filings.append(filing)
 
-            # Track resolutions
-            if f_type.startswith('RES') or 'resolution' in filing.get('description', '').lower():
-                resolution_count += 1
 
         # Report late accounts filings
         if late_filings:
@@ -3467,16 +3468,6 @@ details.entity-section .entity-report {{
                 'title': f'Secured Charges Registered ({len(charge_filings)})',
                 'narrative': f"The company has {len(charge_filings)} charge registration(s) in its filing history, indicating secured borrowing. Charges grant creditors priority over company assets.",
                 'recommendation': 'Review the nature and extent of secured borrowing and assess whether existing charges might affect the company\'s ability to meet new obligations.',
-            })
-
-        # High resolution activity
-        if resolution_count >= 5:
-            findings.append({
-                'category': 'Governance',
-                'severity': 'Moderate',
-                'title': f'Frequent Special Resolutions ({resolution_count})',
-                'narrative': f"The company has filed {resolution_count} special resolutions, which may indicate significant corporate changes such as share restructuring, articles amendments, or changes to company objects.",
-                'recommendation': 'Review the nature of resolutions filed to understand the corporate changes that have occurred.',
             })
 
         return findings
@@ -4220,7 +4211,195 @@ details.entity-section .entity-report {{
             })
         
         return findings
-    
+
+    def _generate_positive_findings(self, existing_findings):
+        """Generate positive indicators from company data and accounts."""
+        findings = []
+        profile = self.company_data.get('profile', {})
+
+        # 1. Established entity (>=10 years, active, no status changes)
+        if profile.get('date_of_creation') and profile.get('company_status', '').lower() == 'active':
+            try:
+                inc_date = datetime.strptime(profile['date_of_creation'], '%Y-%m-%d')
+                age_years = (datetime.now() - inc_date).days / 365.25
+                if age_years >= 10:
+                    findings.append({
+                        'category': 'Governance',
+                        'severity': 'Positive',
+                        'title': 'Established and Stable Entity',
+                        'narrative': (
+                            f"The company has been continuously active for "
+                            f"{int(age_years)} years since incorporation on "
+                            f"{format_display_date(profile['date_of_creation'])}, "
+                            "with no changes in corporate status."
+                        ),
+                        'recommendation': '',
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # 2. Sustained positive net assets (all years positive, not just latest)
+        if self.accounts_loaded and self.financial_analyzer and not self.financial_analyzer.data.empty:
+            df = self.financial_analyzer.data.sort_values('Year')
+            if 'NetAssets' in df.columns:
+                na_values = df['NetAssets'].dropna()
+                if len(na_values) >= 2 and all(v > 0 for v in na_values):
+                    latest = na_values.iloc[-1]
+                    findings.append({
+                        'category': 'Financial',
+                        'severity': 'Positive',
+                        'title': 'Sustained Positive Net Assets',
+                        'narrative': (
+                            f"The company has maintained a positive net asset position "
+                            f"across all {len(na_values)} years of accounts examined "
+                            f"(latest: \u00a3{latest:,.0f})."
+                        ),
+                        'recommendation': '',
+                    })
+
+        # 3. Strong liquidity (current ratio >= 1.5 in latest year)
+        if self.accounts_loaded and self.financial_analyzer:
+            df_ratios = self.financial_analyzer.calculate_ratios()
+            if not df_ratios.empty and 'CurrentRatio' in df_ratios.columns:
+                latest_ratio = df_ratios.sort_values('Year').iloc[-1].get('CurrentRatio')
+                if pd.notna(latest_ratio) and latest_ratio >= 1.5:
+                    findings.append({
+                        'category': 'Financial',
+                        'severity': 'Positive',
+                        'title': 'Strong Short-Term Liquidity',
+                        'narrative': (
+                            f"The current ratio of {latest_ratio:.2f} indicates the company "
+                            "has adequate short-term liquidity, with current assets comfortably "
+                            "exceeding current liabilities."
+                        ),
+                        'recommendation': '',
+                    })
+
+        # 4. Revenue growth (increased in each of the last 2+ years)
+        if self.accounts_loaded and self.financial_analyzer and not self.financial_analyzer.data.empty:
+            df = self.financial_analyzer.data.sort_values('Year')
+            if 'Revenue' in df.columns:
+                rev_values = df[['Year', 'Revenue']].dropna()
+                if len(rev_values) >= 3:
+                    recent = rev_values.tail(3)
+                    rev_list = recent['Revenue'].tolist()
+                    if all(rev_list[i] > rev_list[i - 1] for i in range(1, len(rev_list))):
+                        findings.append({
+                            'category': 'Financial',
+                            'severity': 'Positive',
+                            'title': 'Sustained Revenue Growth',
+                            'narrative': (
+                                f"Revenue has grown in each of the last {len(rev_list)} years, "
+                                f"from \u00a3{rev_list[0]:,.0f} to \u00a3{rev_list[-1]:,.0f}."
+                            ),
+                            'recommendation': '',
+                        })
+
+        # 5. Profitable trading (P&L > 0 in each of last 2+ years)
+        if self.accounts_loaded and self.financial_analyzer and not self.financial_analyzer.data.empty:
+            df = self.financial_analyzer.data.sort_values('Year')
+            if 'ProfitLoss' in df.columns:
+                pl_values = df['ProfitLoss'].dropna()
+                if len(pl_values) >= 2 and all(v > 0 for v in pl_values):
+                    findings.append({
+                        'category': 'Financial',
+                        'severity': 'Positive',
+                        'title': 'Consistent Profitability',
+                        'narrative': (
+                            f"The company has traded profitably for "
+                            f"{len(pl_values)} consecutive years."
+                        ),
+                        'recommendation': '',
+                    })
+
+        # 6. Stable leadership (no officer changes in 24+ months)
+        officers = self.company_data.get('officers', {})
+        if officers and officers.get('items'):
+            cutoff = datetime.now() - timedelta(days=730)
+            recent_changes = 0
+            for officer in officers.get('items', []):
+                for date_field in ('resigned_on', 'appointed_on'):
+                    date_str = officer.get(date_field)
+                    if date_str:
+                        try:
+                            d = datetime.strptime(date_str, '%Y-%m-%d')
+                            if d >= cutoff:
+                                recent_changes += 1
+                        except (ValueError, TypeError):
+                            pass
+            if recent_changes == 0:
+                findings.append({
+                    'category': 'Governance',
+                    'severity': 'Positive',
+                    'title': 'Stable Leadership',
+                    'narrative': (
+                        "The officer structure has been stable with no appointments "
+                        "or resignations in the past 24 months."
+                    ),
+                    'recommendation': '',
+                })
+
+        # 7. Clean director history — check from existing findings, don't re-run
+        if self.check_vars.get('director_history', tk.BooleanVar(value=False)).get():
+            has_insolvency = any(
+                'insolvency' in f.get('title', '').lower() or 'phoenix' in f.get('title', '').lower()
+                for f in existing_findings
+            )
+            if not has_insolvency:
+                findings.append({
+                    'category': 'Governance',
+                    'severity': 'Positive',
+                    'title': 'Clean Director Background',
+                    'narrative': (
+                        "Director background checks identified no associations "
+                        "with previously insolvent companies and no phoenix "
+                        "company patterns."
+                    ),
+                    'recommendation': '',
+                })
+
+        # 8. No offshore PSCs — check from existing findings
+        pscs = self.company_data.get('pscs', {})
+        if pscs and pscs.get('items'):
+            active_pscs = [p for p in pscs['items'] if not p.get('ceased_on')]
+            if active_pscs:
+                has_offshore = any('offshore' in f.get('title', '').lower() for f in existing_findings)
+                if not has_offshore:
+                    findings.append({
+                        'category': 'Governance',
+                        'severity': 'Positive',
+                        'title': 'Transparent Ownership Structure',
+                        'narrative': (
+                            "All persons with significant control are based in "
+                            "jurisdictions with standard transparency requirements."
+                        ),
+                        'recommendation': '',
+                    })
+
+        # 9. Clean filing record
+        filing_findings = [f for f in existing_findings
+                          if 'late' in f.get('title', '').lower()
+                          or 'overdue' in f.get('title', '').lower()
+                          or 'gap' in f.get('title', '').lower()]
+        filing_history = self.company_data.get('filing_history', {})
+        has_strikeoff = any(
+            'GAZ1' in filing.get('type', '') or 'DISS' in filing.get('type', '')
+            for filing in filing_history.get('items', [])
+        )
+        if not filing_findings and not has_strikeoff:
+            findings.append({
+                'category': 'Governance',
+                'severity': 'Positive',
+                'title': 'Clean Filing Record',
+                'narrative': (
+                    "All statutory filings have been submitted on time with "
+                    "no overdue, late, or missing submissions identified."
+                ),
+                'recommendation': '',
+            })
+
+        return findings
+
     def _build_report_html(self, findings):
         """Generate HTML report from findings."""
         profile = self.company_data['profile']
@@ -4298,6 +4477,10 @@ details.entity-section .entity-report {{
             border-left-color: #ffc107;
             background: #fffef5;
         }}
+        .finding.low {{
+            border-left-color: #6c757d;
+            background: #f9f9f9;
+        }}
         .finding.positive {{
             border-left-color: #28a745;
             background: #f5fff5;
@@ -4317,6 +4500,7 @@ details.entity-section .entity-report {{
         .severity.critical {{ background: #dc3545; color: white; }}
         .severity.elevated {{ background: #fd7e14; color: white; }}
         .severity.moderate {{ background: #ffc107; color: #333; }}
+        .severity.low {{ background: #6c757d; color: white; }}
         .severity.positive {{ background: #28a745; color: white; }}
         .recommendation {{
             margin-top: 10px;
@@ -4413,9 +4597,9 @@ details.entity-section .entity-report {{
             border-bottom: 1px solid #eee;
             font-size: 13px;
         }}
-        .risk-high {{ background: #dc3545; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
-        .risk-medium {{ background: #ffc107; color: #333; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
-        .risk-low {{ background: #28a745; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
+        .risk-elevated {{ background: #fd7e14; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
+        .risk-moderate {{ background: #ffc107; color: #333; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
+        .risk-low {{ color: #6c757d; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; background: #e9ecef; }}
         .risk-not-assessed {{ background: #6c757d; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
         .confidence-auto {{ background: #667eea; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
         .confidence-enriched {{ background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
@@ -4585,21 +4769,21 @@ details.entity-section .entity-report {{
         # Cross-analysis summary
         report = getattr(self, '_cross_analysis_report', None)
         if report:
-            high_count = sum(1 for r in report.results if r.risk_flag == 'HIGH')
-            medium_count = sum(1 for r in report.results if r.risk_flag == 'MEDIUM')
-            assessed = sum(1 for r in report.results if r.risk_flag != 'NOT_ASSESSED' and r.confidence != 'SKIPPED')
+            elevated_ca = sum(1 for r in report.results if r.unified_severity == 'Elevated')
+            moderate_ca = sum(1 for r in report.results if r.unified_severity == 'Moderate')
+            assessed = sum(1 for r in report.results if r.unified_severity not in ('Not Assessed',) and r.confidence != 'SKIPPED')
             if assessed > 0:
-                summary += f"<br><br><strong>Cross-analysis ({assessed} rules assessed):</strong> "
-                if high_count > 0:
-                    summary += f"{high_count} high-risk and {medium_count} medium-risk indicator(s) identified. "
-                elif medium_count > 0:
-                    summary += f"{medium_count} medium-risk indicator(s) identified. "
+                summary += f"<br><br><strong>Financial &amp; grant analysis ({assessed} rules assessed):</strong> "
+                if elevated_ca > 0:
+                    summary += f"{elevated_ca} elevated and {moderate_ca} moderate indicator(s) identified. "
+                elif moderate_ca > 0:
+                    summary += f"{moderate_ca} moderate indicator(s) identified. "
                 else:
-                    summary += "No high or medium-risk indicators identified. "
-                summary += "See the Financial &amp; Grant Cross-Analysis section for details."
+                    summary += "No elevated or moderate indicators identified. "
+                summary += "See the relevant sections below for details."
 
         return summary
-    
+
     def _generate_company_profile_html(self):
         """Generate company profile section."""
         profile = self.company_data['profile']
@@ -4746,9 +4930,8 @@ details.entity-section .entity-report {{
     
     def _generate_positive_indicators_html(self, positive_findings):
         """Generate section for positive indicators."""
-        # Even if no specific positive findings, generate based on absence of negative ones
         html_output = '<div class="section"><h2>Positive Indicators</h2>'
-        
+
         if positive_findings:
             for finding in positive_findings:
                 html_output += f'''
@@ -4758,36 +4941,8 @@ details.entity-section .entity-report {{
                 </div>
                 '''
         else:
-            # Generate generic positive notes based on checks performed
-            positives = []
-            
-            if self.check_vars['filing_status'].get():
-                compliance_findings = self._check_filing_compliance()
-                pattern_findings = self._check_filing_patterns()
-                filing_history = self.company_data.get('filing_history', {})
-                has_strikeoff = any(
-                    'GAZ1' in filing.get('type', '') or 'DISS' in filing.get('type', '')
-                    for filing in filing_history.get('items', [])
-                )
-                has_late_filing = (
-                    any('late' in f['title'].lower() or 'overdue' in f['title'].lower()
-                        for f in compliance_findings)
-                    or any('late' in f['title'].lower() for f in pattern_findings)
-                )
-                if not has_late_filing and not has_strikeoff:
-                    positives.append("The company has maintained timely filing compliance with Companies House with no late filings or strike-off notifications on record.")
-            
-            if self.accounts_loaded and self.check_vars['solvency'].get():
-                df = self.financial_analyzer.data.sort_values('Year')
-                latest = df.iloc[-1]
-                if 'NetAssets' in latest and latest['NetAssets'] > 0:
-                    positives.append(f"The company maintains a positive net asset position of £{latest['NetAssets']:,.0f}.")
-            
-            if positives:
-                html_output += '<p>' + '<br><br>'.join(positives) + '</p>'
-            else:
-                html_output += '<p>No specific positive indicators were identified in the analysis performed. This does not indicate problems, but rather reflects the focus of due diligence on identifying risks.</p>'
-        
+            html_output += '<p>No specific positive indicators were identified in the analysis performed. This does not indicate problems, but rather reflects the focus of due diligence on identifying risks.</p>'
+
         html_output += '</div>'
         return html_output
     
@@ -5045,11 +5200,11 @@ details.entity-section .entity-report {{
         if report is None:
             return ''
 
-        risk_emoji = {
-            'HIGH': '\U0001F534',      # Red circle
-            'MEDIUM': '\U0001F7E1',    # Yellow circle
-            'LOW': '\U0001F7E2',       # Green circle
-            'NOT_ASSESSED': '\u26AA',  # White circle
+        severity_emoji = {
+            'Elevated': '\U0001F7E0',    # Orange circle
+            'Moderate': '\U0001F7E1',    # Yellow circle
+            'Low': '\u26AA',             # White circle
+            'Not Assessed': '',
         }
 
         html_out = '<div class="section"><h2>Financial &amp; Grant Cross-Analysis</h2>'
@@ -5077,36 +5232,38 @@ details.entity-section .entity-report {{
         # Summary table
         html_out += '''
         <table class="cross-analysis-summary">
-            <tr><th>Check</th><th>Risk</th><th>Confidence</th></tr>
+            <tr><th>Check</th><th>Severity</th><th>Confidence</th></tr>
         '''
         for r in report.results:
-            risk_class = r.risk_flag.lower().replace('_', '-')
+            sev = r.unified_severity
+            sev_class = sev.lower().replace(' ', '-')
             conf_class = r.confidence.lower()
-            emoji = risk_emoji.get(r.risk_flag, '')
+            emoji = severity_emoji.get(sev, '')
             html_out += f'''
             <tr>
                 <td>{html.escape(r.title)}</td>
-                <td><span class="risk-{risk_class}">{emoji} {html.escape(r.risk_flag)}</span></td>
-                <td><span class="confidence-{conf_class}">{html.escape(r.confidence)}</span></td>
+                <td><span class="risk-{sev_class}">{emoji} {html.escape(sev)}</span></td>
+                <td><span class="confidence-{conf_class}">{html.escape(r.unified_confidence_label)}</span></td>
             </tr>
             '''
         html_out += '</table>'
 
         # Individual rule cards
         for r in report.results:
-            if r.risk_flag == 'NOT_ASSESSED':
+            if r.unified_severity == 'Not Assessed':
                 continue
 
-            risk_class = r.risk_flag.lower().replace('_', '-')
+            sev = r.unified_severity
+            sev_class = sev.lower().replace(' ', '-')
             conf_class = r.confidence.lower()
-            emoji = risk_emoji.get(r.risk_flag, '')
+            emoji = severity_emoji.get(sev, '')
 
             html_out += f'''
-            <div class="cross-rule-card {risk_class}">
+            <div class="cross-rule-card {sev_class}">
                 <h3>
                     {html.escape(r.title)}
-                    <span class="risk-{risk_class}">{emoji} {html.escape(r.risk_flag)}</span>
-                    <span class="confidence-{conf_class}">{html.escape(r.confidence)}</span>
+                    <span class="risk-{sev_class}">{emoji} {html.escape(sev)}</span>
+                    <span class="confidence-{conf_class}">{html.escape(r.unified_confidence_label)}</span>
                 </h3>
                 <p>{html.escape(r.narrative)}</p>
             '''
