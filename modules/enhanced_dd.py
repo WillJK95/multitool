@@ -754,7 +754,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             for i, (filing_date, metadata_url, mime, content_url) in enumerate(selected):
                 if self.cancel_flag.is_set():
                     return False
-                dest = os.path.join(cache_dir, f"{cnum}_{filing_date}.xhtml")
+                # Include a metadata-derived suffix to avoid filename collisions
+                # when multiple filings share the same submission date.
+                doc_id = metadata_url.rstrip('/').split('/')[-1] if metadata_url else f"idx{i+1}"
+                doc_id = re.sub(r'[^A-Za-z0-9._-]+', '_', doc_id)
+                dest = os.path.join(cache_dir, f"{cnum}_{filing_date}_{doc_id}.xhtml")
                 log_message(f"[iXBRL] Downloading filing {i+1}/{len(selected)}: "
                             f"date={filing_date}, mime={mime}, dest={dest}")
                 path, err = ch_download_document_content(
