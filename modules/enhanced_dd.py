@@ -2220,6 +2220,18 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         target_candidate_count = 20
         max_metadata_probes = 40
         target_available_count = 12
+        
+        def _parse_date_for_sort(date_str):
+            """Return a datetime for reliable descending sort, or datetime.min."""
+            if not date_str:
+                return datetime.min
+            try:
+                return datetime.fromisoformat(str(date_str))
+            except Exception:
+                try:
+                    return datetime.strptime(str(date_str), "%Y-%m-%d")
+                except Exception:
+                    return datetime.min
 
         log_message(f"[iXBRL] Checking iXBRL availability for {cnum}")
         all_items = []
@@ -2280,7 +2292,10 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             it for it in items
             if it.get('links', {}).get('document_metadata') and it.get('date')
         ]
-        items_with_dates.sort(key=lambda x: x['date'], reverse=True)
+        items_with_dates.sort(
+            key=lambda x: _parse_date_for_sort(x.get('date')),
+            reverse=True
+        )
         items_to_probe = items_with_dates[:max_metadata_probes]
         log_message(
             f"[iXBRL] {len(items_with_dates)} filings have metadata links, "
@@ -2291,6 +2306,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         for filing in items_to_probe:
             filing_date = filing['date']
             metadata_url = filing['links']['document_metadata']
+            made_up_date = (filing.get('description_values') or {}).get('made_up_date')
+            period_key = made_up_date or filing_date
             log_message(f"[iXBRL] Checking filing {filing_date}: {metadata_url}")
             metadata, meta_err = ch_get_document_metadata(
                 self.api_key, self.ch_token_bucket, metadata_url
@@ -2308,7 +2325,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 log_message(f"[iXBRL] Filing {filing_date}: no iXBRL format available, skipping")
                 continue
             log_message(f"[iXBRL] Filing {filing_date}: iXBRL available ({mime})")
-            available.append((filing_date, metadata_url, mime, content_url))
+            available.append((filing_date, metadata_url, mime, content_url, period_key))
             if len(available) >= target_available_count:
                 log_message(
                     f"[iXBRL] Reached target available iXBRL filings "
@@ -2316,10 +2333,25 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 )
                 break
 
-        # Ensure most-recent-first ordering regardless of probe order
-        available.sort(key=lambda x: x[0], reverse=True)
-        log_message(f"[iXBRL] Availability check complete: {len(available)} iXBRL filings for {cnum}")
-        return available
+        # Ensure most-recent-first ordering regardless of probe order.
+        available.sort(key=lambda x: _parse_date_for_sort(x[0]), reverse=True)
+
+        # Keep only the newest filing per accounting period (made_up_date), so
+        # increasing "N filings" expands coverage backwards rather than selecting
+        # multiple amended filings for the same period.
+        deduped_available = []
+        seen_periods = set()
+        for filing_date, metadata_url, mime, content_url, period_key in available:
+            if period_key in seen_periods:
+                continue
+            seen_periods.add(period_key)
+            deduped_available.append((filing_date, metadata_url, mime, content_url))
+
+        log_message(
+            f"[iXBRL] Availability check complete: {len(deduped_available)} iXBRL filings "
+            f"for {cnum} (deduped by period)"
+        )
+        return deduped_available
 
     # Keep old name as alias for any call sites that still use it
     def _check_ixbrl_availability(self, cnum):
