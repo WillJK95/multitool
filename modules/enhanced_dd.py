@@ -2,6 +2,7 @@
 """Enhanced Due Diligence"""
 
 import os
+import csv
 import re
 import base64
 import html
@@ -109,6 +110,13 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         # --- Bulk entity support ---
         self._entities = []           # List of entity dicts (see _make_entity_dict)
         self._active_entity_idx = None  # Index of currently selected entity
+
+        # CSV upload state for bulk entity loading
+        self._uploaded_csv_path = None
+        self._uploaded_csv_rows = []
+        self._uploaded_csv_headers = []
+        self._upload_company_col = None
+        self._upload_charity_col = None
 
         # Legacy flat state — set from active entity during report generation
         self.company_data = {}
@@ -324,6 +332,15 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             input_frame, text="Fetch Company Data", command=self.fetch_entity_profile
         )
         self.fetch_btn.pack(side=tk.LEFT, padx=5)
+        ttk.Label(input_frame, text="or").pack(side=tk.LEFT, padx=5)
+        self.file_upload_btn = ttk.Button(
+            input_frame, text="File Upload", command=self._on_file_upload_clicked
+        )
+        self.file_upload_btn.pack(side=tk.LEFT, padx=5)
+
+        self.csv_mapping_frame = ttk.LabelFrame(
+            self._lookup_frame, text="CSV Column Mapping", padding=8
+        )
 
         # Entity treeview (replaces single-entity summary text)
         tree_frame = ttk.Frame(self._lookup_frame)
@@ -1936,6 +1953,210 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 years_data.append(year_data)
 
         return years_data
+
+    def _on_file_upload_clicked(self):
+        """Prompt for a CSV file and display mapping controls for bulk load."""
+        path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
+        if not path:
+            return
+        if self._load_csv_for_entity_upload(path):
+            self._render_upload_mapping_ui()
+            self.status_var.set(
+                f"CSV loaded: {len(self._uploaded_csv_rows)} rows. Map columns then click Load Entities."
+            )
+
+    def _load_csv_for_entity_upload(self, path):
+        """Load CSV rows/headers using pandas with csv.DictReader fallback."""
+        try:
+            df = pd.read_csv(path, dtype=str, keep_default_na=False)
+            self._uploaded_csv_headers = list(df.columns)
+            self._uploaded_csv_rows = df.to_dict(orient='records')
+        except Exception:
+            try:
+                with open(path, 'r', newline='', encoding='utf-8-sig') as f:
+                    reader = csv.DictReader(f)
+                    self._uploaded_csv_headers = reader.fieldnames or []
+                    self._uploaded_csv_rows = list(reader)
+            except Exception as e:
+                messagebox.showerror("CSV Error", f"Could not read CSV file:\n{e}")
+                self._reset_csv_upload()
+                return False
+
+        if not self._uploaded_csv_headers:
+            messagebox.showerror("CSV Error", "CSV file has no header row.")
+            self._reset_csv_upload()
+            return False
+
+        self._uploaded_csv_path = path
+        return True
+
+    def _render_upload_mapping_ui(self):
+        """Render company/charity column mapping controls for the loaded CSV."""
+        for widget in self.csv_mapping_frame.winfo_children():
+            widget.destroy()
+
+        self.csv_mapping_frame.pack(fill=tk.X, pady=(4, 6))
+
+        self.upload_company_col_var = tk.StringVar()
+        self.upload_charity_col_var = tk.StringVar()
+
+        not_selected = "— Not Selected —"
+        options = [not_selected] + self._uploaded_csv_headers
+
+        columns_container = ttk.Frame(self.csv_mapping_frame)
+        columns_container.pack(fill=tk.X, expand=True)
+
+        company_frame = ttk.LabelFrame(columns_container, text="Company Number", padding=5)
+        company_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        company_combo = ttk.Combobox(
+            company_frame,
+            textvariable=self.upload_company_col_var,
+            values=options,
+            state='readonly',
+        )
+        company_combo.pack(fill=tk.X)
+        company_combo.set(not_selected)
+
+        charity_frame = ttk.LabelFrame(columns_container, text="Charity Number", padding=5)
+        charity_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+        charity_combo = ttk.Combobox(
+            charity_frame,
+            textvariable=self.upload_charity_col_var,
+            values=options,
+            state='readonly',
+        )
+        charity_combo.pack(fill=tk.X)
+        charity_combo.set(not_selected)
+
+        self.load_entities_btn = ttk.Button(
+            self.csv_mapping_frame,
+            text="Load Entities",
+            command=self._load_entities_from_csv,
+            state='disabled',
+        )
+        self.load_entities_btn.pack(anchor='w', pady=(8, 0))
+
+        ttk.Button(
+            self.csv_mapping_frame,
+            text="Reset Upload",
+            command=self._reset_csv_upload,
+        ).pack(anchor='w', pady=(4, 0))
+
+        company_combo.bind("<<ComboboxSelected>>", lambda e: self._on_upload_mapping_changed())
+        charity_combo.bind("<<ComboboxSelected>>", lambda e: self._on_upload_mapping_changed())
+
+        self._auto_map_upload_columns()
+        self._on_upload_mapping_changed()
+        self._update_scrollregion()
+
+    def _auto_map_upload_columns(self):
+        """Best-effort auto-mapping for company/charity number columns."""
+        not_selected = "— Not Selected —"
+        company_keywords = [
+            "company_number", "company number", "company no", "company_no", "crn",
+            "company registration number",
+        ]
+        charity_keywords = [
+            "charity_number", "charity number", "charity no", "charity_no",
+            "registered charity number", "reg_charity_number",
+        ]
+
+        for header in self._uploaded_csv_headers:
+            h = header.lower().strip()
+            if self.upload_company_col_var.get() == not_selected and any(k == h or k in h for k in company_keywords):
+                self.upload_company_col_var.set(header)
+                break
+
+        for header in self._uploaded_csv_headers:
+            h = header.lower().strip()
+            if self.upload_charity_col_var.get() == not_selected and any(k == h or k in h for k in charity_keywords):
+                if header != self.upload_company_col_var.get():
+                    self.upload_charity_col_var.set(header)
+                    break
+
+    def _on_upload_mapping_changed(self):
+        """Track selected mapping columns and toggle Load Entities button state."""
+        not_selected = "— Not Selected —"
+        ccol = self.upload_company_col_var.get()
+        chcol = self.upload_charity_col_var.get()
+        self._upload_company_col = None if ccol == not_selected else ccol
+        self._upload_charity_col = None if chcol == not_selected else chcol
+
+        if self._upload_company_col or self._upload_charity_col:
+            self.load_entities_btn.config(state='normal')
+        else:
+            self.load_entities_btn.config(state='disabled')
+
+    def _reset_csv_upload(self):
+        """Clear CSV upload state and hide mapping controls."""
+        self._uploaded_csv_path = None
+        self._uploaded_csv_rows = []
+        self._uploaded_csv_headers = []
+        self._upload_company_col = None
+        self._upload_charity_col = None
+        self.csv_mapping_frame.pack_forget()
+        for widget in self.csv_mapping_frame.winfo_children():
+            widget.destroy()
+        self.status_var.set("CSV upload reset.")
+
+    def _load_entities_from_csv(self):
+        """Queue entity fetches from mapped CSV columns."""
+        if not self._uploaded_csv_rows:
+            messagebox.showwarning("No CSV", "Please upload a CSV first.")
+            return
+        if not (self._upload_company_col or self._upload_charity_col):
+            messagebox.showwarning("Missing Mapping", "Map at least one identifier column.")
+            return
+
+        queued = []
+        skipped = []
+        seen = set()
+
+        for row_idx, row in enumerate(self._uploaded_csv_rows, start=2):
+            if self._upload_company_col:
+                raw = str(row.get(self._upload_company_col, '')).strip()
+                if raw:
+                    cnum = clean_company_number(raw)
+                    if cnum:
+                        key = ('company', cnum)
+                        if key not in seen:
+                            queued.append(key)
+                            seen.add(key)
+                    else:
+                        skipped.append(f"Row {row_idx}: invalid company number '{raw}'")
+
+            if self._upload_charity_col:
+                raw = str(row.get(self._upload_charity_col, '')).strip()
+                if raw:
+                    reg = re.sub(r'\D', '', raw)
+                    if reg and len(reg) <= 7:
+                        key = ('charity', reg)
+                        if key not in seen:
+                            queued.append(key)
+                            seen.add(key)
+                    else:
+                        skipped.append(f"Row {row_idx}: invalid charity number '{raw}'")
+
+        if not queued and skipped:
+            messagebox.showwarning("No Valid Identifiers", "No valid identifiers were found in the mapped columns.")
+
+        for i, (etype, ident) in enumerate(queued):
+            self.after(150 * i, lambda t=etype, n=ident: self._queue_single_csv_entity_fetch(t, n))
+
+        status_msg = f"Queued {len(queued)} entities from CSV."
+        if skipped:
+            preview = "\n".join(skipped[:12])
+            more = "" if len(skipped) <= 12 else f"\n...and {len(skipped) - 12} more."
+            messagebox.showinfo("Skipped Rows", f"{len(skipped)} rows were skipped:\n\n{preview}{more}")
+            status_msg += f" Skipped {len(skipped)} invalid rows."
+        self.status_var.set(status_msg)
+
+    def _queue_single_csv_entity_fetch(self, entity_type, identifier):
+        """Queue helper to dispatch one mapped CSV entity into existing fetch flow."""
+        self.entity_type_var.set(entity_type)
+        self._on_entity_type_changed()
+        self.company_num_var.set(identifier)
+        self.fetch_entity_profile()
 
     def _on_entity_type_changed(self):
         """Update input labels when entity type radio button changes."""
