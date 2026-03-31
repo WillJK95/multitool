@@ -855,7 +855,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             label = f"Filings fetched for {success_count}/{total} entities."
             fg = 'green' if success_count == total else 'orange'
             self.safe_ui_call(self.accounts_status_label.config, text=label, foreground=fg)
-            self._set_phase_status(label)
+            # Explicitly bypass bulk-progress suppression so the final fetch
+            # completion message replaces the last ETA line.
+            self.safe_update(self.status_var.set, label)
 
         except Exception as e:
             log_message(f"Error in bulk auto-fetch: {e}\n{traceback.format_exc()}")
