@@ -8,6 +8,7 @@ import base64
 import html
 import threading
 import traceback
+import time
 import webbrowser
 import tkinter as tk
 from io import BytesIO
@@ -55,7 +56,7 @@ from ..constants import (
     CHARITY_EDD_THRESHOLDS,
 )
 from .base import InvestigationModuleBase
-from ..utils.helpers import log_message, clean_company_number
+from ..utils.helpers import log_message, clean_company_number, format_eta
 from ..utils.settings import save_recent_reports
 from ..utils.edd_visualizations import (
     generate_company_timeline,
@@ -99,6 +100,11 @@ from ..utils.edd_charity_visualizations import (
 from ..utils.charity_financial_data import CharityFinancialData
 
 class EnhancedDueDiligence(InvestigationModuleBase):
+    _ETA_CALL_ESTIMATES = {
+        'auto_fetch': {'company_per_item': 1, 'charity_per_item': 0},
+        'report_generation': {'company_per_item': 8, 'charity_per_item': 0},
+    }
+
     def __init__(self, parent_app, api_key, back_callback, ch_token_bucket,
                  charity_api_key=None, prefill_entity=None, prefill_entities=None):
         super().__init__(parent_app, back_callback, api_key, help_key=None)
@@ -106,6 +112,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self.charity_api_key = charity_api_key
         self._prefill_entity = prefill_entity
         self._prefill_entities = prefill_entities or []
+        self._bulk_progress_mode = False
 
         # --- Bulk entity support ---
         self._entities = []           # List of entity dicts (see _make_entity_dict)
@@ -299,6 +306,58 @@ class EnhancedDueDiligence(InvestigationModuleBase):
     def _entity_types_present(self):
         """Return set of entity types currently in the list."""
         return {e['type'] for e in self._entities}
+
+    def _estimate_entity_ch_calls(self, entity, stage, num_filings=0):
+        """Estimate CH API calls for one entity in a given stage."""
+        if entity.get('type') != 'company':
+            return 0
+
+        estimates = self._ETA_CALL_ESTIMATES.get(stage, {})
+        per_item = estimates.get('company_per_item', 0)
+        if stage == 'auto_fetch':
+            available = entity.get('available_ixbrl_filings', [])
+            return max(0, min(num_filings, len(available)) * per_item)
+        return per_item
+
+    def _estimate_remaining_ch_wait(self, entities, stage, num_filings=0):
+        """Estimate rate-limit wait for remaining entities where CH calls apply."""
+        if not getattr(self, 'ch_token_bucket', None):
+            return 0
+        remaining_calls = sum(
+            self._estimate_entity_ch_calls(ent, stage, num_filings=num_filings)
+            for ent in entities
+        )
+        if remaining_calls <= 0:
+            return 0
+        return self.ch_token_bucket.estimate_wait_seconds(remaining_calls)
+
+    def _set_phase_status(self, message):
+        """Set status text unless bulk ETA mode is controlling the status line."""
+        if self._bulk_progress_mode:
+            return
+        self.safe_update(self.status_var.set, message)
+
+    def _update_bulk_eta_status(
+        self, stage_label, current_name, processed_count, total, error_count,
+        start_time, remaining_entities, stage, num_filings=0, display_processed=None
+    ):
+        """Update status_var with consistent live ETA/progress for bulk loops."""
+        elapsed = time.monotonic() - start_time
+        avg_seconds = (elapsed / processed_count) if processed_count else 0
+        rate_wait = self._estimate_remaining_ch_wait(
+            remaining_entities, stage=stage, num_filings=num_filings
+        )
+        eta = format_eta(
+            elapsed, processed_count, total, rate_limit_wait=rate_wait
+        )
+        self.safe_update(
+            self.status_var.set,
+            (
+                f"{stage_label}: {current_name} ({(display_processed if display_processed is not None else processed_count)}/{total}) | "
+                f"ETA: {eta} | Processed: {(display_processed if display_processed is not None else processed_count)}/{total} | "
+                f"Errors: {error_count} | Avg: {avg_seconds:.1f}s/entity"
+            ),
+        )
 
     def _build_ui(self):
         # Step 1: Entity Lookup
@@ -742,6 +801,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         """Background thread to fetch filings for ALL entities."""
         total = len(self._entities)
         success_count = 0
+        error_count = 0
+        start_time = time.monotonic()
+        self._bulk_progress_mode = True
         # Charity year equivalence: N filings ≈ N+1 years of data
         charity_years = num_filings + 1
 
@@ -750,9 +812,17 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 if self.cancel_flag.is_set():
                     return
                 name = entity['name'] or entity['number']
-                self.safe_update(
-                    self.status_var.set,
-                    f"Fetching filings for {name} ({idx+1}/{total})..."
+                self._update_bulk_eta_status(
+                    stage_label="Fetching",
+                    current_name=name,
+                    processed_count=max(1, idx),
+                    display_processed=idx + 1,
+                    total=total,
+                    error_count=error_count,
+                    start_time=start_time,
+                    remaining_entities=self._entities[idx:],
+                    stage='auto_fetch',
+                    num_filings=num_filings,
                 )
 
                 if entity['type'] == 'company':
@@ -762,12 +832,31 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
                 if ok:
                     success_count += 1
+                else:
+                    error_count += 1
+
+                processed_count = idx + 1
+                remaining_entities = self._entities[processed_count:]
+                self._update_bulk_eta_status(
+                    stage_label="Fetching",
+                    current_name=name,
+                    processed_count=processed_count,
+                    display_processed=processed_count,
+                    total=total,
+                    error_count=error_count,
+                    start_time=start_time,
+                    remaining_entities=remaining_entities,
+                    stage='auto_fetch',
+                    num_filings=num_filings,
+                )
                 # Update treeview accounts column
                 self._update_entity_tree_row(entity)
 
             label = f"Filings fetched for {success_count}/{total} entities."
             fg = 'green' if success_count == total else 'orange'
             self.safe_ui_call(self.accounts_status_label.config, text=label, foreground=fg)
+            # Explicitly bypass bulk-progress suppression so the final fetch
+            # completion message replaces the last ETA line.
             self.safe_update(self.status_var.set, label)
 
         except Exception as e:
@@ -777,6 +866,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 text="Error fetching filings.", foreground='red'
             )
         finally:
+            self._bulk_progress_mode = False
             self.safe_ui_call(self.auto_fetch_btn.config, state='normal')
             if callable(getattr(self, '_post_fetch_callback', None)):
                 self.safe_ui_call(self._post_fetch_callback)
@@ -2363,7 +2453,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Check for duplicate
             for e in self._entities:
                 if e['type'] == 'charity' and e['number'] == reg_num:
-                    self.safe_update(self.status_var.set, "Charity already added.")
+                    self._set_phase_status("Charity already added.")
                     return
 
             # Core profile
@@ -2425,12 +2515,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 self._update_rules_display()
 
             self.safe_update(_add_row)
-            self.safe_update(self.status_var.set, "Charity data loaded successfully.")
+            self._set_phase_status("Charity data loaded successfully.")
 
         except Exception as e:
             log_message(f"Error fetching charity data: {e}")
             self.safe_update(messagebox.showerror, "Error", str(e))
-            self.safe_update(self.status_var.set, "Error fetching charity data.")
+            self._set_phase_status("Error fetching charity data.")
         finally:
             self.safe_update(self.fetch_btn.config, {'state': 'normal'})
 
@@ -2485,7 +2575,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Check for duplicate
             for e in self._entities:
                 if e['type'] == 'company' and e['number'] == cnum:
-                    self.safe_update(self.status_var.set, "Company already added.")
+                    self._set_phase_status("Company already added.")
                     return
 
             # Fetch profile
@@ -2525,7 +2615,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             entity['company_data'] = company_data
 
             # Check iXBRL availability (stores result in entity dict)
-            self.safe_update(self.status_var.set, "Checking iXBRL availability...")
+            self._set_phase_status("Checking iXBRL availability...")
             ixbrl_filings = self._check_ixbrl_availability_for_entity(cnum)
             entity['available_ixbrl_filings'] = ixbrl_filings
             entity['ixbrl_count'] = len(ixbrl_filings)
@@ -2557,12 +2647,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 self._update_rules_display()
 
             self.safe_update(_add_row)
-            self.safe_update(self.status_var.set, "Company data loaded successfully.")
+            self._set_phase_status("Company data loaded successfully.")
 
         except Exception as e:
             log_message(f"Error fetching company data: {e}")
             self.safe_update(messagebox.showerror, "Error", str(e))
-            self.safe_update(self.status_var.set, "Error fetching company data.")
+            self._set_phase_status("Error fetching company data.")
         finally:
             self.safe_update(self.fetch_btn.config, {'state': 'normal'})
 
@@ -2842,6 +2932,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         try:
             total = len(self._entities)
+            error_count = 0
+            start_time = time.monotonic()
+            self._bulk_progress_mode = True
             analysis_mode = "with financial analysis" if getattr(
                 self, '_run_with_financial_analysis', True
             ) else "without financial analysis"
@@ -2849,9 +2942,16 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 if self.cancel_flag.is_set():
                     return
                 name = entity['name'] or entity['number']
-                self.safe_update(
-                    self.status_var.set,
-                    f"Generating report for {name} ({idx+1}/{total}) — {analysis_mode}..."
+                self._update_bulk_eta_status(
+                    stage_label=f"Generating ({analysis_mode})",
+                    current_name=name,
+                    processed_count=max(1, idx),
+                    display_processed=idx + 1,
+                    total=total,
+                    error_count=error_count,
+                    start_time=start_time,
+                    remaining_entities=self._entities[idx:],
+                    stage='report_generation',
                 )
 
                 # Set flat state from entity for compatibility with check methods
@@ -2869,9 +2969,25 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
                 if html:
                     entity_reports.append((entity, html))
+                else:
+                    error_count += 1
+
+                processed_count = idx + 1
+                remaining_entities = self._entities[processed_count:]
+                self._update_bulk_eta_status(
+                    stage_label=f"Generating ({analysis_mode})",
+                    current_name=name,
+                    processed_count=processed_count,
+                    display_processed=processed_count,
+                    total=total,
+                    error_count=error_count,
+                    start_time=start_time,
+                    remaining_entities=remaining_entities,
+                    stage='report_generation',
+                )
 
             if not entity_reports:
-                self.safe_update(self.status_var.set, "No reports were generated.")
+                self._set_phase_status("No reports were generated.")
                 return
 
             if report_mode == 'separate':
@@ -2883,12 +2999,13 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             log_message(f"Error generating bulk report: {e}\n{traceback.format_exc()}")
             self.safe_update(messagebox.showerror, "Error", f"Report generation failed: {e}")
         finally:
+            self._bulk_progress_mode = False
             self.safe_update(self._finish_report_generation)
 
     def _generate_single_company_report(self):
         """Generate report HTML for the current company (flat state must be set). Returns HTML string."""
         try:
-            self.safe_update(self.status_var.set, "Analyzing company data...")
+            self._set_phase_status("Analyzing company data...")
             
             # Run all enabled checks
             findings = []
@@ -2926,7 +3043,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             
             # Tier 3 (expensive checks)
             if self.check_vars['director_history'].get():
-                self.safe_update(self.status_var.set, "Analyzing director history (this may take a while)...")
+                self._set_phase_status("Analyzing director history (this may take a while)...")
                 findings.extend(self._check_director_insolvency_history())
             
             if self.check_vars['phoenix_check'].get():
@@ -2939,7 +3056,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Fetch grants data if enabled
             self._grants_data = None
             if self.check_vars.get('grants_lookup', tk.BooleanVar(value=False)).get():
-                self.safe_update(self.status_var.set, "Fetching grants data from GrantNav...")
+                self._set_phase_status("Fetching grants data from GrantNav...")
                 cnum = self.company_data['profile']['company_number']
                 try:
                     self._grants_data = fetch_grants_for_company(cnum)
@@ -2949,7 +3066,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Cross-analysis rules
             self._cross_analysis_report = None
             if self.check_vars.get('cross_analysis', tk.BooleanVar(value=False)).get():
-                self.safe_update(self.status_var.set, "Running cross-analysis rules...")
+                self._set_phase_status("Running cross-analysis rules...")
                 try:
                     unified = UnifiedFinancialData(
                         auto_analyzer=self.financial_analyzer,
@@ -2988,7 +3105,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     log_message(f"Error running cross-analysis: {e}")
 
             # Generate company timeline
-            self.safe_update(self.status_var.set, "Generating company timeline...")
+            self._set_phase_status("Generating company timeline...")
             try:
                 self._timeline_b64 = generate_company_timeline(
                     self.company_data['profile'],
@@ -3005,12 +3122,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             self._ownership_data = None
             self._ownership_b64 = None
             if self.check_vars.get('ownership_graph', tk.BooleanVar(value=False)).get():
-                self.safe_update(self.status_var.set, "Tracing corporate ownership structure...")
+                self._set_phase_status("Tracing corporate ownership structure...")
                 cnum = self.company_data['profile']['company_number']
                 try:
                     self._ownership_data = trace_ownership_chain(
                         self.api_key, self.ch_token_bucket, cnum, self.cancel_flag,
-                        status_callback=lambda msg: self.safe_update(self.status_var.set, msg),
+                        status_callback=lambda msg: self._set_phase_status(msg),
                     )
                     if self._ownership_data:
                         self._ownership_b64 = generate_static_ownership_graph(
@@ -3025,7 +3142,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             findings.extend(self._generate_positive_findings(findings))
 
             # Generate report HTML
-            self.safe_update(self.status_var.set, "Generating report...")
+            self._set_phase_status("Generating report...")
             return self._build_report_html(findings)
 
         except Exception as e:
@@ -3036,7 +3153,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
     def _generate_single_charity_report(self):
         """Generate report HTML for the current charity. Returns HTML string."""
         try:
-            self.safe_update(self.status_var.set, "Analyzing charity data...")
+            self._set_phase_status("Analyzing charity data...")
             self._ensure_charity_financial_fields()
 
             # Merge default thresholds with charity-specific overrides
@@ -3048,12 +3165,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             reg_num = self.charity_data['details'].get('reg_charity_number', '')
 
             # Regulatory reports
-            self.safe_update(self.status_var.set, "Fetching regulatory reports...")
+            self._set_phase_status("Fetching regulatory reports...")
             reg_reports, _ = cc_get_regulatory_report(api_key, reg_num)
             self.charity_data['regulatory_reports'] = reg_reports
 
             # Policy information
-            self.safe_update(self.status_var.set, "Fetching policy information...")
+            self._set_phase_status("Fetching policy information...")
             policies, _ = cc_get_policy_information(api_key, reg_num)
             self.charity_data['policies'] = policies
 
@@ -3070,7 +3187,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             self.charity_data['area_of_operation'] = areas
 
             # Run all charity checks
-            self.safe_update(self.status_var.set, "Running charity risk checks...")
+            self._set_phase_status("Running charity risk checks...")
             findings = []
 
             check_funcs = [
@@ -3105,7 +3222,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Fetch grants data if enabled
             self._grants_data = None
             if self.check_vars.get('grants_lookup', tk.BooleanVar(value=False)).get():
-                self.safe_update(self.status_var.set, "Fetching grants data from GrantNav...")
+                self._set_phase_status("Fetching grants data from GrantNav...")
                 try:
                     # Fetch by charity identifier
                     grants = fetch_grants_for_org(f"GB-CHC-{reg_num}")
@@ -3127,7 +3244,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Cross-analysis rules
             self._cross_analysis_report = None
             if self.check_vars.get('cross_analysis', tk.BooleanVar(value=False)).get():
-                self.safe_update(self.status_var.set, "Running cross-analysis rules...")
+                self._set_phase_status("Running cross-analysis rules...")
                 try:
                     charity_financial = CharityFinancialData(
                         financial_history=self.charity_data.get('financial_history'),
@@ -3167,7 +3284,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     log_message(f"Error running cross-analysis for charity: {e}")
 
             # Generate report HTML
-            self.safe_update(self.status_var.set, "Generating report...")
+            self._set_phase_status("Generating report...")
             return self._build_charity_report_html(findings)
 
         except Exception as e:
@@ -3340,7 +3457,7 @@ details.entity-section .entity-report {{
         self.app_state.recent_edd_reports = self.app_state.recent_edd_reports[:10]
         save_recent_reports(self.app_state.recent_edd_reports)
 
-        self.safe_update(self.status_var.set, "Report generated! Opening in browser...")
+        self._set_phase_status("Report generated! Opening in browser...")
         webbrowser.open(f"file://{os.path.realpath(filename)}")
 
     def _build_charity_report_html(self, findings):
@@ -4145,9 +4262,23 @@ details.entity-section .entity-report {{
             elif len(df) >= 2:
                 previous = df.iloc[-2]
                 if 'NetAssets' in previous:
-                    change_pct = ((net_assets - previous['NetAssets']) / abs(previous['NetAssets'])) * 100
+                    previous_net_assets = previous['NetAssets']
+                    if (
+                        pd.notna(previous_net_assets)
+                        and pd.notna(net_assets)
+                        and abs(previous_net_assets) > 1e-9
+                    ):
+                        change_pct = ((net_assets - previous_net_assets) / abs(previous_net_assets)) * 100
+                    else:
+                        # Avoid divide-by-zero / NaN warnings when prior-year
+                        # net assets are zero or missing.
+                        change_pct = None
                     
-                    if net_assets > 0 and change_pct < -self.thresholds['solvency_decline_pct']:
+                    if (
+                        change_pct is not None
+                        and net_assets > 0
+                        and change_pct < -self.thresholds['solvency_decline_pct']
+                    ):
                         findings.append({
                             'category': 'Financial',
                             'severity': 'Elevated',
@@ -4626,8 +4757,7 @@ details.entity-section .entity-report {{
             if self.cancel_flag.is_set():
                 break
             
-            self.safe_update(
-                self.status_var.set,
+            self._set_phase_status(
                 f"Checking director history {i+1}/{len(active_officers)}..."
             )
             
