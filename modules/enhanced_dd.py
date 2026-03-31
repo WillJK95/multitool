@@ -339,7 +339,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
     def _update_bulk_eta_status(
         self, stage_label, current_name, processed_count, total, error_count,
-        start_time, remaining_entities, stage, num_filings=0
+        start_time, remaining_entities, stage, num_filings=0, display_processed=None
     ):
         """Update status_var with consistent live ETA/progress for bulk loops."""
         elapsed = time.monotonic() - start_time
@@ -353,8 +353,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self.safe_update(
             self.status_var.set,
             (
-                f"{stage_label}: {current_name} ({processed_count}/{total}) | "
-                f"ETA: {eta} | Processed: {processed_count}/{total} | "
+                f"{stage_label}: {current_name} ({(display_processed if display_processed is not None else processed_count)}/{total}) | "
+                f"ETA: {eta} | Processed: {(display_processed if display_processed is not None else processed_count)}/{total} | "
                 f"Errors: {error_count} | Avg: {avg_seconds:.1f}s/entity"
             ),
         )
@@ -812,9 +812,17 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 if self.cancel_flag.is_set():
                     return
                 name = entity['name'] or entity['number']
-                self.safe_update(
-                    self.status_var.set,
-                    f"Fetching filings for {name} ({idx+1}/{total})..."
+                self._update_bulk_eta_status(
+                    stage_label="Fetching",
+                    current_name=name,
+                    processed_count=max(1, idx),
+                    display_processed=idx + 1,
+                    total=total,
+                    error_count=error_count,
+                    start_time=start_time,
+                    remaining_entities=self._entities[idx:],
+                    stage='auto_fetch',
+                    num_filings=num_filings,
                 )
 
                 if entity['type'] == 'company':
@@ -833,6 +841,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     stage_label="Fetching",
                     current_name=name,
                     processed_count=processed_count,
+                    display_processed=processed_count,
                     total=total,
                     error_count=error_count,
                     start_time=start_time,
@@ -846,7 +855,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             label = f"Filings fetched for {success_count}/{total} entities."
             fg = 'green' if success_count == total else 'orange'
             self.safe_ui_call(self.accounts_status_label.config, text=label, foreground=fg)
-            self.safe_update(self.status_var.set, label)
+            self._set_phase_status(label)
 
         except Exception as e:
             log_message(f"Error in bulk auto-fetch: {e}\n{traceback.format_exc()}")
@@ -2442,7 +2451,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Check for duplicate
             for e in self._entities:
                 if e['type'] == 'charity' and e['number'] == reg_num:
-                    self.safe_update(self.status_var.set, "Charity already added.")
+                    self._set_phase_status("Charity already added.")
                     return
 
             # Core profile
@@ -2504,12 +2513,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 self._update_rules_display()
 
             self.safe_update(_add_row)
-            self.safe_update(self.status_var.set, "Charity data loaded successfully.")
+            self._set_phase_status("Charity data loaded successfully.")
 
         except Exception as e:
             log_message(f"Error fetching charity data: {e}")
             self.safe_update(messagebox.showerror, "Error", str(e))
-            self.safe_update(self.status_var.set, "Error fetching charity data.")
+            self._set_phase_status("Error fetching charity data.")
         finally:
             self.safe_update(self.fetch_btn.config, {'state': 'normal'})
 
@@ -2564,7 +2573,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Check for duplicate
             for e in self._entities:
                 if e['type'] == 'company' and e['number'] == cnum:
-                    self.safe_update(self.status_var.set, "Company already added.")
+                    self._set_phase_status("Company already added.")
                     return
 
             # Fetch profile
@@ -2604,7 +2613,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             entity['company_data'] = company_data
 
             # Check iXBRL availability (stores result in entity dict)
-            self.safe_update(self.status_var.set, "Checking iXBRL availability...")
+            self._set_phase_status("Checking iXBRL availability...")
             ixbrl_filings = self._check_ixbrl_availability_for_entity(cnum)
             entity['available_ixbrl_filings'] = ixbrl_filings
             entity['ixbrl_count'] = len(ixbrl_filings)
@@ -2636,12 +2645,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 self._update_rules_display()
 
             self.safe_update(_add_row)
-            self.safe_update(self.status_var.set, "Company data loaded successfully.")
+            self._set_phase_status("Company data loaded successfully.")
 
         except Exception as e:
             log_message(f"Error fetching company data: {e}")
             self.safe_update(messagebox.showerror, "Error", str(e))
-            self.safe_update(self.status_var.set, "Error fetching company data.")
+            self._set_phase_status("Error fetching company data.")
         finally:
             self.safe_update(self.fetch_btn.config, {'state': 'normal'})
 
@@ -2931,9 +2940,16 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 if self.cancel_flag.is_set():
                     return
                 name = entity['name'] or entity['number']
-                self.safe_update(
-                    self.status_var.set,
-                    f"Generating report for {name} ({idx+1}/{total}) — {analysis_mode}..."
+                self._update_bulk_eta_status(
+                    stage_label=f"Generating ({analysis_mode})",
+                    current_name=name,
+                    processed_count=max(1, idx),
+                    display_processed=idx + 1,
+                    total=total,
+                    error_count=error_count,
+                    start_time=start_time,
+                    remaining_entities=self._entities[idx:],
+                    stage='report_generation',
                 )
 
                 # Set flat state from entity for compatibility with check methods
@@ -2960,6 +2976,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     stage_label=f"Generating ({analysis_mode})",
                     current_name=name,
                     processed_count=processed_count,
+                    display_processed=processed_count,
                     total=total,
                     error_count=error_count,
                     start_time=start_time,
@@ -2968,7 +2985,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 )
 
             if not entity_reports:
-                self.safe_update(self.status_var.set, "No reports were generated.")
+                self._set_phase_status("No reports were generated.")
                 return
 
             if report_mode == 'separate':
@@ -3438,7 +3455,7 @@ details.entity-section .entity-report {{
         self.app_state.recent_edd_reports = self.app_state.recent_edd_reports[:10]
         save_recent_reports(self.app_state.recent_edd_reports)
 
-        self.safe_update(self.status_var.set, "Report generated! Opening in browser...")
+        self._set_phase_status("Report generated! Opening in browser...")
         webbrowser.open(f"file://{os.path.realpath(filename)}")
 
     def _build_charity_report_html(self, findings):
@@ -4724,8 +4741,7 @@ details.entity-section .entity-report {{
             if self.cancel_flag.is_set():
                 break
             
-            self.safe_update(
-                self.status_var.set,
+            self._set_phase_status(
                 f"Checking director history {i+1}/{len(active_officers)}..."
             )
             
