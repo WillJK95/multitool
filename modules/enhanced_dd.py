@@ -8,6 +8,7 @@ import html
 import threading
 import traceback
 import webbrowser
+import time
 import tkinter as tk
 from io import BytesIO
 from pathlib import Path
@@ -54,7 +55,7 @@ from ..constants import (
     CHARITY_EDD_THRESHOLDS,
 )
 from .base import InvestigationModuleBase
-from ..utils.helpers import log_message, clean_company_number
+from ..utils.helpers import log_message, clean_company_number, format_eta
 from ..utils.settings import save_recent_reports
 from ..utils.edd_visualizations import (
     generate_company_timeline,
@@ -654,6 +655,58 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self._update_accounts_checkboxes()
         self.status_var.set("Accounts cleared.")
 
+    def _estimate_entity_call_units(self, entity, stage, num_filings=None):
+        """
+        Lightweight call-estimate table for ETA in mixed batches.
+        Units represent expected Companies House API calls.
+        """
+        etype = entity.get('type')
+        if stage == 'auto_fetch':
+            if etype != 'company':
+                return 0
+            available = entity.get('available_ixbrl_filings', [])
+            target = max(0, int(num_filings or 0))
+            return max(1, min(target, len(available))) if available else 0
+        if stage == 'report_generation':
+            # Heuristic only: company reports usually trigger several CH lookups;
+            # charity reports generally use Charity Commission APIs only.
+            return 8 if etype == 'company' else 0
+        return 0
+
+    def _update_batch_progress_status(
+        self,
+        *,
+        action_label,
+        current_name,
+        processed_count,
+        total_count,
+        error_count,
+        started_at,
+        remaining_call_units=0,
+    ):
+        """Update entity + status labels with ETA/progress/error summary."""
+        if total_count <= 0:
+            return
+        remaining_items = max(0, total_count - processed_count)
+        elapsed = max(0.0, time.monotonic() - started_at)
+        avg_per_entity = (elapsed / processed_count) if processed_count > 0 else 0.0
+
+        rate_wait = 0.0
+        if remaining_call_units > 0 and getattr(self, 'ch_token_bucket', None):
+            try:
+                rate_wait = self.ch_token_bucket.estimate_wait_seconds(remaining_call_units)
+            except Exception:
+                rate_wait = 0.0
+
+        eta = format_eta(elapsed, max(processed_count, 1), total_count, rate_limit_wait=rate_wait)
+        stats = (
+            f"ETA: {eta} | Processed: {processed_count}/{total_count} | "
+            f"Remaining: {remaining_items} | Avg/entity: {avg_per_entity:.1f}s | Errors: {error_count}"
+        )
+        entity_line = f"{action_label}: {current_name} ({processed_count}/{total_count})"
+        self.safe_update(self.status_entity_var.set, entity_line)
+        self.safe_update(self.status_var.set, stats)
+
     def _auto_fetch_accounts(self):
         """Kick off automatic filings fetch for ALL entities."""
         if not self._entities:
@@ -693,28 +746,54 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         """Background thread to fetch filings for ALL entities."""
         total = len(self._entities)
         success_count = 0
+        error_count = 0
         # Charity year equivalence: N filings ≈ N+1 years of data
         charity_years = num_filings + 1
+        started_at = time.monotonic()
+        total_call_units = sum(
+            self._estimate_entity_call_units(e, 'auto_fetch', num_filings=num_filings)
+            for e in self._entities
+        )
+        processed_call_units = 0
 
         try:
             for idx, entity in enumerate(self._entities):
                 if self.cancel_flag.is_set():
                     return
                 name = entity['name'] or entity['number']
-                self.safe_update(
-                    self.status_var.set,
-                    f"Fetching filings for {name} ({idx+1}/{total})..."
+                estimated_calls = self._estimate_entity_call_units(
+                    entity, 'auto_fetch', num_filings=num_filings
                 )
 
-                if entity['type'] == 'company':
-                    ok = self._fetch_company_filings(entity, num_filings)
-                else:
-                    ok = self._trim_charity_data(entity, charity_years)
+                ok = False
+                try:
+                    if entity['type'] == 'company':
+                        ok = self._fetch_company_filings(entity, num_filings)
+                    else:
+                        ok = self._trim_charity_data(entity, charity_years)
+                except Exception as entity_exc:
+                    error_count += 1
+                    log_message(
+                        f"Error fetching filings for {name}: {entity_exc}\n"
+                        f"{traceback.format_exc()}"
+                    )
 
                 if ok:
                     success_count += 1
                 # Update treeview accounts column
                 self._update_entity_tree_row(entity)
+                processed_call_units += estimated_calls
+                processed_count = idx + 1
+                remaining_call_units = max(0, total_call_units - processed_call_units)
+                self._update_batch_progress_status(
+                    action_label="Fetching filings",
+                    current_name=name,
+                    processed_count=processed_count,
+                    total_count=total,
+                    error_count=error_count,
+                    started_at=started_at,
+                    remaining_call_units=remaining_call_units,
+                )
 
             label = f"Filings fetched for {success_count}/{total} entities."
             fg = 'green' if success_count == total else 'orange'
@@ -2379,30 +2458,54 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         try:
             total = len(self._entities)
+            started_at = time.monotonic()
+            error_count = 0
+            total_call_units = sum(
+                self._estimate_entity_call_units(e, 'report_generation')
+                for e in self._entities
+            )
+            processed_call_units = 0
             for idx, entity in enumerate(self._entities):
                 if self.cancel_flag.is_set():
                     return
                 name = entity['name'] or entity['number']
-                self.safe_update(
-                    self.status_var.set,
-                    f"Generating report for {name} ({idx+1}/{total})..."
-                )
+                estimated_calls = self._estimate_entity_call_units(entity, 'report_generation')
 
                 # Set flat state from entity for compatibility with check methods
-                self._set_active_entity_state(entity)
+                try:
+                    self._set_active_entity_state(entity)
 
-                # Load this entity's manual data
-                self._manual_data = entity.get('manual_data')
-                self._proposed_award = entity.get('proposed_award', 0.0)
-                self._payment_mechanism = entity.get('payment_mechanism', 'Unknown')
+                    # Load this entity's manual data
+                    self._manual_data = entity.get('manual_data')
+                    self._proposed_award = entity.get('proposed_award', 0.0)
+                    self._payment_mechanism = entity.get('payment_mechanism', 'Unknown')
 
-                if entity['type'] == 'company':
-                    html = self._generate_single_company_report()
-                else:
-                    html = self._generate_single_charity_report()
+                    if entity['type'] == 'company':
+                        html = self._generate_single_company_report()
+                    else:
+                        html = self._generate_single_charity_report()
 
-                if html:
-                    entity_reports.append((entity, html))
+                    if html:
+                        entity_reports.append((entity, html))
+                except Exception as entity_exc:
+                    error_count += 1
+                    log_message(
+                        f"Error generating report for {name}: {entity_exc}\n"
+                        f"{traceback.format_exc()}"
+                    )
+                finally:
+                    processed_call_units += estimated_calls
+                    processed_count = idx + 1
+                    remaining_call_units = max(0, total_call_units - processed_call_units)
+                    self._update_batch_progress_status(
+                        action_label="Generating report",
+                        current_name=name,
+                        processed_count=processed_count,
+                        total_count=total,
+                        error_count=error_count,
+                        started_at=started_at,
+                        remaining_call_units=remaining_call_units,
+                    )
 
             if not entity_reports:
                 self.safe_update(self.status_var.set, "No reports were generated.")
