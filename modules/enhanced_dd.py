@@ -1576,8 +1576,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 return
 
             years = sorted(df['Year'].unique())
+            display_years = years[-5:]  # keep most recent years, displayed oldest->newest
             year_columns.clear()
-            for yr in years[:5]:
+            for yr in display_years:
                 year_columns.append({
                     'period_end': tk.StringVar(value=f"{int(yr)}-12-31"),
                     'vars': {},
@@ -1590,7 +1591,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 col_name = auto_col if auto_col else field_key
                 if col_name not in df.columns:
                     continue
-                for i, yr in enumerate(years[:5]):
+                for i, yr in enumerate(display_years):
                     rows = df[df['Year'] == yr]
                     if rows.empty:
                         continue
@@ -1638,7 +1639,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             for yr in sorted(al_by_year.keys()):
                 if yr not in years:
                     years.append(yr)
-            years = sorted(years)[:5]
+            years = sorted(years)[-5:]
 
             year_columns.clear()
             # Index financial data by year
