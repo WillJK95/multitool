@@ -134,6 +134,24 @@ def check_charity_status(charity_data: dict, thresholds: dict) -> List[dict]:
         except (ValueError, TypeError):
             pass
 
+    # Positive: Established registered charity (>=10 years, no negative findings)
+    if not findings and reg_status == 'R' and reg_date_str:
+        try:
+            reg_date = datetime.strptime(reg_date_str[:10], '%Y-%m-%d')
+            age_years = (datetime.now() - reg_date).days / 365.25
+            if age_years >= 10:
+                findings.append({
+                    'category': 'Governance',
+                    'severity': 'Positive',
+                    'title': 'Established Registered Charity',
+                    'narrative': (
+                        f"{charity_name} has been continuously registered for "
+                        f"{int(age_years)} years."
+                    ),
+                    'recommendation': '',
+                })
+        except (ValueError, TypeError):
+            pass
 
     return findings
 
@@ -190,6 +208,16 @@ def check_regulatory_reports(charity_data: dict, thresholds: dict) -> List[dict]
     findings = []
     reports = charity_data.get('regulatory_reports') or []
     if not reports:
+        findings.append({
+            'category': 'Governance',
+            'severity': 'Positive',
+            'title': 'No Regulatory Concerns on Record',
+            'narrative': (
+                "No regulatory reports or inquiry findings have been published "
+                "by the Charity Commission for this charity."
+            ),
+            'recommendation': '',
+        })
         return findings
 
     for report in reports:
@@ -244,6 +272,18 @@ def check_accounts_qualified(charity_data: dict, thresholds: dict) -> List[dict]
                 ),
             })
             break
+    else:
+        # No qualified accounts found
+        if sorted_info:
+            findings.append({
+                'category': 'Financial Health',
+                'severity': 'Positive',
+                'title': 'Unqualified Accounts',
+                'narrative': (
+                    "The most recent audited accounts received an unqualified opinion."
+                ),
+                'recommendation': '',
+            })
 
     return findings
 
@@ -725,6 +765,17 @@ def check_trustee_count(charity_data: dict, thresholds: dict) -> List[dict]:
                 'This is not inherently concerning but is noted for context. '
                 'Large boards can be effective with proper committee structures.'
             ),
+        })
+    else:
+        findings.append({
+            'category': 'Governance',
+            'severity': 'Positive',
+            'title': 'Appropriate Trustee Board Size',
+            'narrative': (
+                f"The trustee board of {trustee_count} members is appropriately "
+                "sized for effective governance."
+            ),
+            'recommendation': '',
         })
 
     return findings
