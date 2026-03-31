@@ -3161,18 +3161,43 @@ details.entity-section .entity-report {{
             border-radius: 4px;
             overflow: hidden;
             margin: 0 12px;
+            display: flex;
         }}
-        .dash-bar-fill {{
+        .dash-seg {{
             height: 100%;
-            background: linear-gradient(90deg, #667eea, #764ba2);
-            border-radius: 4px;
-            min-width: 2px;
-            transition: width 0.3s;
         }}
+        .dash-seg-critical {{ background: #dc3545; }}
+        .dash-seg-elevated {{ background: #fd7e14; }}
+        .dash-seg-moderate {{ background: #ffc107; }}
         .dash-detail {{
             width: 200px;
             font-size: 12px;
             color: #666;
+        }}
+        .dash-legend {{
+            display: flex;
+            gap: 16px;
+            margin-top: 10px;
+            padding-top: 8px;
+            font-size: 11px;
+            color: #555;
+            border-top: 1px solid #e9ecef;
+        }}
+        .dash-legend-item {{
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }}
+        .dash-legend-swatch {{
+            width: 12px;
+            height: 12px;
+            border-radius: 2px;
+            display: inline-block;
+            flex-shrink: 0;
+        }}
+        .dash-axis-label {{
+            font-size: 10px;
+            color: #aaa;
         }}
         .dash-meta {{
             display: flex;
@@ -3256,7 +3281,19 @@ details.entity-section .entity-report {{
 
     def _generate_charity_executive_summary(self, critical, elevated, moderate, charity_name):
         """Generate executive summary for a charity report."""
-        total_concerns = len(critical) + len(elevated) + len(moderate)
+        # Fold cross-analysis elevated/moderate counts into the main totals
+        _ca_report = getattr(self, '_cross_analysis_report', None)
+        ca_elevated = (
+            sum(1 for r in _ca_report.results if r.unified_severity == 'Elevated')
+            if _ca_report else 0
+        )
+        ca_moderate = (
+            sum(1 for r in _ca_report.results if r.unified_severity == 'Moderate')
+            if _ca_report else 0
+        )
+        total_elevated = len(elevated) + ca_elevated
+        total_moderate = len(moderate) + ca_moderate
+        total_concerns = len(critical) + total_elevated + total_moderate
 
         if total_concerns == 0:
             summary = (
@@ -3285,37 +3322,18 @@ details.entity-section .entity-report {{
                     "indicate the charity is unsuitable for the intended funding "
                     "relationship.<br><br>"
                 )
-            if elevated:
+            if total_elevated:
                 summary += (
-                    f"<strong>Elevated risk findings ({len(elevated)}):</strong> "
+                    f"<strong>Elevated risk findings ({total_elevated}):</strong> "
                     "These indicators suggest heightened risk that should be investigated "
                     "further before proceeding.<br><br>"
                 )
-            if moderate:
+            if total_moderate:
                 summary += (
-                    f"<strong>Moderate concerns ({len(moderate)}):</strong> "
+                    f"<strong>Moderate concerns ({total_moderate}):</strong> "
                     "These factors should be considered and may require additional "
                     "information or monitoring."
                 )
-
-        # Cross-analysis summary
-        report = getattr(self, '_cross_analysis_report', None)
-        if report:
-            elevated_ca = sum(1 for r in report.results if r.unified_severity == 'Elevated')
-            moderate_ca = sum(1 for r in report.results if r.unified_severity == 'Moderate')
-            assessed = sum(
-                1 for r in report.results
-                if r.unified_severity not in ('Not Assessed',) and r.confidence != 'SKIPPED'
-            )
-            if assessed > 0:
-                summary += f"<br><br><strong>Financial &amp; grant analysis ({assessed} rules assessed):</strong> "
-                if elevated_ca > 0:
-                    summary += f"{elevated_ca} elevated and {moderate_ca} moderate indicator(s) identified. "
-                elif moderate_ca > 0:
-                    summary += f"{moderate_ca} moderate indicator(s) identified. "
-                else:
-                    summary += "No elevated or moderate indicators identified. "
-                summary += "See the relevant sections below for details."
 
         return summary
 
@@ -4816,18 +4834,43 @@ details.entity-section .entity-report {{
             border-radius: 4px;
             overflow: hidden;
             margin: 0 12px;
+            display: flex;
         }}
-        .dash-bar-fill {{
+        .dash-seg {{
             height: 100%;
-            background: linear-gradient(90deg, #667eea, #764ba2);
-            border-radius: 4px;
-            min-width: 2px;
-            transition: width 0.3s;
         }}
+        .dash-seg-critical {{ background: #dc3545; }}
+        .dash-seg-elevated {{ background: #fd7e14; }}
+        .dash-seg-moderate {{ background: #ffc107; }}
         .dash-detail {{
             width: 200px;
             font-size: 12px;
             color: #666;
+        }}
+        .dash-legend {{
+            display: flex;
+            gap: 16px;
+            margin-top: 10px;
+            padding-top: 8px;
+            font-size: 11px;
+            color: #555;
+            border-top: 1px solid #e9ecef;
+        }}
+        .dash-legend-item {{
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }}
+        .dash-legend-swatch {{
+            width: 12px;
+            height: 12px;
+            border-radius: 2px;
+            display: inline-block;
+            flex-shrink: 0;
+        }}
+        .dash-axis-label {{
+            font-size: 10px;
+            color: #aaa;
         }}
         .dash-meta {{
             display: flex;
@@ -4915,7 +4958,19 @@ details.entity-section .entity-report {{
     
     def _generate_executive_summary(self, critical, elevated, moderate, company_name):
         """Generate plain English executive summary."""
-        total_concerns = len(critical) + len(elevated) + len(moderate)
+        # Fold cross-analysis elevated/moderate counts into the main totals
+        _ca_report = getattr(self, '_cross_analysis_report', None)
+        ca_elevated = (
+            sum(1 for r in _ca_report.results if r.unified_severity == 'Elevated')
+            if _ca_report else 0
+        )
+        ca_moderate = (
+            sum(1 for r in _ca_report.results if r.unified_severity == 'Moderate')
+            if _ca_report else 0
+        )
+        total_elevated = len(elevated) + ca_elevated
+        total_moderate = len(moderate) + ca_moderate
+        total_concerns = len(critical) + total_elevated + total_moderate
 
         if total_concerns == 0:
             summary = f"Based on the analysis performed, {html.escape(company_name)} shows no significant risk indicators in the areas examined. However, this assessment is based on available public information and should be supplemented with additional due diligence as appropriate for your specific requirements."
@@ -4931,27 +4986,11 @@ details.entity-section .entity-report {{
             if critical:
                 summary += f"<strong>Critical findings ({len(critical)}):</strong> These are severe red flags that require immediate attention and may indicate the company is unsuitable for the intended transaction or relationship.<br><br>"
 
-            if elevated:
-                summary += f"<strong>Elevated risk findings ({len(elevated)}):</strong> These indicators suggest heightened risk that should be investigated further before proceeding.<br><br>"
+            if total_elevated:
+                summary += f"<strong>Elevated risk findings ({total_elevated}):</strong> These indicators suggest heightened risk that should be investigated further before proceeding.<br><br>"
 
-            if moderate:
-                summary += f"<strong>Moderate concerns ({len(moderate)}):</strong> These factors should be considered and may require additional information or monitoring."
-
-        # Cross-analysis summary
-        report = getattr(self, '_cross_analysis_report', None)
-        if report:
-            elevated_ca = sum(1 for r in report.results if r.unified_severity == 'Elevated')
-            moderate_ca = sum(1 for r in report.results if r.unified_severity == 'Moderate')
-            assessed = sum(1 for r in report.results if r.unified_severity not in ('Not Assessed',) and r.confidence != 'SKIPPED')
-            if assessed > 0:
-                summary += f"<br><br><strong>Financial &amp; grant analysis ({assessed} rules assessed):</strong> "
-                if elevated_ca > 0:
-                    summary += f"{elevated_ca} elevated and {moderate_ca} moderate indicator(s) identified. "
-                elif moderate_ca > 0:
-                    summary += f"{moderate_ca} moderate indicator(s) identified. "
-                else:
-                    summary += "No elevated or moderate indicators identified. "
-                summary += "See the relevant sections below for details."
+            if total_moderate:
+                summary += f"<strong>Moderate concerns ({total_moderate}):</strong> These factors should be considered and may require additional information or monitoring."
 
         return summary
 
@@ -5029,54 +5068,82 @@ details.entity-section .entity-report {{
         return html_output
 
     def _generate_dashboard_html(self, findings):
-        """Generate the at-a-glance dashboard panel."""
-        # Count findings by severity
+        """Generate the at-a-glance dashboard panel.
+
+        Bar widths use fixed per-domain maximums (the most flags any report
+        could ever produce for that domain) so two reports remain visually
+        comparable side-by-side.
+        """
+        # Fixed axis maximums — update if new checks are added
+        _MAX_GOV = 20   # ~9 check methods, up to 20 governance findings
+        _MAX_FIN = 20   # ~13 core financial findings + 8 CA rules
+        _MAX_GRA = 3    # G1, G2, G3 cross-analysis rules only
+
+        financial_rule_ids = {'F1', 'F2', 'F3', 'F4', 'ROE', 'ATR', 'PMG', 'SCB'}
+        grant_rule_ids = {'G1', 'G2', 'G3'}
+
+        report = getattr(self, '_cross_analysis_report', None)
+
+        # --- Headline severity counts (core findings + CA) ---
         critical_count = sum(1 for f in findings if f['severity'] == 'Critical')
         elevated_count = sum(1 for f in findings if f['severity'] == 'Elevated')
         moderate_count = sum(1 for f in findings if f['severity'] == 'Moderate')
         positive_count = sum(1 for f in findings if f['severity'] == 'Positive')
-
-        # Count cross-analysis findings using unified severity
-        report = getattr(self, '_cross_analysis_report', None)
         if report:
             for r in report.results:
-                sev = r.unified_severity
-                if sev == 'Elevated':
+                if r.unified_severity == 'Elevated':
                     elevated_count += 1
-                elif sev == 'Moderate':
+                elif r.unified_severity == 'Moderate':
                     moderate_count += 1
 
-        # Categorise by domain (core findings only)
+        # --- Per-domain, per-severity counts for stacked bars ---
         gov_findings = [f for f in findings if f.get('category') == 'Governance' and f['severity'] != 'Positive']
         fin_findings = [f for f in findings if f.get('category') == 'Financial' and f['severity'] != 'Positive']
 
-        gov_critical = sum(1 for f in gov_findings if f['severity'] == 'Critical')
+        gov_crit = sum(1 for f in gov_findings if f.get('severity') == 'Critical')
+        gov_elev = sum(1 for f in gov_findings if f.get('severity') == 'Elevated')
+        gov_mod  = sum(1 for f in gov_findings if f.get('severity') == 'Moderate')
 
-        # Financial domain includes F-series cross-analysis
-        grant_finding_count = 0
+        fin_crit = sum(1 for f in fin_findings if f.get('severity') == 'Critical')
+        fin_elev = sum(1 for f in fin_findings if f.get('severity') == 'Elevated')
+        fin_mod  = sum(1 for f in fin_findings if f.get('severity') == 'Moderate')
+
+        grant_elev = 0
+        grant_mod  = 0
         if report:
-            financial_rule_ids = {'F1', 'F2', 'F3', 'F4', 'ROE', 'ATR', 'PMG', 'SCB'}
-            grant_rule_ids = {'G1', 'G2', 'G3'}
             for r in report.results:
-                if r.unified_severity in ('Elevated', 'Moderate'):
-                    if r.rule_id in financial_rule_ids:
-                        fin_findings.append({'severity': r.unified_severity})
-                    elif r.rule_id in grant_rule_ids:
-                        grant_finding_count += 1
+                if r.rule_id in financial_rule_ids and r.unified_severity in ('Elevated', 'Moderate'):
+                    if r.unified_severity == 'Elevated':
+                        fin_elev += 1
+                    else:
+                        fin_mod += 1
+                elif r.rule_id in grant_rule_ids:
+                    if r.unified_severity == 'Elevated':
+                        grant_elev += 1
+                    elif r.unified_severity == 'Moderate':
+                        grant_mod += 1
 
-        gov_count = len(gov_findings)
-        fin_count = len(fin_findings)
+        gov_count   = gov_crit + gov_elev + gov_mod
+        fin_count   = fin_crit + fin_elev + fin_mod
+        grant_count = grant_elev + grant_mod
 
-        # Entity metadata
+        # Stacked bar builder: each severity segment width = count / domain_max * 100%
+        def stacked_bar(crit, elev, mod, domain_max):
+            segs = ''
+            for count, css in ((crit, 'critical'), (elev, 'elevated'), (mod, 'moderate')):
+                if count > 0:
+                    pct = min((count / domain_max) * 100, 100)
+                    segs += f'<div class="dash-seg dash-seg-{css}" style="width:{pct:.1f}%"></div>'
+            return segs
+
+        # --- Entity metadata ---
         entity_age = ''
         if self._entity_type == 'company':
-            profile = self.company_data.get('profile', {})
-            inc_date_str = profile.get('date_of_creation', '')
+            inc_date_str = self.company_data.get('profile', {}).get('date_of_creation', '')
             if inc_date_str:
                 try:
                     inc_date = datetime.strptime(inc_date_str, '%Y-%m-%d')
-                    years = int((datetime.now() - inc_date).days / 365.25)
-                    entity_age = f"{years} years"
+                    entity_age = f"{int((datetime.now() - inc_date).days / 365.25)} years"
                 except ValueError:
                     pass
         else:
@@ -5084,46 +5151,31 @@ details.entity-section .entity-report {{
             if reg_date_str:
                 try:
                     reg_date = datetime.strptime(reg_date_str[:10], '%Y-%m-%d')
-                    years = int((datetime.now() - reg_date).days / 365.25)
-                    entity_age = f"{years} years"
+                    entity_age = f"{int((datetime.now() - reg_date).days / 365.25)} years"
                 except ValueError:
                     pass
 
         accounts_info = ''
         if self.accounts_loaded and self.financial_analyzer and not self.financial_analyzer.data.empty:
             df = self.financial_analyzer.data
-            years = sorted(df['Year'].unique())
+            yrs = sorted(df['Year'].unique())
             acct_type = ''
             if 'accounts_type' in df.columns:
                 types = df['accounts_type'].dropna().unique()
                 if len(types):
                     acct_type = f" ({', '.join(str(t) for t in types)})"
-            accounts_info = f"{len(years)} years loaded{acct_type}"
+            accounts_info = f"{len(yrs)} years loaded{acct_type}"
         elif self._entity_type == 'charity' and self.charity_data:
             fin_hist = self.charity_data.get('financial_history', [])
-            if fin_hist:
-                accounts_info = f"{len(fin_hist)} years loaded"
-            else:
-                accounts_info = "No financial data"
+            accounts_info = f"{len(fin_hist)} years loaded" if fin_hist else "No financial data"
         else:
             accounts_info = "No accounts loaded"
 
-        grants_info = ''
         grants_data = getattr(self, '_grants_data', None)
-        if grants_data is not None:
-            grants_info = f"{len(grants_data)} grant(s) found"
+        grants_info = f"{len(grants_data)} grant(s) found" if grants_data is not None else ''
 
-        award_info = ''
         proposed = getattr(self, '_proposed_award', 0)
-        if proposed and proposed > 0:
-            award_info = f"\u00a3{proposed:,.0f}"
-
-        # Build bar chart segments
-        max_count = max(gov_count, fin_count, grant_finding_count, 1)
-
-        def bar_segment(count, max_val):
-            pct = min((count / max_val) * 100, 100) if max_val > 0 else 0
-            return f'<div class="dash-bar-fill" style="width: {pct}%"></div>'
+        award_info = f"\u00a3{proposed:,.0f}" if proposed and proposed > 0 else ''
 
         html_out = f'''
     <div class="dashboard-panel">
@@ -5135,18 +5187,32 @@ details.entity-section .entity-report {{
         <div class="dash-bars">
             <div class="dash-row">
                 <span class="dash-label">Governance</span>
-                <div class="dash-bar">{bar_segment(gov_count, max_count)}</div>
-                <span class="dash-detail">{gov_count} finding{"s" if gov_count != 1 else ""}{" (" + str(gov_critical) + " Critical)" if gov_critical else ""}</span>
+                <div class="dash-bar">{stacked_bar(gov_crit, gov_elev, gov_mod, _MAX_GOV)}</div>
+                <span class="dash-detail">{gov_count} finding{"s" if gov_count != 1 else ""}{" (" + str(gov_crit) + " Critical)" if gov_crit else ""}</span>
             </div>
             <div class="dash-row">
                 <span class="dash-label">Financial</span>
-                <div class="dash-bar">{bar_segment(fin_count, max_count)}</div>
+                <div class="dash-bar">{stacked_bar(fin_crit, fin_elev, fin_mod, _MAX_FIN)}</div>
                 <span class="dash-detail">{fin_count} finding{"s" if fin_count != 1 else ""}</span>
             </div>
             <div class="dash-row">
                 <span class="dash-label">Grants</span>
-                <div class="dash-bar">{bar_segment(grant_finding_count, max_count)}</div>
-                <span class="dash-detail">{grant_finding_count} finding{"s" if grant_finding_count != 1 else ""}</span>
+                <div class="dash-bar">{stacked_bar(0, grant_elev, grant_mod, _MAX_GRA)}</div>
+                <span class="dash-detail">{grant_count} finding{"s" if grant_count != 1 else ""}</span>
+            </div>
+        </div>
+        <div style="text-align:right; font-size:10px; color:#bbb; margin-right:212px; margin-top:3px;">
+            Fixed scale &mdash; Governance /20 &middot; Financial /20 &middot; Grants /3
+        </div>
+        <div class="dash-legend">
+            <div class="dash-legend-item">
+                <span class="dash-legend-swatch" style="background:#dc3545;"></span>Critical
+            </div>
+            <div class="dash-legend-item">
+                <span class="dash-legend-swatch" style="background:#fd7e14;"></span>Elevated
+            </div>
+            <div class="dash-legend-item">
+                <span class="dash-legend-swatch" style="background:#ffc107;"></span>Moderate
             </div>
         </div>
         <div class="dash-meta">
