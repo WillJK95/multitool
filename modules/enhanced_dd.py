@@ -3250,10 +3250,10 @@ details.entity-section .entity-report {{
         {generate_charity_profile_html(self.charity_data)}
     </div>
 
-    {chart_html}
-
     {self._generate_subject_findings_section('Governance & Compliance', governance_findings)}
     {self._generate_subject_findings_section('Financial Health', financial_findings, include_financial_cross_analysis=True)}
+
+    {chart_html}
 
     <div class="section">
         <h2>Grant &amp; Funding Analysis</h2>
