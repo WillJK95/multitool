@@ -329,9 +329,22 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         tree_frame = ttk.Frame(self._lookup_frame)
         tree_frame.pack(fill=tk.X, pady=5)
 
+        style = ttk.Style(self)
+        tree_style = 'Entity.Treeview'
+        tree_bg = style.lookup('Treeview', 'background') or '#ffffff'
+        tree_fg = style.lookup('Treeview', 'foreground') or '#000000'
+        tree_sel_bg = style.lookup('Treeview', 'selectbackground') or '#4a6984'
+        tree_sel_fg = style.lookup('Treeview', 'selectforeground') or '#ffffff'
+        style.configure(tree_style, background=tree_bg, fieldbackground=tree_bg, foreground=tree_fg)
+        style.map(
+            tree_style,
+            background=[('selected', tree_sel_bg), ('!selected', tree_bg)],
+            foreground=[('selected', tree_sel_fg), ('!selected', tree_fg)],
+        )
+
         cols = ('name', 'number', 'type', 'accounts')
         self.entity_tree = ttk.Treeview(
-            tree_frame, columns=cols, show='headings', height=5, selectmode='browse'
+            tree_frame, columns=cols, show='headings', height=5, selectmode='browse', style=tree_style
         )
         self.entity_tree.heading('name', text='Organisation Name')
         self.entity_tree.heading('number', text='Number')
@@ -610,6 +623,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 elif self._active_entity_idx is not None and self._active_entity_idx > i:
                     self._active_entity_idx -= 1
                 break
+        if self._active_entity_idx is None and hasattr(self, '_active_entity_label'):
+            self._active_entity_label.config(
+                text="Select an entity in Step 1 to edit its grant details.",
+                foreground='grey',
+            )
         # Update generate button state
         if not self._entities:
             self.generate_btn.config(state='disabled')
@@ -2058,9 +2076,16 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 )
                 entity['treeview_id'] = tid
                 self._entities.append(entity)
-                self.entity_tree.selection_set(tid)
                 self.entity_tree.see(tid)
-                self._on_entity_selected()
+                current_sel = self.entity_tree.selection()
+                if current_sel:
+                    self.entity_tree.selection_remove(*current_sel)
+                self._active_entity_idx = None
+                if hasattr(self, '_active_entity_label'):
+                    self._active_entity_label.config(
+                        text="Select an entity in Step 1 to edit its grant details.",
+                        foreground='grey',
+                    )
                 self.generate_btn.config(state='normal')
                 self.auto_fetch_btn.config(state='normal')
                 self._update_rules_display()
@@ -2182,9 +2207,16 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 )
                 entity['treeview_id'] = tid
                 self._entities.append(entity)
-                self.entity_tree.selection_set(tid)
                 self.entity_tree.see(tid)
-                self._on_entity_selected()
+                current_sel = self.entity_tree.selection()
+                if current_sel:
+                    self.entity_tree.selection_remove(*current_sel)
+                self._active_entity_idx = None
+                if hasattr(self, '_active_entity_label'):
+                    self._active_entity_label.config(
+                        text="Select an entity in Step 1 to edit its grant details.",
+                        foreground='grey',
+                    )
                 self.generate_btn.config(state='normal')
                 if count > 0:
                     self.auto_fetch_btn.config(state='normal')
