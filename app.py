@@ -1132,6 +1132,12 @@ class App(tk.Tk):
 
     def _ql_display_result(self, result, entity_type: str, error) -> None:
         """Show the resolved entity card and action buttons."""
+        # This callback can fire after navigation has destroyed the home widgets.
+        if not getattr(self, "_ql_search_btn", None) or not self._ql_search_btn.winfo_exists():
+            return
+        if not getattr(self, "_ql_result_frame", None) or not self._ql_result_frame.winfo_exists():
+            return
+
         self._ql_search_btn.configure(state=tk.NORMAL)
 
         for w in self._ql_result_frame.winfo_children():
