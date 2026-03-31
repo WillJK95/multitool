@@ -4262,9 +4262,23 @@ details.entity-section .entity-report {{
             elif len(df) >= 2:
                 previous = df.iloc[-2]
                 if 'NetAssets' in previous:
-                    change_pct = ((net_assets - previous['NetAssets']) / abs(previous['NetAssets'])) * 100
+                    previous_net_assets = previous['NetAssets']
+                    if (
+                        pd.notna(previous_net_assets)
+                        and pd.notna(net_assets)
+                        and abs(previous_net_assets) > 1e-9
+                    ):
+                        change_pct = ((net_assets - previous_net_assets) / abs(previous_net_assets)) * 100
+                    else:
+                        # Avoid divide-by-zero / NaN warnings when prior-year
+                        # net assets are zero or missing.
+                        change_pct = None
                     
-                    if net_assets > 0 and change_pct < -self.thresholds['solvency_decline_pct']:
+                    if (
+                        change_pct is not None
+                        and net_assets > 0
+                        and change_pct < -self.thresholds['solvency_decline_pct']
+                    ):
                         findings.append({
                             'category': 'Financial',
                             'severity': 'Elevated',
