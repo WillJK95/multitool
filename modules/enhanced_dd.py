@@ -384,14 +384,18 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         Tooltip(
             self.auto_fetch_btn,
-            "Fetch account filings for all entities. Each company filing "
+            "Fetch account filings for all entities, starting with the most "
+            "recent and working backwards. The app now checks a deeper Companies "
+            "House filing history before selecting filings to download. Each company filing "
             "typically includes the previous year as a comparative, so "
             "4 filings \u2248 5 years of data. Charity data is trimmed to "
             "the equivalent number of years."
         )
         Tooltip(
             self.years_spinbox,
-            "Number of account filings to retrieve. Each filing usually "
+            "Number of account filings to retrieve, starting from the newest "
+            "available filing. A deeper filing-history lookback is used to find "
+            "eligible iXBRL accounts. Each filing usually "
             "includes the prior year's figures, so filings \u2260 years. "
             "e.g. 4 filings \u2248 5 years of accounts data."
         )
@@ -750,7 +754,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             for i, (filing_date, metadata_url, mime, content_url) in enumerate(selected):
                 if self.cancel_flag.is_set():
                     return False
-                dest = os.path.join(cache_dir, f"{cnum}_{filing_date}.xhtml")
+                # Include a metadata-derived suffix to avoid filename collisions
+                # when multiple filings share the same submission date.
+                doc_id = metadata_url.rstrip('/').split('/')[-1] if metadata_url else f"idx{i+1}"
+                doc_id = re.sub(r'[^A-Za-z0-9._-]+', '_', doc_id)
+                dest = os.path.join(cache_dir, f"{cnum}_{filing_date}_{doc_id}.xhtml")
                 log_message(f"[iXBRL] Downloading filing {i+1}/{len(selected)}: "
                             f"date={filing_date}, mime={mime}, dest={dest}")
                 path, err = ch_download_document_content(
@@ -1568,8 +1576,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 return
 
             years = sorted(df['Year'].unique())
+            display_years = years[-5:]  # keep most recent years, displayed oldest->newest
             year_columns.clear()
-            for yr in years[:5]:
+            for yr in display_years:
                 year_columns.append({
                     'period_end': tk.StringVar(value=f"{int(yr)}-12-31"),
                     'vars': {},
@@ -1582,7 +1591,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 col_name = auto_col if auto_col else field_key
                 if col_name not in df.columns:
                     continue
-                for i, yr in enumerate(years[:5]):
+                for i, yr in enumerate(display_years):
                     rows = df[df['Year'] == yr]
                     if rows.empty:
                         continue
@@ -1630,7 +1639,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             for yr in sorted(al_by_year.keys()):
                 if yr not in years:
                     years.append(yr)
-            years = sorted(years)[:5]
+            years = sorted(years)[-5:]
 
             year_columns.clear()
             # Index financial data by year
@@ -2206,32 +2215,100 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         Returns list of (filing_date, metadata_url, mime, content_url) tuples,
         sorted most-recent-first.
         """
-        log_message(f"[iXBRL] Checking iXBRL availability for {cnum}")
-        accounts_data, err = ch_get_data(
-            self.api_key, self.ch_token_bucket,
-            f"/company/{cnum}/filing-history?category=accounts&items_per_page=15"
-        )
-        if err or not accounts_data:
-            log_message(f"[iXBRL] Could not fetch accounts filing history for {cnum}: {err}")
-            return []
+        # Lookback strategy tuning for filing-history probing.
+        items_per_page = 25
+        max_filings_to_scan = 80
+        target_candidate_count = 20
+        max_metadata_probes = 40
+        target_available_count = 12
+        
+        def _parse_date_for_sort(date_str):
+            """Return a datetime for reliable descending sort, or datetime.min."""
+            if not date_str:
+                return datetime.min
+            try:
+                return datetime.fromisoformat(str(date_str))
+            except Exception:
+                try:
+                    return datetime.strptime(str(date_str), "%Y-%m-%d")
+                except Exception:
+                    return datetime.min
 
-        items = accounts_data.get('items', [])
-        log_message(f"[iXBRL] Found {len(items)} accounts filing items for {cnum}")
+        log_message(f"[iXBRL] Checking iXBRL availability for {cnum}")
+        all_items = []
+        start_index = 0
+        total_available = None
+
+        while len(all_items) < max_filings_to_scan:
+            endpoint = (
+                f"/company/{cnum}/filing-history?category=accounts"
+                f"&items_per_page={items_per_page}&start_index={start_index}"
+            )
+            accounts_data, err = ch_get_data(
+                self.api_key, self.ch_token_bucket, endpoint
+            )
+            if err or not accounts_data:
+                log_message(
+                    f"[iXBRL] Could not fetch accounts filing history page for {cnum} "
+                    f"(start_index={start_index}): {err}"
+                )
+                break
+
+            if total_available is None:
+                total_available = accounts_data.get('total_count')
+
+            page_items = accounts_data.get('items', []) or []
+            if not page_items:
+                break
+
+            all_items.extend(page_items)
+            log_message(
+                f"[iXBRL] Fetched {len(all_items)} account filings so far for {cnum} "
+                f"(start_index={start_index})"
+            )
+
+            candidate_count = sum(
+                1 for it in all_items
+                if it.get('links', {}).get('document_metadata') and it.get('date')
+            )
+            if candidate_count >= target_candidate_count:
+                log_message(
+                    f"[iXBRL] Reached target candidate count ({candidate_count}) for {cnum}"
+                )
+                break
+
+            start_index += len(page_items)
+            if len(page_items) < items_per_page:
+                break
+            if total_available is not None and start_index >= total_available:
+                break
+
+        items = all_items[:max_filings_to_scan]
+        log_message(f"[iXBRL] Collected {len(items)} account filing items for {cnum}")
         if not items:
             return []
 
-        # Sort by date descending (most recent first) and check up to 7
+        # Sort by date descending (most recent first) before probing metadata.
         items_with_dates = [
             it for it in items
             if it.get('links', {}).get('document_metadata') and it.get('date')
         ]
-        items_with_dates.sort(key=lambda x: x['date'], reverse=True)
-        log_message(f"[iXBRL] {len(items_with_dates)} filings have metadata links, checking up to 7")
+        items_with_dates.sort(
+            key=lambda x: _parse_date_for_sort(x.get('date')),
+            reverse=True
+        )
+        items_to_probe = items_with_dates[:max_metadata_probes]
+        log_message(
+            f"[iXBRL] {len(items_with_dates)} filings have metadata links, "
+            f"checking up to {len(items_to_probe)}"
+        )
 
         available = []
-        for filing in items_with_dates[:7]:
+        for filing in items_to_probe:
             filing_date = filing['date']
             metadata_url = filing['links']['document_metadata']
+            made_up_date = (filing.get('description_values') or {}).get('made_up_date')
+            period_key = made_up_date or filing_date
             log_message(f"[iXBRL] Checking filing {filing_date}: {metadata_url}")
             metadata, meta_err = ch_get_document_metadata(
                 self.api_key, self.ch_token_bucket, metadata_url
@@ -2249,12 +2326,33 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 log_message(f"[iXBRL] Filing {filing_date}: no iXBRL format available, skipping")
                 continue
             log_message(f"[iXBRL] Filing {filing_date}: iXBRL available ({mime})")
-            available.append((filing_date, metadata_url, mime, content_url))
+            available.append((filing_date, metadata_url, mime, content_url, period_key))
+            if len(available) >= target_available_count:
+                log_message(
+                    f"[iXBRL] Reached target available iXBRL filings "
+                    f"({len(available)}) for {cnum}"
+                )
+                break
 
-        # Ensure most-recent-first ordering regardless of probe order
-        available.sort(key=lambda x: x[0], reverse=True)
-        log_message(f"[iXBRL] Availability check complete: {len(available)} iXBRL filings for {cnum}")
-        return available
+        # Ensure most-recent-first ordering regardless of probe order.
+        available.sort(key=lambda x: _parse_date_for_sort(x[0]), reverse=True)
+
+        # Keep only the newest filing per accounting period (made_up_date), so
+        # increasing "N filings" expands coverage backwards rather than selecting
+        # multiple amended filings for the same period.
+        deduped_available = []
+        seen_periods = set()
+        for filing_date, metadata_url, mime, content_url, period_key in available:
+            if period_key in seen_periods:
+                continue
+            seen_periods.add(period_key)
+            deduped_available.append((filing_date, metadata_url, mime, content_url))
+
+        log_message(
+            f"[iXBRL] Availability check complete: {len(deduped_available)} iXBRL filings "
+            f"for {cnum} (deduped by period)"
+        )
+        return deduped_available
 
     # Keep old name as alias for any call sites that still use it
     def _check_ixbrl_availability(self, cnum):
