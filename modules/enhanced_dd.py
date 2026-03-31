@@ -8,6 +8,7 @@ import base64
 import html
 import threading
 import traceback
+import time
 import webbrowser
 import tkinter as tk
 from io import BytesIO
@@ -55,7 +56,7 @@ from ..constants import (
     CHARITY_EDD_THRESHOLDS,
 )
 from .base import InvestigationModuleBase
-from ..utils.helpers import log_message, clean_company_number
+from ..utils.helpers import log_message, clean_company_number, format_eta
 from ..utils.settings import save_recent_reports
 from ..utils.edd_visualizations import (
     generate_company_timeline,
@@ -99,6 +100,11 @@ from ..utils.edd_charity_visualizations import (
 from ..utils.charity_financial_data import CharityFinancialData
 
 class EnhancedDueDiligence(InvestigationModuleBase):
+    _ETA_CALL_ESTIMATES = {
+        'auto_fetch': {'company_per_item': 1, 'charity_per_item': 0},
+        'report_generation': {'company_per_item': 8, 'charity_per_item': 0},
+    }
+
     def __init__(self, parent_app, api_key, back_callback, ch_token_bucket,
                  charity_api_key=None, prefill_entity=None, prefill_entities=None):
         super().__init__(parent_app, back_callback, api_key, help_key=None)
@@ -299,6 +305,30 @@ class EnhancedDueDiligence(InvestigationModuleBase):
     def _entity_types_present(self):
         """Return set of entity types currently in the list."""
         return {e['type'] for e in self._entities}
+
+    def _estimate_entity_ch_calls(self, entity, stage, num_filings=0):
+        """Estimate CH API calls for one entity in a given stage."""
+        if entity.get('type') != 'company':
+            return 0
+
+        estimates = self._ETA_CALL_ESTIMATES.get(stage, {})
+        per_item = estimates.get('company_per_item', 0)
+        if stage == 'auto_fetch':
+            available = entity.get('available_ixbrl_filings', [])
+            return max(0, min(num_filings, len(available)) * per_item)
+        return per_item
+
+    def _estimate_remaining_ch_wait(self, entities, stage, num_filings=0):
+        """Estimate rate-limit wait for remaining entities where CH calls apply."""
+        if not getattr(self, 'ch_token_bucket', None):
+            return 0
+        remaining_calls = sum(
+            self._estimate_entity_ch_calls(ent, stage, num_filings=num_filings)
+            for ent in entities
+        )
+        if remaining_calls <= 0:
+            return 0
+        return self.ch_token_bucket.estimate_wait_seconds(remaining_calls)
 
     def _build_ui(self):
         # Step 1: Entity Lookup
@@ -742,6 +772,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         """Background thread to fetch filings for ALL entities."""
         total = len(self._entities)
         success_count = 0
+        error_count = 0
+        start_time = time.monotonic()
         # Charity year equivalence: N filings ≈ N+1 years of data
         charity_years = num_filings + 1
 
@@ -762,6 +794,28 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
                 if ok:
                     success_count += 1
+                else:
+                    error_count += 1
+
+                processed_count = idx + 1
+                elapsed = time.monotonic() - start_time
+                avg_seconds = (elapsed / processed_count) if processed_count else 0
+                remaining_entities = self._entities[processed_count:]
+                rate_wait = self._estimate_remaining_ch_wait(
+                    remaining_entities,
+                    stage='auto_fetch',
+                    num_filings=num_filings,
+                )
+                eta = format_eta(
+                    elapsed,
+                    processed_count,
+                    total,
+                    rate_limit_wait=rate_wait,
+                )
+                self.safe_update(
+                    self.status_var.set,
+                    f"ETA: {eta} | Processed: {processed_count}/{total} | Errors: {error_count} | Avg: {avg_seconds:.1f}s/entity"
+                )
                 # Update treeview accounts column
                 self._update_entity_tree_row(entity)
 
@@ -2842,6 +2896,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         try:
             total = len(self._entities)
+            error_count = 0
+            start_time = time.monotonic()
             analysis_mode = "with financial analysis" if getattr(
                 self, '_run_with_financial_analysis', True
             ) else "without financial analysis"
@@ -2869,6 +2925,27 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
                 if html:
                     entity_reports.append((entity, html))
+                else:
+                    error_count += 1
+
+                processed_count = idx + 1
+                elapsed = time.monotonic() - start_time
+                avg_seconds = (elapsed / processed_count) if processed_count else 0
+                remaining_entities = self._entities[processed_count:]
+                rate_wait = self._estimate_remaining_ch_wait(
+                    remaining_entities,
+                    stage='report_generation',
+                )
+                eta = format_eta(
+                    elapsed,
+                    processed_count,
+                    total,
+                    rate_limit_wait=rate_wait,
+                )
+                self.safe_update(
+                    self.status_var.set,
+                    f"ETA: {eta} | Processed: {processed_count}/{total} | Errors: {error_count} | Avg: {avg_seconds:.1f}s/entity"
+                )
 
             if not entity_reports:
                 self.safe_update(self.status_var.set, "No reports were generated.")
