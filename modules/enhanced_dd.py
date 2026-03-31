@@ -384,14 +384,18 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         Tooltip(
             self.auto_fetch_btn,
-            "Fetch account filings for all entities. Each company filing "
+            "Fetch account filings for all entities, starting with the most "
+            "recent and working backwards. The app now checks a deeper Companies "
+            "House filing history before selecting filings to download. Each company filing "
             "typically includes the previous year as a comparative, so "
             "4 filings \u2248 5 years of data. Charity data is trimmed to "
             "the equivalent number of years."
         )
         Tooltip(
             self.years_spinbox,
-            "Number of account filings to retrieve. Each filing usually "
+            "Number of account filings to retrieve, starting from the newest "
+            "available filing. A deeper filing-history lookback is used to find "
+            "eligible iXBRL accounts. Each filing usually "
             "includes the prior year's figures, so filings \u2260 years. "
             "e.g. 4 filings \u2248 5 years of accounts data."
         )
@@ -2206,30 +2210,81 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         Returns list of (filing_date, metadata_url, mime, content_url) tuples,
         sorted most-recent-first.
         """
-        log_message(f"[iXBRL] Checking iXBRL availability for {cnum}")
-        accounts_data, err = ch_get_data(
-            self.api_key, self.ch_token_bucket,
-            f"/company/{cnum}/filing-history?category=accounts&items_per_page=15"
-        )
-        if err or not accounts_data:
-            log_message(f"[iXBRL] Could not fetch accounts filing history for {cnum}: {err}")
-            return []
+        # Lookback strategy tuning for filing-history probing.
+        items_per_page = 25
+        max_filings_to_scan = 80
+        target_candidate_count = 20
+        max_metadata_probes = 40
+        target_available_count = 12
 
-        items = accounts_data.get('items', [])
-        log_message(f"[iXBRL] Found {len(items)} accounts filing items for {cnum}")
+        log_message(f"[iXBRL] Checking iXBRL availability for {cnum}")
+        all_items = []
+        start_index = 0
+        total_available = None
+
+        while len(all_items) < max_filings_to_scan:
+            endpoint = (
+                f"/company/{cnum}/filing-history?category=accounts"
+                f"&items_per_page={items_per_page}&start_index={start_index}"
+            )
+            accounts_data, err = ch_get_data(
+                self.api_key, self.ch_token_bucket, endpoint
+            )
+            if err or not accounts_data:
+                log_message(
+                    f"[iXBRL] Could not fetch accounts filing history page for {cnum} "
+                    f"(start_index={start_index}): {err}"
+                )
+                break
+
+            if total_available is None:
+                total_available = accounts_data.get('total_count')
+
+            page_items = accounts_data.get('items', []) or []
+            if not page_items:
+                break
+
+            all_items.extend(page_items)
+            log_message(
+                f"[iXBRL] Fetched {len(all_items)} account filings so far for {cnum} "
+                f"(start_index={start_index})"
+            )
+
+            candidate_count = sum(
+                1 for it in all_items
+                if it.get('links', {}).get('document_metadata') and it.get('date')
+            )
+            if candidate_count >= target_candidate_count:
+                log_message(
+                    f"[iXBRL] Reached target candidate count ({candidate_count}) for {cnum}"
+                )
+                break
+
+            start_index += len(page_items)
+            if len(page_items) < items_per_page:
+                break
+            if total_available is not None and start_index >= total_available:
+                break
+
+        items = all_items[:max_filings_to_scan]
+        log_message(f"[iXBRL] Collected {len(items)} account filing items for {cnum}")
         if not items:
             return []
 
-        # Sort by date descending (most recent first) and check up to 7
+        # Sort by date descending (most recent first) before probing metadata.
         items_with_dates = [
             it for it in items
             if it.get('links', {}).get('document_metadata') and it.get('date')
         ]
         items_with_dates.sort(key=lambda x: x['date'], reverse=True)
-        log_message(f"[iXBRL] {len(items_with_dates)} filings have metadata links, checking up to 7")
+        items_to_probe = items_with_dates[:max_metadata_probes]
+        log_message(
+            f"[iXBRL] {len(items_with_dates)} filings have metadata links, "
+            f"checking up to {len(items_to_probe)}"
+        )
 
         available = []
-        for filing in items_with_dates[:7]:
+        for filing in items_to_probe:
             filing_date = filing['date']
             metadata_url = filing['links']['document_metadata']
             log_message(f"[iXBRL] Checking filing {filing_date}: {metadata_url}")
@@ -2250,6 +2305,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 continue
             log_message(f"[iXBRL] Filing {filing_date}: iXBRL available ({mime})")
             available.append((filing_date, metadata_url, mime, content_url))
+            if len(available) >= target_available_count:
+                log_message(
+                    f"[iXBRL] Reached target available iXBRL filings "
+                    f"({len(available)}) for {cnum}"
+                )
+                break
 
         # Ensure most-recent-first ordering regardless of probe order
         available.sort(key=lambda x: x[0], reverse=True)
