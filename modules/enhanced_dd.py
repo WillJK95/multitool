@@ -648,6 +648,71 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         )
         # Not packed by default — shown only after separate report generation
 
+        self._build_results_tab()
+
+    def _build_results_tab(self):
+        """Build the Results tab (hidden until report generation completes for >=2 entities)."""
+        self._results_frame = ttk.LabelFrame(
+            self.content_frame, text="Results Overview", padding=10
+        )
+        # Don't pack yet — shown after generation
+
+        # Explanation label
+        ttk.Label(
+            self._results_frame,
+            text="Summary of findings across all entities. Click column headers to sort. Double-click a row to open its report.",
+            foreground='grey', font=('', 9, 'italic'),
+            wraplength=700,
+        ).pack(anchor='w', pady=(0, 8))
+
+        # Treeview
+        cols = ('rank', 'name', 'number', 'type', 'critical', 'elevated', 'moderate', 'positive', 'accounts')
+        self._results_tree = ttk.Treeview(
+            self._results_frame, columns=cols, show='headings', height=10, selectmode='browse'
+        )
+
+        self._results_tree.heading('rank', text='#', command=lambda: self._sort_results_tree('rank'))
+        self._results_tree.heading('name', text='Entity Name', command=lambda: self._sort_results_tree('name'))
+        self._results_tree.heading('number', text='Number', command=lambda: self._sort_results_tree('number'))
+        self._results_tree.heading('type', text='Type', command=lambda: self._sort_results_tree('type'))
+        self._results_tree.heading('critical', text='Critical', command=lambda: self._sort_results_tree('critical'))
+        self._results_tree.heading('elevated', text='Elevated', command=lambda: self._sort_results_tree('elevated'))
+        self._results_tree.heading('moderate', text='Moderate', command=lambda: self._sort_results_tree('moderate'))
+        self._results_tree.heading('positive', text='Positive', command=lambda: self._sort_results_tree('positive'))
+        self._results_tree.heading('accounts', text='Accounts', command=lambda: self._sort_results_tree('accounts'))
+
+        self._results_tree.column('rank', width=35, minwidth=35, anchor='center')
+        self._results_tree.column('name', width=200, minwidth=120)
+        self._results_tree.column('number', width=80, minwidth=60)
+        self._results_tree.column('type', width=70, minwidth=50)
+        self._results_tree.column('critical', width=60, minwidth=50, anchor='center')
+        self._results_tree.column('elevated', width=60, minwidth=50, anchor='center')
+        self._results_tree.column('moderate', width=65, minwidth=50, anchor='center')
+        self._results_tree.column('positive', width=60, minwidth=50, anchor='center')
+        self._results_tree.column('accounts', width=100, minwidth=70)
+
+        tree_scroll = ttk.Scrollbar(
+            self._results_frame, orient=tk.VERTICAL, command=self._results_tree.yview
+        )
+        self._results_tree.configure(yscrollcommand=tree_scroll.set)
+        self._results_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Double-click to open report
+        self._results_tree.bind('<Double-1>', self._on_results_double_click)
+
+        # Ranking explanation tooltip
+        Tooltip(
+            self._results_tree,
+            "Ranked by severity: Critical count (most first), then Elevated, "
+            "then Moderate. Ties broken by Positive count (fewer = higher concern), "
+            "then alphabetically."
+        )
+
+        # Sort state tracking
+        self._results_sort_col = 'rank'
+        self._results_sort_reverse = False
+
     # ------------------------------------------------------------------
     # Treeview event handlers & entity management
     # ------------------------------------------------------------------
@@ -712,6 +777,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         if not self._entities:
             self.generate_btn.config(state='disabled')
             self.auto_fetch_btn.config(state='disabled')
+        # Hide results tab when entities change
+        if hasattr(self, '_results_frame'):
+            self._results_frame.pack_forget()
         self._update_rules_display()
 
     def _open_config_folder(self):
@@ -935,6 +1003,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         """Continue into background report generation after pre-flight checks."""
         self.generate_btn.config(state='disabled')
         self._open_folder_btn.pack_forget()  # Hide any previous "Open Folder" button
+        if hasattr(self, '_results_frame'):
+            self._results_frame.pack_forget()  # Hide previous results tab
         self.cancel_flag.clear()
 
         self._run_with_financial_analysis = include_financial_analysis
@@ -2929,6 +2999,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         """Generate reports for all entities."""
         report_mode = self._report_mode_var.get()  # 'stacked' or 'separate'
         entity_reports = []  # List of (entity, html_content)
+        self._entity_summaries = []
 
         try:
             total = len(self._entities)
@@ -2963,12 +3034,54 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 self._payment_mechanism = entity.get('payment_mechanism', 'Unknown')
 
                 if entity['type'] == 'company':
-                    html = self._generate_single_company_report()
+                    html, findings = self._generate_single_company_report()
                 else:
-                    html = self._generate_single_charity_report()
+                    html, findings = self._generate_single_charity_report()
 
                 if html:
                     entity_reports.append((entity, html))
+
+                    # Build entity summary with severity counts
+                    entity_summary = {
+                        'name': entity['name'],
+                        'number': entity['number'],
+                        'type': entity['type'],
+                        'critical': sum(1 for f in findings if f.get('severity') == 'Critical'),
+                        'elevated': sum(1 for f in findings if f.get('severity') == 'Elevated'),
+                        'moderate': sum(1 for f in findings if f.get('severity') == 'Moderate'),
+                        'positive': sum(1 for f in findings if f.get('severity') == 'Positive'),
+                        'accounts_info': '',
+                        'report_path': None,
+                    }
+
+                    # Add cross-analysis counts using unified severity
+                    ca_report = getattr(self, '_cross_analysis_report', None)
+                    if ca_report:
+                        for r in ca_report.results:
+                            sev = r.unified_severity
+                            if sev == 'Elevated':
+                                entity_summary['elevated'] += 1
+                            elif sev == 'Moderate':
+                                entity_summary['moderate'] += 1
+
+                    # Populate accounts info
+                    if entity['type'] == 'company':
+                        if entity.get('accounts_loaded'):
+                            fa = entity.get('financial_analyzer')
+                            if fa and not fa.data.empty:
+                                years = sorted(fa.data['Year'].unique())
+                                types = fa.data.get('accounts_type', pd.Series()).dropna().unique()
+                                type_str = f" ({', '.join(str(t) for t in types)})" if len(types) else ""
+                                entity_summary['accounts_info'] = f"{len(years)}yr{type_str}"
+                            else:
+                                entity_summary['accounts_info'] = "No data"
+                        else:
+                            entity_summary['accounts_info'] = "Not loaded"
+                    else:
+                        fin = (entity.get('charity_data') or {}).get('financial_history', [])
+                        entity_summary['accounts_info'] = f"{len(fin)}yr" if fin else "No data"
+
+                    self._entity_summaries.append(entity_summary)
                 else:
                     error_count += 1
 
@@ -2994,6 +3107,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 self._save_separate_reports(entity_reports)
             else:
                 self._save_stacked_report(entity_reports)
+
+            # Show results tab if multiple entities were processed
+            if len(entity_reports) >= 2:
+                ranked = self._compute_ranks(self._entity_summaries)
+                self.safe_ui_call(self._populate_results_tree, ranked)
 
         except Exception as e:
             log_message(f"Error generating bulk report: {e}\n{traceback.format_exc()}")
@@ -3143,11 +3261,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
             # Generate report HTML
             self._set_phase_status("Generating report...")
-            return self._build_report_html(findings)
+            return (self._build_report_html(findings), findings)
 
         except Exception as e:
             log_message(f"Error generating company report: {e}\n{traceback.format_exc()}")
-            return None
+            return (None, [])
     # --- Charity Report Generation ---
 
     def _generate_single_charity_report(self):
@@ -3285,11 +3403,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
             # Generate report HTML
             self._set_phase_status("Generating report...")
-            return self._build_charity_report_html(findings)
+            return (self._build_charity_report_html(findings), findings)
 
         except Exception as e:
             log_message(f"Error generating charity report: {e}\n{traceback.format_exc()}")
-            return None
+            return (None, [])
 
     def _ensure_charity_financial_fields(self):
         """Normalise optional charity financial fields so checks can run pre auto-fetch."""
@@ -3325,10 +3443,18 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(html_content)
 
+            real_path = os.path.realpath(filename)
+
+            # Set report_path on the matching entity summary
+            for s in getattr(self, '_entity_summaries', []):
+                if s['number'] == number:
+                    s['report_path'] = real_path
+                    break
+
             # Record in app_state
             self.app_state.recent_edd_reports.insert(0, {
                 "name": name,
-                "path": os.path.realpath(filename),
+                "path": real_path,
                 "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
             })
 
@@ -3448,17 +3574,23 @@ details.entity-section .entity-report {{
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(combined_html)
 
+        real_path = os.path.realpath(filename)
+
+        # Set report_path on all entity summaries (stacked = single file)
+        for s in getattr(self, '_entity_summaries', []):
+            s['report_path'] = real_path
+
         # Record
         self.app_state.recent_edd_reports.insert(0, {
             "name": f"Bulk Report ({len(entity_reports)} entities)" if len(entity_reports) > 1 else entity_reports[0][0]['name'],
-            "path": os.path.realpath(filename),
+            "path": real_path,
             "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
         })
         self.app_state.recent_edd_reports = self.app_state.recent_edd_reports[:10]
         save_recent_reports(self.app_state.recent_edd_reports)
 
         self._set_phase_status("Report generated! Opening in browser...")
-        webbrowser.open(f"file://{os.path.realpath(filename)}")
+        webbrowser.open(f"file://{real_path}")
 
     def _build_charity_report_html(self, findings):
         """Generate the full HTML report for a charity."""
@@ -6360,3 +6492,79 @@ details.entity-section .entity-report {{
         except tk.TclError:
             # Widget was destroyed
             pass
+
+    # ------------------------------------------------------------------
+    # Results tab helpers
+    # ------------------------------------------------------------------
+
+    def _compute_ranks(self, summaries):
+        """Compute priority rank for each entity summary."""
+        ranked = sorted(summaries, key=lambda s: (
+            -s['critical'],      # Most critical first
+            -s['elevated'],      # Then most elevated
+            -s['moderate'],      # Then most moderate
+            s['positive'],       # Then fewest positives (ascending)
+            s['name'],           # Alphabetical tie-break
+        ))
+        for i, s in enumerate(ranked):
+            s['rank'] = i + 1
+        return ranked
+
+    def _populate_results_tree(self, ranked_summaries):
+        """Populate the results treeview and show the frame."""
+        # Clear existing
+        for iid in self._results_tree.get_children():
+            self._results_tree.delete(iid)
+
+        for s in ranked_summaries:
+            self._results_tree.insert('', 'end', values=(
+                s['rank'],
+                s['name'],
+                s['number'],
+                s['type'].title(),
+                s['critical'],
+                s['elevated'],
+                s['moderate'],
+                s['positive'],
+                s['accounts_info'],
+            ))
+
+        # Show the results frame (pack it above the generate frame)
+        self._results_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=10,
+                                  before=self.generate_btn.master)
+
+    def _sort_results_tree(self, col):
+        """Sort the results treeview by column."""
+        if self._results_sort_col == col:
+            self._results_sort_reverse = not self._results_sort_reverse
+        else:
+            self._results_sort_col = col
+            # Numeric columns default to descending, text to ascending
+            self._results_sort_reverse = col in ('critical', 'elevated', 'moderate', 'positive', 'rank')
+
+        items = [(self._results_tree.set(iid, col), iid) for iid in self._results_tree.get_children()]
+
+        # Try numeric sort
+        try:
+            items.sort(key=lambda x: int(x[0]), reverse=self._results_sort_reverse)
+        except ValueError:
+            items.sort(key=lambda x: x[0].lower(), reverse=self._results_sort_reverse)
+
+        for idx, (_, iid) in enumerate(items):
+            self._results_tree.move(iid, '', idx)
+
+    def _on_results_double_click(self, event):
+        """Open the report for the double-clicked entity."""
+        sel = self._results_tree.selection()
+        if not sel:
+            return
+        item = self._results_tree.item(sel[0])
+        number = item['values'][2]  # 'number' column
+
+        # Find the matching summary to get report path
+        for s in getattr(self, '_entity_summaries', []):
+            if s['number'] == str(number):
+                path = s.get('report_path')
+                if path and os.path.exists(path):
+                    webbrowser.open(f"file://{os.path.realpath(path)}")
+                break
