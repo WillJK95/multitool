@@ -709,7 +709,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 if entity['type'] == 'company':
                     ok = self._fetch_company_filings(entity, num_filings)
                 else:
-                    ok = self._trim_charity_data(entity, charity_years)
+                    ok = self._fetch_and_trim_charity_data(entity, charity_years)
 
                 if ok:
                     success_count += 1
@@ -778,11 +778,23 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             log_message(f"Error fetching filings for {cnum}: {e}")
             return False
 
-    def _trim_charity_data(self, entity, num_years):
-        """Trim charity financial data to the N most recent years. Returns True on success."""
+    def _fetch_and_trim_charity_data(self, entity, num_years):
+        """Fetch and trim charity financial datasets to the N most recent years."""
         cdata = entity.get('charity_data')
         if not cdata:
             return False
+        reg_num = entity.get('number')
+        if not reg_num:
+            return False
+
+        # Retrieve charity financial datasets during auto-fetch.
+        fin_history, _ = cc_get_financial_history(self.charity_api_key, reg_num)
+        assets_liab, _ = cc_get_assets_liabilities(self.charity_api_key, reg_num)
+        overview, _ = cc_get_overview(self.charity_api_key, reg_num)
+
+        cdata['financial_history'] = fin_history or []
+        cdata['assets_liabilities'] = assets_liab or []
+        cdata['overview'] = overview or {}
 
         # Trim financial_history to most recent N years
         fin_hist = cdata.get('financial_history')
@@ -790,7 +802,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Sort by fiscal year end descending then take N most recent
             sorted_hist = sorted(
                 fin_hist,
-                key=lambda x: x.get('fin_period_end_date', '') or '',
+                key=lambda x: (
+                    x.get('financial_period_end_date', '')
+                    or x.get('fin_period_end_date', '')
+                    or ''
+                ),
                 reverse=True,
             )
             cdata['financial_history'] = sorted_hist[:num_years]
@@ -800,7 +816,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         if assets and isinstance(assets, list):
             sorted_assets = sorted(
                 assets,
-                key=lambda x: x.get('fin_period_end_date', '') or '',
+                key=lambda x: (
+                    x.get('financial_period_end_date', '')
+                    or x.get('fin_period_end_date', '')
+                    or ''
+                ),
                 reverse=True,
             )
             cdata['assets_liabilities'] = sorted_assets[:num_years]
@@ -829,7 +849,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 fin = (entity.get('charity_data') or {}).get('financial_history', [])
                 txt = f"{len(fin)} years loaded"
             else:
-                txt = "CC API (auto)"
+                txt = "Not fetched"
         self.safe_ui_call(self.entity_tree.set, tid, 'accounts', txt)
 
     def _validate_accounts_match_company(self):
@@ -1991,7 +2011,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         ).start()
 
     def _fetch_charity_thread(self, reg_num):
-        """Background thread to fetch all charity data from CC API."""
+        """Background thread to fetch charity profile/identity data for Step 1."""
         try:
             api_key = self.charity_api_key
 
@@ -2009,18 +2029,6 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     f"Please check the registration number. ({error})"
                 )
 
-            # Financial history (5-year income/expenditure)
-            self.safe_update(self.status_var.set, "Fetching financial history...")
-            fin_history, _ = cc_get_financial_history(api_key, reg_num)
-
-            # Assets & liabilities
-            self.safe_update(self.status_var.set, "Fetching assets & liabilities...")
-            assets_liab, _ = cc_get_assets_liabilities(api_key, reg_num)
-
-            # Overview (annual return data)
-            self.safe_update(self.status_var.set, "Fetching overview data...")
-            overview, _ = cc_get_overview(api_key, reg_num)
-
             # Accounts submission info
             account_ar, _ = cc_get_account_ar_info(api_key, reg_num)
 
@@ -2032,9 +2040,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
             charity_data = {
                 'details': details,
-                'financial_history': fin_history,
-                'assets_liabilities': assets_liab,
-                'overview': overview or {},
+                'financial_history': [],
+                'assets_liabilities': [],
+                'overview': {},
                 'account_ar_info': account_ar,
                 'governing_document': gov_doc or {},
                 'registration_history': reg_history,
@@ -2044,8 +2052,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             self.charity_data = charity_data
 
             charity_name = details.get('charity_name', 'Unknown Charity')
-            fin_years = len(fin_history) if fin_history else 0
-            accounts_txt = f"{fin_years} years available" if fin_years else "0 filings available"
+            accounts_txt = "Not fetched"
 
             entity = self._make_entity_dict('charity', reg_num, charity_name)
             entity['charity_data'] = charity_data
@@ -2571,6 +2578,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         """Generate report HTML for the current charity. Returns HTML string."""
         try:
             self.safe_update(self.status_var.set, "Analyzing charity data...")
+            self._ensure_charity_financial_fields()
 
             # Merge default thresholds with charity-specific overrides
             charity_thresholds = dict(self.thresholds)
@@ -2706,6 +2714,17 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         except Exception as e:
             log_message(f"Error generating charity report: {e}\n{traceback.format_exc()}")
             return None
+
+    def _ensure_charity_financial_fields(self):
+        """Normalise optional charity financial fields so checks can run pre auto-fetch."""
+        if not isinstance(self.charity_data, dict):
+            self.charity_data = {}
+        if not isinstance(self.charity_data.get('financial_history'), list):
+            self.charity_data['financial_history'] = []
+        if not isinstance(self.charity_data.get('assets_liabilities'), list):
+            self.charity_data['assets_liabilities'] = []
+        if not isinstance(self.charity_data.get('overview'), dict):
+            self.charity_data['overview'] = {}
 
     # ------------------------------------------------------------------
     # Report save/open helpers
