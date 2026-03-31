@@ -213,28 +213,34 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
     def _apply_prefill_entities(self):
         """Queue-fetch multiple prefilled entities into the EDD bulk tree."""
-        valid = []
-        for ent in self._prefill_entities:
-            etype = ent.get("type", "company")
-            if etype not in ("company", "charity"):
-                continue
-            eid = str(ent.get("id", "")).strip()
-            if not eid:
-                continue
-            valid.append({"type": etype, "id": eid})
+        try:
+            valid = []
+            for ent in self._prefill_entities:
+                etype = ent.get("type", "company")
+                if etype not in ("company", "charity"):
+                    continue
+                eid = str(ent.get("id", "")).strip()
+                if not eid:
+                    continue
+                valid.append({"type": etype, "id": eid})
 
-        if not valid:
-            return
+            if not valid:
+                return
 
-        for i, ent in enumerate(valid):
-            self.after(200 + (i * 250), lambda e=ent: self._prefill_single_entity(e))
+            for i, ent in enumerate(valid):
+                self.after(200 + (i * 250), lambda e=ent: self._prefill_single_entity(e))
+        except Exception as e:
+            log_message(f"Error applying prefill entities: {e}\n{traceback.format_exc()}")
 
     def _prefill_single_entity(self, ent):
         """Populate inputs and trigger fetch for one prefilled entity."""
-        self.entity_type_var.set(ent["type"])
-        self._on_entity_type_changed()
-        self.company_num_var.set(ent["id"])
-        self.fetch_entity_profile()
+        try:
+            self.entity_type_var.set(ent["type"])
+            self._on_entity_type_changed()
+            self.company_num_var.set(ent["id"])
+            self.fetch_entity_profile()
+        except Exception as e:
+            log_message(f"Error prefilling entity {ent}: {e}\n{traceback.format_exc()}")
 
     # ------------------------------------------------------------------
     # Entity helpers
@@ -360,6 +366,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         )
 
     def _build_ui(self):
+        self._ui_ready = False
+
         self.notebook = ttk.Notebook(self.content_frame)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
@@ -369,10 +377,13 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self.notebook.add(self.config_tab, text="Configuration")
         self.notebook.add(self.results_tab, text="Results")
 
-        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
-
         self._build_config_tab()
         self._build_results_tab()
+
+        # Bind AFTER all widgets are built to prevent early handler calls
+        # during initial notebook display/mapping.
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        self._ui_ready = True
 
     def _build_config_tab(self):
         # Step 1: Entity Lookup
@@ -734,6 +745,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
     def _on_tab_changed(self, event=None):
         """Manage outer scrollbar when switching between Configuration and Results tabs."""
+        if not getattr(self, '_ui_ready', False):
+            return
         selected = self.notebook.select()
         on_results = (selected == str(self.results_tab))
         if on_results:
