@@ -780,6 +780,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
                 if ok:
                     success_count += 1
+                elif entity.get('type') == 'company' and estimated_calls > 0:
+                    # Count expected company fetch failures even when no exception is raised.
+                    error_count += 1
                 # Update treeview accounts column
                 self._update_entity_tree_row(entity)
                 processed_call_units += estimated_calls
@@ -2487,6 +2490,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
                     if html:
                         entity_reports.append((entity, html))
+                    else:
+                        error_count += 1
                 except Exception as entity_exc:
                     error_count += 1
                     log_message(
