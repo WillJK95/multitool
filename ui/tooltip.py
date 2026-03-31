@@ -52,10 +52,15 @@ class Tooltip:
         if self.tooltip_window:
             return
         
-        # Calculate position
-        x, y, _, _ = self.widget.bbox("insert")
-        x += self.widget.winfo_rootx() + 25
-        y += self.widget.winfo_rooty() + 25
+        # Calculate position — bbox("insert") only works on Text widgets;
+        # fall back to cursor position for Treeview and other widget types.
+        try:
+            x, y, _, _ = self.widget.bbox("insert")
+            x += self.widget.winfo_rootx() + 25
+            y += self.widget.winfo_rooty() + 25
+        except Exception:
+            x = self.widget.winfo_pointerx() + 10
+            y = self.widget.winfo_pointery() + 10
         
         # Create tooltip window
         self.tooltip_window = tk.Toplevel(self.widget)

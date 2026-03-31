@@ -360,9 +360,24 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         )
 
     def _build_ui(self):
+        self.notebook = ttk.Notebook(self.content_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        self.config_tab = ttk.Frame(self.notebook)
+        self.results_tab = ttk.Frame(self.notebook)
+
+        self.notebook.add(self.config_tab, text="Configuration")
+        self.notebook.add(self.results_tab, text="Results")
+
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+        self._build_config_tab()
+        self._build_results_tab()
+
+    def _build_config_tab(self):
         # Step 1: Entity Lookup
         self._lookup_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 1: Entity Lookup", padding=10
+            self.config_tab, text="Step 1: Entity Lookup", padding=10
         )
         self._lookup_frame.pack(fill=tk.X, pady=5, padx=10)
 
@@ -449,7 +464,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         # Step 2: Fetch Filings (unified for companies and charities)
         self._upload_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 2: Fetch Filings", padding=10
+            self.config_tab, text="Step 2: Fetch Filings", padding=10
         )
         upload_frame = self._upload_frame
         upload_frame.pack(fill=tk.X, pady=5, padx=10)
@@ -509,7 +524,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         # Step 3: Configure Analysis
         config_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 3: Configure Analysis", padding=10
+            self.config_tab, text="Step 3: Configure Analysis", padding=10
         )
         config_frame.pack(fill=tk.X, pady=5, padx=10)
 
@@ -606,7 +621,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         
         # Step 4: Generate Report
         generate_frame = ttk.LabelFrame(
-            self.content_frame, text="Step 4: Generate Report", padding=10
+            self.config_tab, text="Step 4: Generate Report", padding=10
         )
         generate_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=10)
 
@@ -648,27 +663,31 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         )
         # Not packed by default — shown only after separate report generation
 
-        self._build_results_tab()
-
     def _build_results_tab(self):
-        """Build the Results tab (hidden until report generation completes for >=2 entities)."""
-        self._results_frame = ttk.LabelFrame(
-            self.content_frame, text="Results Overview", padding=10
-        )
-        # Don't pack yet — shown after generation
-
+        """Build the Results tab content inside self.results_tab."""
         # Explanation label
         ttk.Label(
-            self._results_frame,
+            self.results_tab,
             text="Summary of findings across all entities. Click column headers to sort. Double-click a row to open its report.",
             foreground='grey', font=('', 9, 'italic'),
             wraplength=700,
-        ).pack(anchor='w', pady=(0, 8))
+        ).pack(anchor='w', padx=10, pady=(8, 4))
 
-        # Treeview
+        # Placeholder shown when no results are available yet
+        self._results_placeholder = ttk.Label(
+            self.results_tab,
+            text="Generate reports for 2 or more entities to see a ranked summary here.",
+            foreground='grey',
+        )
+        self._results_placeholder.pack(anchor='w', padx=10, pady=4)
+
+        # Treeview container
+        tree_frame = ttk.Frame(self.results_tab)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
         cols = ('rank', 'name', 'number', 'type', 'critical', 'elevated', 'moderate', 'positive', 'accounts')
         self._results_tree = ttk.Treeview(
-            self._results_frame, columns=cols, show='headings', height=10, selectmode='browse'
+            tree_frame, columns=cols, show='headings', height=10, selectmode='browse'
         )
 
         self._results_tree.heading('rank', text='#', command=lambda: self._sort_results_tree('rank'))
@@ -692,7 +711,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self._results_tree.column('accounts', width=100, minwidth=70)
 
         tree_scroll = ttk.Scrollbar(
-            self._results_frame, orient=tk.VERTICAL, command=self._results_tree.yview
+            tree_frame, orient=tk.VERTICAL, command=self._results_tree.yview
         )
         self._results_tree.configure(yscrollcommand=tree_scroll.set)
         self._results_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -712,6 +731,21 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         # Sort state tracking
         self._results_sort_col = 'rank'
         self._results_sort_reverse = False
+
+    def _on_tab_changed(self, event=None):
+        """Manage outer scrollbar when switching between Configuration and Results tabs."""
+        selected = self.notebook.select()
+        on_results = (selected == str(self.results_tab))
+        if on_results:
+            self.scroller.scrollbar.pack_forget()
+            self.scroller.canvas.yview_moveto(0)
+            self.scroller.canvas.configure(yscrollcommand=lambda *a: None)
+            self.scroller._disabled = True
+        else:
+            self.scroller.scrollbar.pack(side="right", fill="y")
+            self.scroller.canvas.configure(yscrollcommand=self.scroller.scrollbar.set)
+            self.scroller._disabled = False
+            self._update_scrollregion()
 
     # ------------------------------------------------------------------
     # Treeview event handlers & entity management
@@ -777,9 +811,6 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         if not self._entities:
             self.generate_btn.config(state='disabled')
             self.auto_fetch_btn.config(state='disabled')
-        # Hide results tab when entities change
-        if hasattr(self, '_results_frame'):
-            self._results_frame.pack_forget()
         self._update_rules_display()
 
     def _open_config_folder(self):
@@ -1003,8 +1034,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         """Continue into background report generation after pre-flight checks."""
         self.generate_btn.config(state='disabled')
         self._open_folder_btn.pack_forget()  # Hide any previous "Open Folder" button
-        if hasattr(self, '_results_frame'):
-            self._results_frame.pack_forget()  # Hide previous results tab
+        # Clear previous results and show placeholder again
+        if hasattr(self, '_results_tree'):
+            for iid in self._results_tree.get_children():
+                self._results_tree.delete(iid)
+        if hasattr(self, '_results_placeholder'):
+            self._results_placeholder.pack(anchor='w', padx=10, pady=4)
         self.cancel_flag.clear()
 
         self._run_with_financial_analysis = include_financial_analysis
@@ -1555,7 +1590,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         """Build the manual input form for grant details and supplementary accounts data."""
         self.show_manual_input = tk.BooleanVar(value=False)
         manual_toggle = ttk.Checkbutton(
-            self.content_frame,
+            self.config_tab,
             text="\u25B6 Grant Details & Supplementary Accounts Data (Optional)",
             variable=self.show_manual_input,
             command=self._toggle_manual_input,
@@ -1563,7 +1598,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         manual_toggle.pack(anchor='w', padx=10, pady=(5, 0))
         self._manual_toggle_widget = manual_toggle
 
-        self.manual_input_frame = ttk.Frame(self.content_frame)
+        self.manual_input_frame = ttk.Frame(self.config_tab)
         # Will be packed/unpacked by toggle
 
         # Active entity indicator
@@ -2215,7 +2250,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
     def _get_config_frame(self):
         """Return the Step 3 config frame widget for insertion ordering."""
-        for widget in self.content_frame.winfo_children():
+        for widget in self.config_tab.winfo_children():
             if isinstance(widget, ttk.LabelFrame) and "Configure Analysis" in str(widget.cget('text')):
                 return widget
         return None
@@ -6511,7 +6546,7 @@ details.entity-section .entity-report {{
         return ranked
 
     def _populate_results_tree(self, ranked_summaries):
-        """Populate the results treeview and show the frame."""
+        """Populate the results treeview and switch to the Results tab."""
         # Clear existing
         for iid in self._results_tree.get_children():
             self._results_tree.delete(iid)
@@ -6529,9 +6564,9 @@ details.entity-section .entity-report {{
                 s['accounts_info'],
             ))
 
-        # Show the results frame (pack it above the generate frame)
-        self._results_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=10,
-                                  before=self.generate_btn.master)
+        # Hide placeholder and switch to Results tab
+        self._results_placeholder.pack_forget()
+        self.notebook.select(self.results_tab)
 
     def _sort_results_tree(self, col):
         """Sort the results treeview by column."""
