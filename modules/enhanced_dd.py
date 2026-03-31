@@ -2875,17 +2875,7 @@ details.entity-section .entity-report {{
         elevated = [f for f in findings if f['severity'] == 'Elevated']
         moderate = [f for f in findings if f['severity'] == 'Moderate']
         positive = [f for f in findings if f['severity'] == 'Positive']
-        severity_order = {'Critical': 0, 'Elevated': 1, 'Moderate': 2, 'Low': 3, 'Positive': 4}
-        governance_findings = [
-            f for f in findings
-            if f.get('category') in ('Governance', 'Filing Compliance')
-        ]
-        financial_findings = [
-            f for f in findings
-            if f.get('category') in ('Financial', 'Financial Health')
-        ]
-        governance_findings.sort(key=lambda f: severity_order.get(f.get('severity'), 99))
-        financial_findings.sort(key=lambda f: severity_order.get(f.get('severity'), 99))
+
         # Generate charity-specific charts
         chart_html = generate_charity_chart_html(self.charity_data)
 
@@ -3124,81 +3114,6 @@ details.entity-section .entity-report {{
             text-align: right;
             border: 1px solid #eee;
         }}
-        .dashboard-panel {
-            background: white;
-            border: 2px solid #667eea;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        .dash-header {
-            text-align: center;
-            margin-bottom: 15px;
-            padding-bottom: 12px;
-            border-bottom: 1px solid #e9ecef;
-        }
-        .dash-total {
-            font-size: 16px;
-            font-weight: bold;
-            color: #333;
-        }
-        .dash-bars {
-            margin: 10px 0;
-        }
-        .dash-row {
-            display: flex;
-            align-items: center;
-            margin: 8px 0;
-        }
-        .dash-label {
-            width: 100px;
-            font-weight: 600;
-            color: #555;
-            font-size: 13px;
-        }
-        .dash-bar {
-            flex: 1;
-            height: 20px;
-            background: #f0f0f0;
-            border-radius: 4px;
-            overflow: hidden;
-            margin: 0 12px;
-        }
-        .dash-bar-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #667eea, #764ba2);
-            border-radius: 4px;
-            min-width: 2px;
-            transition: width 0.3s;
-        }
-        .dash-detail {
-            width: 200px;
-            font-size: 12px;
-            color: #666;
-        }
-        .dash-meta {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 15px;
-            margin-top: 12px;
-            padding-top: 12px;
-            border-top: 1px solid #e9ecef;
-            font-size: 12px;
-            color: #888;
-        }
-        .dash-meta span {
-            white-space: nowrap;
-        }
-        .confidence-badge {
-            background: #e9ecef;
-            color: #555;
-            padding: 2px 8px;
-            border-radius: 3px;
-            font-size: 11px;
-            font-weight: normal;
-            display: inline-block;
-            margin-left: 6px;
-        }
         @media print {{
             body {{ background: white; }}
             .section {{ box-shadow: none; border: 1px solid #ddd; }}
@@ -3214,30 +3129,26 @@ details.entity-section .entity-report {{
     </div>
 
     <div class="section">
-        <h2>Executive Summary</h2>
+        <h2>1. Executive Summary</h2>
         <div class="executive-summary">
             {self._generate_charity_executive_summary(critical, elevated, moderate, charity_name)}
         </div>
     </div>
 
-    {self._generate_dashboard_html(findings)}
-
     <div class="section">
-        <h2>Charity Profile</h2>
+        <h2>2. Charity Profile</h2>
         {generate_charity_profile_html(self.charity_data)}
     </div>
 
+    {self._generate_findings_section('Critical Risk Indicators', critical)}
+    {self._generate_findings_section('Elevated Risk Indicators', elevated)}
+    {self._generate_findings_section('Moderate Risk Indicators', moderate)}
+
     {chart_html}
 
-    {self._generate_subject_findings_section('Governance & Compliance Findings', governance_findings)}
+    {self._generate_grants_section()}
 
-    {self._generate_subject_findings_section('Financial Health Findings', financial_findings, include_financial_cross_analysis=True)}
-
-    <div class="section">
-        <h2>Grant & Funding Analysis</h2>
-        {self._generate_grants_data_html()}
-        {self._generate_grants_cross_analysis_html()}
-    </div>
+    {self._generate_cross_analysis_section()}
 
     {self._generate_charity_positive_indicators_html(positive)}
 
@@ -3319,16 +3230,6 @@ details.entity-section .entity-report {{
                 else:
                     summary += "No elevated or moderate indicators identified. "
                 summary += "See the relevant sections below for details."
-
-            triggered_rules = {
-                r.rule_id for r in report.results
-                if r.rule_id in {'G1', 'G2', 'F1'} and r.unified_severity in ('Elevated', 'Moderate')
-            }
-            if {'G1', 'G2', 'F1'}.issubset(triggered_rules):
-                summary += (
-                    "<br><br><strong>Pattern note:</strong> The combined G1+G2+F1 pattern is present, "
-                    "which may indicate increased pressure across grant dependence and financial resilience."
-                )
 
         return summary
 
@@ -4510,17 +4411,6 @@ details.entity-section .entity-report {{
         elevated = [f for f in findings if f['severity'] == 'Elevated']
         moderate = [f for f in findings if f['severity'] == 'Moderate']
         positive = [f for f in findings if f['severity'] == 'Positive']
-        severity_order = {'Critical': 0, 'Elevated': 1, 'Moderate': 2, 'Low': 3, 'Positive': 4}
-        governance_findings = [
-            f for f in findings
-            if f.get('category') in ('Governance', 'Filing Compliance')
-        ]
-        financial_findings = [
-            f for f in findings
-            if f.get('category') in ('Financial', 'Financial Health')
-        ]
-        governance_findings.sort(key=lambda f: severity_order.get(f.get('severity'), 99))
-        financial_findings.sort(key=lambda f: severity_order.get(f.get('severity'), 99))
         
         # Generate charts if accounts loaded
         chart_html = ""
@@ -4794,81 +4684,6 @@ details.entity-section .entity-report {{
             color: #666;
             margin: 0 0 10px 0;
         }}
-        .dashboard-panel {
-            background: white;
-            border: 2px solid #667eea;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        .dash-header {
-            text-align: center;
-            margin-bottom: 15px;
-            padding-bottom: 12px;
-            border-bottom: 1px solid #e9ecef;
-        }
-        .dash-total {
-            font-size: 16px;
-            font-weight: bold;
-            color: #333;
-        }
-        .dash-bars {
-            margin: 10px 0;
-        }
-        .dash-row {
-            display: flex;
-            align-items: center;
-            margin: 8px 0;
-        }
-        .dash-label {
-            width: 100px;
-            font-weight: 600;
-            color: #555;
-            font-size: 13px;
-        }
-        .dash-bar {
-            flex: 1;
-            height: 20px;
-            background: #f0f0f0;
-            border-radius: 4px;
-            overflow: hidden;
-            margin: 0 12px;
-        }
-        .dash-bar-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #667eea, #764ba2);
-            border-radius: 4px;
-            min-width: 2px;
-            transition: width 0.3s;
-        }
-        .dash-detail {
-            width: 200px;
-            font-size: 12px;
-            color: #666;
-        }
-        .dash-meta {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 15px;
-            margin-top: 12px;
-            padding-top: 12px;
-            border-top: 1px solid #e9ecef;
-            font-size: 12px;
-            color: #888;
-        }
-        .dash-meta span {
-            white-space: nowrap;
-        }
-        .confidence-badge {
-            background: #e9ecef;
-            color: #555;
-            padding: 2px 8px;
-            border-radius: 3px;
-            font-size: 11px;
-            font-weight: normal;
-            display: inline-block;
-            margin-left: 6px;
-        }
         @media print {{
             body {{ background: white; }}
             .section {{ box-shadow: none; border: 1px solid #ddd; }}
@@ -4884,16 +4699,14 @@ details.entity-section .entity-report {{
     </div>
     
     <div class="section">
-        <h2>Executive Summary</h2>
+        <h2>1. Executive Summary</h2>
         <div class="executive-summary">
             {self._generate_executive_summary(critical, elevated, moderate, company_name)}
         </div>
     </div>
-
-    {self._generate_dashboard_html(findings)}
     
     <div class="section">
-        <h2>Company Profile</h2>
+        <h2>2. Company Profile</h2>
         {self._generate_company_profile_html()}
     </div>
 
@@ -4901,17 +4714,15 @@ details.entity-section .entity-report {{
 
     {self._generate_ownership_section()}
 
-    {self._generate_subject_findings_section('Governance & Compliance Findings', governance_findings)}
-
-    {self._generate_subject_findings_section('Financial Health Findings', financial_findings, include_financial_cross_analysis=True)}
+    {self._generate_findings_section('Critical Risk Indicators', critical)}
+    {self._generate_findings_section('Elevated Risk Indicators', elevated)}
+    {self._generate_findings_section('Moderate Risk Indicators', moderate)}
 
     {chart_html}
 
-    <div class="section">
-        <h2>Grant & Funding Analysis</h2>
-        {self._generate_grants_data_html()}
-        {self._generate_grants_cross_analysis_html()}
-    </div>
+    {self._generate_grants_section()}
+
+    {self._generate_cross_analysis_section()}
 
     {self._generate_positive_indicators_html(positive)}
 
@@ -4970,16 +4781,6 @@ details.entity-section .entity-report {{
                 else:
                     summary += "No elevated or moderate indicators identified. "
                 summary += "See the relevant sections below for details."
-
-            triggered_rules = {
-                r.rule_id for r in report.results
-                if r.rule_id in {'G1', 'G2', 'F1'} and r.unified_severity in ('Elevated', 'Moderate')
-            }
-            if {'G1', 'G2', 'F1'}.issubset(triggered_rules):
-                summary += (
-                    "<br><br><strong>Pattern note:</strong> The combined G1+G2+F1 pattern is present, "
-                    "which may indicate increased pressure across grant dependence and financial resilience."
-                )
 
         return summary
 
@@ -5055,166 +4856,6 @@ details.entity-section .entity-report {{
         
         html_output += '</div>'
         return html_output
-
-    def _generate_subject_findings_section(self, title, findings, include_financial_cross_analysis=False):
-        """Generate an HTML section with findings grouped by subject, ordered by severity."""
-        ca_cards_html = ''
-        if include_financial_cross_analysis:
-            report = getattr(self, '_cross_analysis_report', None)
-            if report:
-                financial_rule_ids = {'F1', 'F2', 'F3', 'F4', 'ROE', 'AT', 'PM', 'SCB'}
-                financial_ca_results = [r for r in report.results if r.rule_id in financial_rule_ids]
-                ca_cards_html = self._render_cross_analysis_cards(financial_ca_results)
-
-        renderable_findings = [f for f in findings if f.get('severity') != 'Positive']
-        if not renderable_findings and not ca_cards_html:
-            return ''
-
-        html_output = f'<div class="section"><h2>{html.escape(title)}</h2>'
-        for finding in renderable_findings:
-            sev_class = finding.get('severity', 'low').lower()
-            html_output += f'''
-            <div class="finding {sev_class}">
-                <h3>
-                    <span class="severity {sev_class}">{html.escape(finding.get('severity', '').upper())}</span>
-                    {html.escape(finding.get('title', ''))}
-                </h3>
-                <p>{html.escape(finding.get('narrative', ''))}</p>
-                <div class="recommendation">
-                    <strong>Recommendation:</strong> {html.escape(finding.get('recommendation', ''))}
-                </div>
-            </div>
-            '''
-
-        html_output += ca_cards_html
-        html_output += '</div>'
-        return html_output
-
-    def _generate_dashboard_html(self, findings):
-        """Generate the at-a-glance dashboard panel."""
-        critical_count = sum(1 for f in findings if f['severity'] == 'Critical')
-        elevated_count = sum(1 for f in findings if f['severity'] == 'Elevated')
-        moderate_count = sum(1 for f in findings if f['severity'] == 'Moderate')
-        positive_count = sum(1 for f in findings if f['severity'] == 'Positive')
-
-        report = getattr(self, '_cross_analysis_report', None)
-        if report:
-            for r in report.results:
-                sev = r.unified_severity
-                if sev == 'Elevated':
-                    elevated_count += 1
-                elif sev == 'Moderate':
-                    moderate_count += 1
-
-        gov_findings = [
-            f for f in findings
-            if f.get('category') in ('Governance', 'Filing Compliance') and f['severity'] != 'Positive'
-        ]
-        fin_findings = [
-            f for f in findings
-            if f.get('category') in ('Financial', 'Financial Health') and f['severity'] != 'Positive'
-        ]
-
-        gov_critical = sum(1 for f in gov_findings if f['severity'] == 'Critical')
-        grant_finding_count = 0
-        if report:
-            financial_rule_ids = {'F1', 'F2', 'F3', 'F4', 'ROE', 'AT', 'PM', 'SCB'}
-            grant_rule_ids = {'G1', 'G2', 'G3'}
-            for r in report.results:
-                if r.unified_severity in ('Elevated', 'Moderate'):
-                    if r.rule_id in financial_rule_ids:
-                        fin_findings.append({'severity': r.unified_severity})
-                    elif r.rule_id in grant_rule_ids:
-                        grant_finding_count += 1
-
-        gov_count = len(gov_findings)
-        fin_count = len(fin_findings)
-
-        entity_age = ''
-        if self._entity_type == 'company':
-            profile = self.company_data.get('profile', {})
-            inc_date_str = profile.get('date_of_creation', '')
-            if inc_date_str:
-                try:
-                    inc_date = datetime.strptime(inc_date_str, '%Y-%m-%d')
-                    years = int((datetime.now() - inc_date).days / 365.25)
-                    entity_age = f"{years} years"
-                except ValueError:
-                    pass
-        else:
-            reg_date_str = self.charity_data.get('details', {}).get('date_of_registration', '')
-            if reg_date_str:
-                try:
-                    reg_date = datetime.strptime(reg_date_str[:10], '%Y-%m-%d')
-                    years = int((datetime.now() - reg_date).days / 365.25)
-                    entity_age = f"{years} years"
-                except ValueError:
-                    pass
-
-        accounts_info = ''
-        if self.accounts_loaded and self.financial_analyzer and not self.financial_analyzer.data.empty:
-            df = self.financial_analyzer.data
-            years = sorted(df['Year'].unique())
-            acct_type = ''
-            if 'accounts_type' in df.columns:
-                types = df['accounts_type'].dropna().unique()
-                if len(types):
-                    acct_type = f" ({', '.join(str(t) for t in types)})"
-            accounts_info = f"{len(years)} years loaded{acct_type}"
-        elif self._entity_type == 'charity' and self.charity_data:
-            fin_hist = self.charity_data.get('financial_history', [])
-            accounts_info = f"{len(fin_hist)} years loaded" if fin_hist else "No financial data"
-        else:
-            accounts_info = "No accounts loaded"
-
-        grants_info = ''
-        grants_data = getattr(self, '_grants_data', None)
-        if grants_data is not None:
-            grants_info = f"{len(grants_data)} grant(s) found"
-
-        award_info = ''
-        proposed = getattr(self, '_proposed_award', 0)
-        if proposed and proposed > 0:
-            award_info = f"£{proposed:,.0f}"
-
-        max_count = max(gov_count, fin_count, grant_finding_count, 1)
-
-        def bar_segment(count, max_val):
-            pct = min((count / max_val) * 100, 100) if max_val > 0 else 0
-            return f'<div class="dash-bar-fill" style="width: {pct}%"></div>'
-
-        return f'''
-        <div class="dashboard-panel">
-            <div class="dash-header">
-                <span class="dash-total">
-                    {critical_count} Critical &middot; {elevated_count} Elevated &middot; {moderate_count} Moderate &middot; {positive_count} Positive
-                </span>
-            </div>
-            <div class="dash-bars">
-                <div class="dash-row">
-                    <span class="dash-label">Governance</span>
-                    <div class="dash-bar">{bar_segment(gov_count, max_count)}</div>
-                    <span class="dash-detail">{gov_count} finding{"s" if gov_count != 1 else ""}{" (" + str(gov_critical) + " Critical)" if gov_critical else ""}</span>
-                </div>
-                <div class="dash-row">
-                    <span class="dash-label">Financial</span>
-                    <div class="dash-bar">{bar_segment(fin_count, max_count)}</div>
-                    <span class="dash-detail">{fin_count} finding{"s" if fin_count != 1 else ""}</span>
-                </div>
-                <div class="dash-row">
-                    <span class="dash-label">Grants</span>
-                    <div class="dash-bar">{bar_segment(grant_finding_count, max_count)}</div>
-                    <span class="dash-detail">{grant_finding_count} finding{"s" if grant_finding_count != 1 else ""}</span>
-                </div>
-            </div>
-            <div class="dash-meta">
-                {"<span>Accounts: " + html.escape(accounts_info) + "</span>" if accounts_info else ""}
-                {"<span>Age: " + html.escape(entity_age) + "</span>" if entity_age else ""}
-                {"<span>Grants found: " + html.escape(grants_info) + "</span>" if grants_info else ""}
-                {"<span>Proposed award: " + html.escape(award_info) + "</span>" if award_info else ""}
-            </div>
-        </div>
-        '''
 
     def _check_director_psc_addresses(self):
         """Check if any directors or PSCs have Companies House default address."""
@@ -5546,67 +5187,106 @@ details.entity-section .entity-report {{
         </div>
         '''
 
-    def _generate_grants_data_html(self):
-        """Generate the grants data HTML (without a wrapping section container)."""
+    def _generate_grants_section(self):
+        """Generate the grants data section HTML."""
         grants_data = getattr(self, '_grants_data', None)
         if grants_data is None:
             return ''
-        grants_html = generate_grants_report_html(grants_data)
-        if grants_html.startswith('<div class="section">'):
-            grants_html = grants_html.replace('<div class="section">', '', 1)
-            grants_html = grants_html.rsplit('</div>', 1)[0]
-        return grants_html
+        return generate_grants_report_html(grants_data)
 
-    def _generate_grants_cross_analysis_html(self):
-        """Generate cross-analysis cards for grant-specific rules only (G1, G2, G3)."""
+    def _generate_cross_analysis_section(self):
+        """Generate the cross-analysis report section HTML."""
         report = getattr(self, '_cross_analysis_report', None)
         if report is None:
             return ''
-        grant_rule_ids = {'G1', 'G2', 'G3'}
-        grant_results = [r for r in report.results if r.rule_id in grant_rule_ids]
-        if not grant_results:
-            return ''
-        return self._render_cross_analysis_cards(grant_results)
 
-    def _render_cross_analysis_cards(self, results):
-        """Render cross-analysis rule result cards. Used by both financial and grant sections."""
-        if not results:
-            return ''
+        severity_emoji = {
+            'Elevated': '\U0001F7E0',    # Orange circle
+            'Moderate': '\U0001F7E1',    # Yellow circle
+            'Low': '\u26AA',             # White circle
+            'Not Assessed': '',
+        }
 
-        html_out = ''
-        for r in results:
-            if r.unified_severity == 'Not Assessed' and r.confidence == 'SKIPPED':
+        html_out = '<div class="section"><h2>Financial &amp; Grant Cross-Analysis</h2>'
+
+        # Accounts type
+        if report.accounts_type:
+            html_out += f'<p><strong>Detected accounts type:</strong> {html.escape(str(report.accounts_type))}</p>'
+
+        # Company age note
+        if report.company_age_note:
+            html_out += f'<div class="quality-caveat">{html.escape(report.company_age_note)}</div>'
+
+        # Filing quality caveat
+        if report.filing_quality_caveat:
+            html_out += f'<div class="quality-caveat">{html.escape(report.filing_quality_caveat)}</div>'
+
+        # Composite warning
+        if report.composite_warning:
+            html_out += f'<div class="composite-warning">{html.escape(report.composite_warning)}</div>'
+
+        # Pattern warnings
+        for pw in report.pattern_warnings:
+            html_out += f'<div class="pattern-warning">{html.escape(pw)}</div>'
+
+        # Summary table
+        html_out += '''
+        <table class="cross-analysis-summary">
+            <tr><th>Check</th><th>Severity</th><th>Confidence</th></tr>
+        '''
+        for r in report.results:
+            sev = r.unified_severity
+            sev_class = sev.lower().replace(' ', '-')
+            conf_class = r.confidence.lower()
+            emoji = severity_emoji.get(sev, '')
+            html_out += f'''
+            <tr>
+                <td>{html.escape(r.title)}</td>
+                <td><span class="risk-{sev_class}">{emoji} {html.escape(sev)}</span></td>
+                <td><span class="confidence-{conf_class}">{html.escape(r.unified_confidence_label)}</span></td>
+            </tr>
+            '''
+        html_out += '</table>'
+
+        # Individual rule cards
+        for r in report.results:
+            if r.risk_flag == 'NOT_ASSESSED':
                 continue
 
-            sev_class = r.unified_severity.lower().replace(' ', '-')
+            sev = r.unified_severity
+            sev_class = sev.lower().replace(' ', '-')
+            conf_class = r.confidence.lower()
+            emoji = severity_emoji.get(sev, '')
+
             html_out += f'''
-            <div class="finding {sev_class}">
+            <div class="cross-rule-card {sev_class}">
                 <h3>
-                    <span class="severity {sev_class}">{html.escape(r.unified_severity.upper())}</span>
                     {html.escape(r.title)}
-                    <span class="confidence-badge">{html.escape(r.unified_confidence_label)}</span>
+                    <span class="risk-{sev_class}">{emoji} {html.escape(sev)}</span>
+                    <span class="confidence-{conf_class}">{html.escape(r.unified_confidence_label)}</span>
                 </h3>
                 <p>{html.escape(r.narrative)}</p>
             '''
 
+            # Trend data table
             if r.trend_data:
                 vfmt = getattr(r, 'value_format', 'currency')
                 if vfmt == 'percentage':
                     col_header = 'Value (%)'
                 elif vfmt == 'multiplier':
-                    col_header = 'Value (×)'
+                    col_header = 'Value (\u00d7)'
                 else:
-                    col_header = 'Value (£)'
+                    col_header = 'Value (\u00a3)'
                 html_out += f'<table class="trend-table"><tr><th>Year</th><th>{col_header}</th><th>YoY Change</th></tr>'
                 for td in r.trend_data:
-                    change_str = f"{td['change_pct']:+.1f}%" if td.get('change_pct') is not None else '—'
+                    change_str = f"{td['change_pct']:+.1f}%" if td.get('change_pct') is not None else '\u2014'
                     v = td['value']
                     if vfmt == 'percentage':
                         val_str = f"{v:.1f}%"
                     elif vfmt == 'multiplier':
-                        val_str = f"{v:.2f}×"
+                        val_str = f"{v:.2f}\u00d7"
                     else:
-                        val_str = f"£{v:,.0f}"
+                        val_str = f"\u00a3{v:,.0f}"
                     html_out += f"<tr><td>{td['year']}</td><td>{val_str}</td><td>{change_str}</td></tr>"
                 html_out += '</table>'
 
@@ -5617,6 +5297,7 @@ details.entity-section .entity-report {{
             </div>
             '''
 
+        html_out += '</div>'
         return html_out
 
     def _generate_limitations_html(self):
