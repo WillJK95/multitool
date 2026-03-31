@@ -693,11 +693,18 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self._update_accounts_checkboxes()
         self.status_var.set("Accounts cleared.")
 
-    def _auto_fetch_accounts(self):
-        """Kick off automatic filings fetch for ALL entities."""
+    def _auto_fetch_accounts(self, on_complete=None):
+        """Kick off automatic filings fetch for ALL entities.
+
+        Args:
+            on_complete: Optional callable invoked on the UI thread after fetch
+                processing completes.
+        """
         if not self._entities:
             messagebox.showwarning("No Entities", "Add at least one entity first.")
             return
+
+        self._post_fetch_callback = on_complete
 
         # Check if any company entity has available filings
         has_fetchable = any(
@@ -705,6 +712,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             for e in self._entities
         )
         if not has_fetchable:
+            if callable(self._post_fetch_callback):
+                self.safe_ui_call(self._post_fetch_callback)
+                self._post_fetch_callback = None
             messagebox.showwarning(
                 "No Filings Available",
                 "No fetchable filings found for any entity."
@@ -768,6 +778,93 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             )
         finally:
             self.safe_ui_call(self.auto_fetch_btn.config, state='normal')
+            if callable(getattr(self, '_post_fetch_callback', None)):
+                self.safe_ui_call(self._post_fetch_callback)
+            self._post_fetch_callback = None
+
+    def _entity_has_manual_financial_data(self, entity):
+        """Return True if entity has manual supplementary financial data."""
+        return bool(entity.get('manual_data'))
+
+    def _entity_is_financially_ready(self, entity):
+        """Return True if entity has financial data available for analysis."""
+        if self._entity_has_manual_financial_data(entity):
+            return True
+
+        if entity.get('type') == 'company':
+            return bool(entity.get('accounts_loaded'))
+
+        cdata = entity.get('charity_data') or {}
+        has_history = bool(cdata.get('financial_history'))
+        has_assets = bool(cdata.get('assets_liabilities'))
+        return has_history or has_assets
+
+    def _ask_financial_analysis_mode(self):
+        """Show modal dialog when no entities are financially ready."""
+        result = {'choice': 'cancel'}
+        dialog = tk.Toplevel(self)
+        dialog.title("Financial Data Not Loaded")
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        ttk.Label(
+            dialog,
+            text="No financial data is loaded. Continue without financial analysis?",
+            wraplength=420,
+            justify='left',
+        ).pack(fill=tk.X, padx=16, pady=(16, 10))
+
+        btn_row = ttk.Frame(dialog)
+        btn_row.pack(fill=tk.X, padx=16, pady=(0, 16))
+
+        def _set_choice(choice):
+            result['choice'] = choice
+            dialog.destroy()
+
+        ttk.Button(
+            btn_row,
+            text="Run with financial analysis",
+            command=lambda: _set_choice('with'),
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(
+            btn_row,
+            text="Run without financial analysis",
+            command=lambda: _set_choice('without'),
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(
+            btn_row,
+            text="Cancel",
+            command=lambda: _set_choice('cancel'),
+        ).pack(side=tk.RIGHT)
+
+        self.wait_window(dialog)
+        return result['choice']
+
+    def _continue_report_generation(self, include_financial_analysis):
+        """Continue into background report generation after pre-flight checks."""
+        self.generate_btn.config(state='disabled')
+        self._open_folder_btn.pack_forget()  # Hide any previous "Open Folder" button
+        self.cancel_flag.clear()
+
+        self._run_with_financial_analysis = include_financial_analysis
+        if include_financial_analysis:
+            self.status_var.set(
+                "Starting report generation with financial analysis where data is available..."
+            )
+        else:
+            self.status_var.set(
+                "Starting report generation without financial analysis (manual/non-financial checks only)..."
+            )
+
+        self._igm_mode = self.check_vars.get('igm_mode', tk.BooleanVar(value=False)).get()
+        # Build cross-analysis thresholds snapshot from current self.thresholds dict
+        _ca_keys = set(CrossAnalysisThresholds.__dataclass_fields__)
+        self._ca_thresholds = CrossAnalysisThresholds(
+            **{k: self.thresholds[k] for k in _ca_keys if k in self.thresholds}
+        )
+
+        threading.Thread(target=self._generate_bulk_report_thread, daemon=True).start()
 
     def _fetch_company_filings(self, entity, num_filings):
         """Download iXBRL filings for a single company entity. Returns True on success."""
@@ -2707,21 +2804,29 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             messagebox.showwarning("No Entities", "Add at least one entity first.")
             return
 
-        self.generate_btn.config(state='disabled')
-        self._open_folder_btn.pack_forget()  # Hide any previous "Open Folder" button
-        self.cancel_flag.clear()
-
         # Save current active entity's manual data
         self._save_active_entity_manual_data()
 
-        self._igm_mode = self.check_vars.get('igm_mode', tk.BooleanVar(value=False)).get()
-        # Build cross-analysis thresholds snapshot from current self.thresholds dict
-        _ca_keys = set(CrossAnalysisThresholds.__dataclass_fields__)
-        self._ca_thresholds = CrossAnalysisThresholds(
-            **{k: self.thresholds[k] for k in _ca_keys if k in self.thresholds}
-        )
+        ready_entities = [e for e in self._entities if self._entity_is_financially_ready(e)]
+        if not ready_entities:
+            choice = self._ask_financial_analysis_mode()
+            if choice == 'cancel':
+                self.status_var.set("Report generation cancelled.")
+                return
 
-        threading.Thread(target=self._generate_bulk_report_thread, daemon=True).start()
+            if choice == 'with':
+                self.status_var.set(
+                    "Fetching financial data before report generation with financial analysis..."
+                )
+                self._auto_fetch_accounts(
+                    on_complete=lambda: self._continue_report_generation(True)
+                )
+                return
+
+            self._continue_report_generation(False)
+            return
+
+        self._continue_report_generation(True)
 
     def _generate_bulk_report_thread(self):
         """Generate reports for all entities."""
@@ -2730,13 +2835,16 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         try:
             total = len(self._entities)
+            analysis_mode = "with financial analysis" if getattr(
+                self, '_run_with_financial_analysis', True
+            ) else "without financial analysis"
             for idx, entity in enumerate(self._entities):
                 if self.cancel_flag.is_set():
                     return
                 name = entity['name'] or entity['number']
                 self.safe_update(
                     self.status_var.set,
-                    f"Generating report for {name} ({idx+1}/{total})..."
+                    f"Generating report for {name} ({idx+1}/{total}) — {analysis_mode}..."
                 )
 
                 # Set flat state from entity for compatibility with check methods
