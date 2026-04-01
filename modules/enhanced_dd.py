@@ -4835,10 +4835,16 @@ details.entity-section .entity-report {{
         Returns True if benign (MVL or voluntary strike-off) and should be
         ignored, False if concerning (CVL, compulsory liquidation, compulsory
         strike-off) or if the status cannot be determined.
+
+        Dissolved companies also check the insolvency endpoint first, because
+        a company that went through liquidation will eventually show as
+        dissolved.  Falls back to filing history if no insolvency data.
         """
         status = company_status.lower()
 
-        if 'liquidation' in status:
+        if 'liquidation' in status or 'dissolved' in status:
+            # Try insolvency endpoint first — works for both active
+            # liquidations and dissolved companies that went through one
             data, _err = ch_get_insolvency(
                 self.api_key, self.ch_token_bucket, company_number
             )
@@ -4850,24 +4856,25 @@ details.entity-section .entity-report {{
                         return True
                 # Cases exist but none are MVL → CVL or compulsory
                 return False
-            # No data / API error → flag to be safe
-            return False
 
-        if 'dissolved' in status:
-            data, _err = ch_get_filing_history(
-                self.api_key, self.ch_token_bucket, company_number,
-                items_per_page=15,
-            )
-            if data and data.get('items'):
-                for filing in data['items']:
-                    desc = filing.get('description', '').lower()
-                    if 'strike-off' in desc or 'strike off' in desc:
-                        if 'voluntary' in desc:
-                            return True   # Voluntary strike-off = benign
-                        if 'compulsory' in desc:
-                            return False  # Compulsory = concerning
-                # No strike-off filings found → can't confirm benign
-                return False
+            # For dissolved companies with no insolvency data, fall back to
+            # filing history to check for strike-off type
+            if 'dissolved' in status:
+                data, _err = ch_get_filing_history(
+                    self.api_key, self.ch_token_bucket, company_number,
+                    items_per_page=15,
+                )
+                if data and data.get('items'):
+                    for filing in data['items']:
+                        desc = filing.get('description', '').lower()
+                        if 'strike-off' in desc or 'strike off' in desc:
+                            if 'voluntary' in desc:
+                                return True   # Voluntary strike-off = benign
+                            if 'compulsory' in desc:
+                                return False  # Compulsory = concerning
+                    # No strike-off filings found → can't confirm benign
+                    return False
+
             return False
 
         # Other statuses (e.g. administration) are not benign

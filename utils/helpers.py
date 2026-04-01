@@ -277,8 +277,10 @@ def match_officer_name_tokens(search_name: str, officer_title: str) -> bool:
     """
     Token-based name matching for CH officer search results.
 
-    Returns True if all tokens in search_name appear in officer_title
-    (after cleaning titles, punctuation, and hyphens).
+    Returns True if either name's tokens are a subset of the other
+    (after cleaning titles, punctuation, and hyphens).  This ensures
+    that searching "sacha lord" matches "sacha john edward lord" *and*
+    vice-versa.
     """
     search_tokens = set(search_name.lower().split())
     # Remove honorifics and punctuation, replace hyphens with spaces
@@ -287,4 +289,4 @@ def match_officer_name_tokens(search_name: str, officer_title: str) -> bool:
     ).strip()
     cleaned = cleaned.replace("-", " ")
     officer_tokens = set(cleaned.split())
-    return search_tokens.issubset(officer_tokens)
+    return search_tokens.issubset(officer_tokens) or officer_tokens.issubset(search_tokens)
