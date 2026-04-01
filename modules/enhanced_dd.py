@@ -113,6 +113,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self.charity_api_key = charity_api_key
         self._prefill_entity = prefill_entity
         self._prefill_entities = prefill_entities or []
+        self._prefill_started = False
         self._bulk_progress_mode = False
 
         # --- Bulk entity support ---
@@ -211,23 +212,33 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
     def _on_module_visible(self, event=None):
         """Fired by the OS when the module is completely drawn and idle."""
+        # Guard against duplicate <Visibility> deliveries during initial map.
+        # Re-entrant prefill starts can trigger concurrent fetch flows.
+        if self._prefill_started:
+            return
+        self._prefill_started = True
+
         # Unbind immediately so this only runs once on fresh launch
         self.content_frame.unbind('<Visibility>')
 
-        # Force Tkinter to process any lingering geometry math
-        self.update_idletasks()
+        def _start_prefill():
+            # Force Tkinter to process any lingering geometry math
+            self.update_idletasks()
 
-        if self._prefill_entities:
-            self._apply_prefill_entities()
-        elif self._prefill_entity:
-            # Single entity prefill
-            etype = self._prefill_entity.get("type", "company")
-            eid = self._prefill_entity.get("id", "")
-            self.entity_type_var.set(etype)
-            self._on_entity_type_changed()
-            self.company_num_var.set(eid)
-            if eid:
-                self.fetch_entity_profile()
+            if self._prefill_entities:
+                self._apply_prefill_entities()
+            elif self._prefill_entity:
+                # Single entity prefill
+                etype = self._prefill_entity.get("type", "company")
+                eid = self._prefill_entity.get("id", "")
+                self.entity_type_var.set(etype)
+                self._on_entity_type_changed()
+                self.company_num_var.set(eid)
+                if eid:
+                    self.fetch_entity_profile()
+
+        # Defer to idle to avoid running fetch dispatch inside visibility callback.
+        self.after_idle(_start_prefill)
 
     def _apply_prefill_entities(self):
         """Queue-fetch multiple prefilled entities into the EDD bulk tree."""
