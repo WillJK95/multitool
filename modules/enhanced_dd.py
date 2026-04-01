@@ -4287,7 +4287,7 @@ details.entity-section .entity-report {{
         page_size = 100
         seen_paths = set(result["appointment_paths"])
         matched_aliases = set()
-        search_limit = 1000
+        search_limit = 999
 
         while not self.cancel_flag.is_set():
             encoded_query = urllib.parse.quote(canonical_name)
@@ -4297,8 +4297,17 @@ details.entity-section .entity-report {{
             )
             data, err = ch_get_data(self.api_key, self.ch_token_bucket, path)
             if err:
+                if "Error 50" in err:
+                    log_message(
+                        f"Server-side API error during officer alias search for "
+                        f"'{canonical_name}': {err}. Continuing with "
+                        f"{len(seen_paths)} path(s) found so far."
+                    )
+                    break
                 log_message(f"Officer alias search failed for '{canonical_name}': {err}")
-                break
+                result["appointment_paths"] = sorted(seen_paths)
+                result["matched_alias_names"] = sorted(matched_aliases)
+                return result
 
             items = (data or {}).get("items") or []
             if not items:
