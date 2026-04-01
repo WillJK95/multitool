@@ -357,6 +357,26 @@ def ch_get_filing_history(
     return ch_get_data(api_key, token_bucket, path)
 
 
+def ch_get_insolvency(
+    api_key: str,
+    token_bucket,
+    company_number: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Get insolvency case details for a company.
+
+    Args:
+        api_key: Companies House API key
+        token_bucket: TokenBucket instance for rate limiting
+        company_number: Company registration number
+
+    Returns:
+        Tuple of (insolvency data dict or None, error message or None)
+    """
+    path = f"/company/{company_number}/insolvency"
+    return ch_get_data(api_key, token_bucket, path)
+
+
 def check_api_status(api_key: str, token_bucket) -> bool:
     """
     Check if the Companies House API is accessible with the given key.

@@ -28,7 +28,7 @@ from ..utils.financial_analyzer import FinancialAnalyzer, iXBRLParser
 from ..ui.tooltip import Tooltip
 from ..api.companies_house import (
     ch_get_data, ch_get_document_metadata, ch_download_document_content,
-    ch_search_officers,
+    ch_get_filing_history, ch_get_insolvency, ch_search_officers,
 )
 from ..api.charity_commission import (
     cc_get_charity_details_v2,
@@ -4828,7 +4828,51 @@ details.entity-section .entity-report {{
             })
         
         return findings
-    
+
+    def _is_benign_insolvency(self, company_number, company_status):
+        """Check if a dissolved/liquidation company ended via a benign route.
+
+        Returns True if benign (MVL or voluntary strike-off) and should be
+        ignored, False if concerning (CVL, compulsory liquidation, compulsory
+        strike-off) or if the status cannot be determined.
+        """
+        status = company_status.lower()
+
+        if 'liquidation' in status:
+            data, _err = ch_get_insolvency(
+                self.api_key, self.ch_token_bucket, company_number
+            )
+            if data and data.get('cases'):
+                for case in data['cases']:
+                    case_type = case.get('type', '').lower()
+                    # Members' Voluntary Liquidation = benign (solvent wind-down)
+                    if 'members' in case_type and 'voluntary' in case_type:
+                        return True
+                # Cases exist but none are MVL → CVL or compulsory
+                return False
+            # No data / API error → flag to be safe
+            return False
+
+        if 'dissolved' in status:
+            data, _err = ch_get_filing_history(
+                self.api_key, self.ch_token_bucket, company_number,
+                items_per_page=15,
+            )
+            if data and data.get('items'):
+                for filing in data['items']:
+                    desc = filing.get('description', '').lower()
+                    if 'strike-off' in desc or 'strike off' in desc:
+                        if 'voluntary' in desc:
+                            return True   # Voluntary strike-off = benign
+                        if 'compulsory' in desc:
+                            return False  # Compulsory = concerning
+                # No strike-off filings found → can't confirm benign
+                return False
+            return False
+
+        # Other statuses (e.g. administration) are not benign
+        return False
+
     def _check_director_insolvency_history(self):
         """Check if directors have history with insolvent companies (Tier 3 - expensive)."""
         findings = []
@@ -4861,9 +4905,12 @@ details.entity-section .entity-report {{
             for appointment in all_director_appointments:
                 company_status = appointment.get('appointed_to', {}).get('company_status', '').lower()
                 company_name = appointment.get('appointed_to', {}).get('company_name', '')
+                company_number = appointment.get('appointed_to', {}).get('company_number', '')
 
                 if any(term in company_status for term in ['liquidation', 'dissolved', 'administration']):
-                    insolvent_companies.append(company_name)
+                    # Filter out benign insolvencies (MVL, voluntary strike-off)
+                    if not self._is_benign_insolvency(company_number, company_status):
+                        insolvent_companies.append(company_name)
 
             if len(insolvent_companies) >= self.thresholds['insolvency_company_count']:
                 directors_with_issues.append({
@@ -4920,12 +4967,15 @@ details.entity-section .entity-report {{
         return findings
     
     def _normalise_company_name_for_comparison(self, name):
-        """Strip legal suffixes and generic terms to get distinctive company name."""
+        """Strip legal suffixes, generic terms, and apply basic stemming for comparison."""
         if not name:
             return ""
-        
+
         name = name.lower().strip()
-        
+
+        # Strip apostrophes (e.g. "Smith's" -> "Smiths")
+        name = name.replace("'", "").replace("\u2019", "")
+
         # Legal suffixes to remove (order matters - longer first)
         legal_suffixes = [
             'public limited company', 'private limited company',
@@ -4933,29 +4983,38 @@ details.entity-section .entity-report {{
             'limited liability partnership', 'limited partnership',
             'limited', 'ltd', 'plc', 'llp', 'lp', 'cic', 'cio', 'inc', 'corp'
         ]
-        
+
         # Generic business words that don't indicate distinctiveness
         generic_terms = {
             'services', 'solutions', 'group', 'holdings', 'uk', 'gb', 'international',
             'consulting', 'consultants', 'management', 'associates', 'partners',
             'enterprises', 'ventures', 'trading', 'company', 'co', '&', 'and', 'the'
         }
-        
+
         # Remove legal suffixes
         for suffix in legal_suffixes:
             if name.endswith(suffix):
                 name = name[:-len(suffix)].strip()
                 break  # Only remove one suffix
-        
+
         # Remove generic terms
         words = name.split()
         distinctive_words = [w for w in words if w not in generic_terms]
-        
+
         # If we've stripped everything, fall back to original words minus suffix
         if not distinctive_words:
             distinctive_words = words
-        
-        return ' '.join(distinctive_words).strip()
+
+        # Basic stemming to improve fuzzy match accuracy
+        stemmed = []
+        for w in distinctive_words:
+            if w.endswith('ies') and len(w) > 3:
+                w = w[:-3] + 'y'        # e.g. "industries" -> "industry"
+            elif w.endswith('s') and len(w) > 2:
+                w = w[:-1]               # e.g. "smiths" -> "smith"
+            stemmed.append(w)
+
+        return ' '.join(stemmed).strip()
 
     def _check_phoenix_companies(self):
         """Check for phoenix company patterns (similar names to dissolved companies)."""
@@ -5025,6 +5084,15 @@ details.entity-section .entity-report {{
                 if c['name'] not in seen_names:
                     seen_names.add(c['name'])
                     unique_matches.append(c)
+
+            # Filter out benign insolvencies (MVL, voluntary strike-off)
+            unique_matches = [
+                c for c in unique_matches
+                if not self._is_benign_insolvency(c['number'], c['status'])
+            ]
+
+            if not unique_matches:
+                return findings
 
             examples_text = ', '.join([
                 f"{c['name']} ({c['similarity']}% match on '{c['name_normalised']}')"
