@@ -1221,38 +1221,54 @@ class DirectorSearch(InvestigationModuleBase):
                 f"Searching for officers named '{full_name}'..."
             ),
         )
-        all_results, start_index = [], 0
 
         search_limit = 999
         log_message(
             f"Starting officer search. Search limit capped at {search_limit} due to API constraints."
         )
 
-        while True:
-            if self.cancel_flag.is_set():
-                break
-            path = f"/search/officers?q={full_name}&items_per_page=100&start_index={start_index}"
-            data, error = ch_get_data(self.api_key, self.ch_token_bucket, path)
+        # Build search variants — if the name has middle names, also search
+        # with just first name + surname so the CH API can find shorter aliases
+        search_queries = [full_name]
+        name_parts = full_name.strip().split()
+        if len(name_parts) > 2:
+            short_name = f"{name_parts[0]} {name_parts[-1]}"
+            search_queries.append(short_name)
 
-            if error:
-                if "Error 50" in error:
-                    log_message(
-                        f"Server-side API error during paged director search: {error}. Continuing with {len(all_results)} results found so far."
-                    )
+        all_results = []
+        seen_ids = set()
+
+        for query in search_queries:
+            start_index = 0
+            while True:
+                if self.cancel_flag.is_set():
                     break
-                else:
-                    return [], error
+                path = f"/search/officers?q={query}&items_per_page=100&start_index={start_index}"
+                data, error = ch_get_data(self.api_key, self.ch_token_bucket, path)
 
-            if not data or not data.get("items"):
-                break
+                if error:
+                    if "Error 50" in error:
+                        log_message(
+                            f"Server-side API error during paged director search: {error}. Continuing with {len(all_results)} results found so far."
+                        )
+                        break
+                    else:
+                        return [], error
 
-            items = data.get("items", [])
-            all_results.extend(items)
-            total_results = data.get("total_results", 0)
-            start_index += len(items)
+                if not data or not data.get("items"):
+                    break
 
-            if start_index >= total_results or start_index >= search_limit:
-                break
+                for item in data.get("items", []):
+                    item_link = item.get('links', {}).get('self', '')
+                    if item_link not in seen_ids:
+                        seen_ids.add(item_link)
+                        all_results.append(item)
+
+                total_results = data.get("total_results", 0)
+                start_index += len(data.get("items", []))
+
+                if start_index >= total_results or start_index >= search_limit:
+                    break
 
         self.app.after(
             0,

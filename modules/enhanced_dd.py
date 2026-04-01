@@ -4188,19 +4188,38 @@ details.entity-section .entity-report {{
         # CH officer names are "SURNAME, Forenames" — convert for search query
         if ',' in name:
             parts = name.split(',', 1)
-            search_name = f"{parts[1].strip()} {parts[0].strip()}"
+            forenames = parts[1].strip()
+            surname = parts[0].strip()
+            search_name = f"{forenames} {surname}"
         else:
             search_name = name
         search_name = search_name.lower()
 
-        data, err = ch_search_officers(self.api_key, self.ch_token_bucket, search_name)
-        if err or not data or not data.get('items'):
-            return []
+        # Build search variants — if the name has middle names, also search
+        # with just first name + surname so the CH API can find shorter aliases
+        search_queries = [search_name]
+        name_parts = search_name.split()
+        if len(name_parts) > 2:
+            short_name = f"{name_parts[0]} {name_parts[-1]}"
+            search_queries.append(short_name)
+
+        # Merge results from all search queries
+        all_items = []
+        seen_ids = set()
+        for query in search_queries:
+            data, err = ch_search_officers(self.api_key, self.ch_token_bucket, query)
+            if err or not data or not data.get('items'):
+                continue
+            for item in data['items']:
+                item_link = item.get('links', {}).get('self', '')
+                if item_link not in seen_ids:
+                    seen_ids.add(item_link)
+                    all_items.append(item)
 
         seen_paths = set()
         alias_paths = []
 
-        for result in data['items']:
+        for result in all_items:
             result_dob = result.get('date_of_birth')
             if not result_dob:
                 continue
