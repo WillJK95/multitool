@@ -112,6 +112,23 @@ def get_canonical_name_key(name: str, dob_obj: dict = None) -> str:
         return name_key
 
 
+def match_officer_name_tokens(search_name: str, officer_title: str) -> bool:
+    """Return True when search name tokens are all present in officer title tokens."""
+    if not search_name or not officer_title:
+        return False
+
+    normalized_search = search_name.lower().replace("-", " ")
+    normalized_title = officer_title.lower().replace("-", " ")
+
+    cleaned_search = re.sub(r"\b(mr|mrs|ms|miss|dr|prof)\b|[.,]", "", normalized_search).strip()
+    cleaned_title = re.sub(r"\b(mr|mrs|ms|miss|dr|prof)\b|[.,]", "", normalized_title).strip()
+
+    search_tokens = set(cleaned_search.split())
+    officer_tokens = set(cleaned_title.split())
+
+    return bool(search_tokens) and search_tokens.issubset(officer_tokens)
+
+
 def format_address_label(address_str: str, line_length: int = 25) -> str:
     """
     Format an address string for display in graph labels.

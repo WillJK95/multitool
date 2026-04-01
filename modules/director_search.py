@@ -3,7 +3,6 @@
 import csv
 import html
 import os
-import re
 import textwrap
 import threading
 import time
@@ -32,7 +31,7 @@ from ..constants import (
 )
 
 # Utility functions (were global functions or duplicated in classes)
-from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary, format_eta
+from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary, format_eta, match_officer_name_tokens
 
 # UI components (were classes in original file)
 from ..ui.tooltip import Tooltip
@@ -1261,21 +1260,9 @@ class DirectorSearch(InvestigationModuleBase):
             ),
         )
 
-        name_matches, search_tokens = [], set(full_name.lower().split())
+        name_matches = []
         for officer in all_results:
-            # --- FIX: Improved name cleaning to handle hyphens ---
-            raw_title = officer.get("title", "").lower()
-            # 1. Remove titles and punctuation
-            cleaned_title = re.sub(
-                r"\b(mr|mrs|ms|miss|dr|prof)\b|[.,]", "", raw_title
-            ).strip()
-            # 2. Replace hyphens with spaces
-            cleaned_title = cleaned_title.replace("-", " ")
-            # --- END FIX ---
-
-            officer_tokens = set(cleaned_title.split())
-
-            if search_tokens.issubset(officer_tokens):
+            if match_officer_name_tokens(full_name, officer.get("title", "")):
                 name_matches.append(officer)
 
         if not year_of_birth and month_of_birth_str == "Any":
