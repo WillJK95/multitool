@@ -28,6 +28,7 @@ from ..utils.financial_analyzer import FinancialAnalyzer, iXBRLParser
 from ..ui.tooltip import Tooltip
 from ..api.companies_house import (
     ch_get_data, ch_get_document_metadata, ch_download_document_content,
+    ch_search_officers,
 )
 from ..api.charity_commission import (
     cc_get_charity_details_v2,
@@ -56,7 +57,7 @@ from ..constants import (
     CHARITY_EDD_THRESHOLDS,
 )
 from .base import InvestigationModuleBase
-from ..utils.helpers import log_message, clean_company_number, format_eta
+from ..utils.helpers import log_message, clean_company_number, format_eta, match_officer_name_tokens
 from ..utils.settings import save_recent_reports
 from ..utils.edd_visualizations import (
     generate_company_timeline,
@@ -4171,6 +4172,94 @@ details.entity-section .entity-report {{
 
         return findings
 
+    def _find_officer_aliases(self, officer):
+        """
+        Search CH for aliases of the given officer (same name tokens, same DOB).
+        Returns a list of distinct appointment paths (e.g. /officers/XYZ/appointments).
+        """
+        name = officer.get('name', '')
+        if not name:
+            return []
+
+        dob = officer.get('date_of_birth')
+        if not dob or not dob.get('month') or not dob.get('year'):
+            return []
+
+        # CH officer names are "SURNAME, Forenames" — convert for search query
+        if ',' in name:
+            parts = name.split(',', 1)
+            search_name = f"{parts[1].strip()} {parts[0].strip()}"
+        else:
+            search_name = name
+        search_name = search_name.lower()
+
+        data, err = ch_search_officers(self.api_key, self.ch_token_bucket, search_name)
+        if err or not data or not data.get('items'):
+            return []
+
+        seen_paths = set()
+        alias_paths = []
+
+        for result in data['items']:
+            result_dob = result.get('date_of_birth')
+            if not result_dob:
+                continue
+            if result_dob.get('month') != dob['month'] or result_dob.get('year') != dob['year']:
+                continue
+
+            result_title = result.get('title', '')
+            if not match_officer_name_tokens(search_name, result_title):
+                continue
+
+            link = result.get('links', {}).get('self', '')
+            if not link or '/officers/' not in link:
+                continue
+
+            # Normalise: strip any base URL prefix, ensure ends with /appointments
+            path = '/officers/' + link.split('/officers/', 1)[1]
+            if not path.endswith('/appointments'):
+                path += '/appointments'
+            if path not in seen_paths:
+                seen_paths.add(path)
+                alias_paths.append(path)
+
+        return alias_paths
+
+    def _fetch_alias_expanded_appointments(self, officer):
+        """
+        Fetch appointments from the officer's primary link AND any alias links.
+        Returns (list_of_appointments, number_of_distinct_officer_ids_checked).
+        """
+        primary_link = officer.get('links', {}).get('officer', {}).get('appointments')
+
+        alias_paths = self._find_officer_aliases(officer)
+
+        all_paths = set()
+        if primary_link:
+            all_paths.add(primary_link)
+        all_paths.update(alias_paths)
+
+        if not all_paths:
+            return [], 0
+
+        alias_count = len(all_paths)
+
+        seen_companies = set()
+        all_appointments = []
+        for path in all_paths:
+            if self.cancel_flag.is_set():
+                break
+            appointments = self._fetch_all_appointments(path)
+            for appt in appointments:
+                company_number = appt.get('appointed_to', {}).get('company_number', '')
+                if company_number and company_number not in seen_companies:
+                    seen_companies.add(company_number)
+                    all_appointments.append(appt)
+                elif not company_number:
+                    all_appointments.append(appt)
+
+        return all_appointments, alias_count
+
     def _fetch_all_appointments(self, appointments_link):
         """
         Fetches all appointment items for an officer, handling API pagination.
@@ -4743,69 +4832,91 @@ details.entity-section .entity-report {{
     def _check_director_insolvency_history(self):
         """Check if directors have history with insolvent companies (Tier 3 - expensive)."""
         findings = []
-        
+
         officers = self.company_data.get('officers', {})
         if not officers or not officers.get('items'):
             return findings
-        
+
         # Only check current, active directors
         active_officers = [o for o in officers['items'] if not o.get('resigned_on')]
-        
+
         directors_with_issues = []
-        
+
         for i, officer in enumerate(active_officers):
             if self.cancel_flag.is_set():
                 break
-            
+
             self._set_phase_status(
                 f"Checking director history {i+1}/{len(active_officers)}..."
             )
-            
-            # Get all appointments for this director
-            appointments_link = officer.get('links', {}).get('officer', {}).get('appointments')
-            if not appointments_link:
-                continue
-            
-            all_director_appointments = self._fetch_all_appointments(appointments_link)
+
+            # Alias-expanded: search CH for all officer IDs matching this person
+            all_director_appointments, alias_count = self._fetch_alias_expanded_appointments(officer)
             if not all_director_appointments:
                 continue
-            
+
             # Check each company they're/were involved with
             insolvent_companies = []
-            
+
             for appointment in all_director_appointments:
                 company_status = appointment.get('appointed_to', {}).get('company_status', '').lower()
                 company_name = appointment.get('appointed_to', {}).get('company_name', '')
-                
+
                 if any(term in company_status for term in ['liquidation', 'dissolved', 'administration']):
                     insolvent_companies.append(company_name)
-            
+
             if len(insolvent_companies) >= self.thresholds['insolvency_company_count']:
                 directors_with_issues.append({
                     'name': officer.get('name'),
                     'count': len(insolvent_companies),
-                    'examples': insolvent_companies[:3]
+                    'examples': insolvent_companies[:3],
+                    'alias_count': alias_count,
+                    'dob': officer.get('date_of_birth'),
+                    'insolvent_details': insolvent_companies,
                 })
-        
+
         if directors_with_issues:
             severity = 'Critical' if any(d['count'] >= self.thresholds['insolvency_critical_count'] for d in directors_with_issues) else 'Elevated'
-            
+
             details = []
             for director in directors_with_issues[:3]:  # Show top 3
                 examples = ', '.join(director['examples'])
                 details.append(f"{director['name']}: associated with {director['count']} insolvent companies including {examples}")
-            
+
             narrative = "The following director(s) have been associated with multiple companies that entered insolvency:\n\n" + '\n'.join(details)
             narrative += "\n\nWhile business failures can occur for legitimate reasons, a pattern of multiple insolvencies may indicate elevated risk or poor business judgment."
-            
+
+            if any(d['alias_count'] > 1 for d in directors_with_issues):
+                narrative += "\n\nNote: Alias expansion was used \u2014 multiple Companies House officer IDs sharing the same name tokens and date of birth were checked."
+
+            # Build details_html dropdown table
+            details_rows = []
+            for director in directors_with_issues:
+                dob = director.get('dob')
+                dob_str = f"{dob['month']:02d}/{dob['year']}" if dob and dob.get('month') and dob.get('year') else 'N/A'
+                for company_name in director['insolvent_details']:
+                    details_rows.append((html.escape(director['name']), dob_str, html.escape(company_name)))
+
+            details_html = ""
+            if details_rows:
+                details_html = (
+                    '<details><summary>View director insolvency details</summary>'
+                    '<table border="1" cellpadding="4" cellspacing="0" style="margin-top:8px;border-collapse:collapse;width:100%">'
+                    '<tr><th>Director Name</th><th>DOB (MM/YYYY)</th><th>Insolvent Company</th></tr>'
+                )
+                for name_val, dob_str, co in details_rows:
+                    details_html += f'<tr><td>{name_val}</td><td>{dob_str}</td><td>{co}</td></tr>'
+                details_html += '</table></details>'
+
             findings.append({
                 'category': 'Governance',
                 'severity': severity,
                 'title': 'Directors with Insolvency History',
                 'narrative': narrative,
-                'recommendation': 'Conduct enhanced due diligence on the circumstances of previous company failures. Consider requiring personal guarantees or additional security.'
+                'recommendation': 'Conduct enhanced due diligence on the circumstances of previous company failures. Consider requiring personal guarantees or additional security.',
+                'details_html': details_html,
             })
-        
+
         return findings
     
     def _normalise_company_name_for_comparison(self, name):
@@ -4849,33 +4960,36 @@ details.entity-section .entity-report {{
     def _check_phoenix_companies(self):
         """Check for phoenix company patterns (similar names to dissolved companies)."""
         findings = []
-        
+
         officers = self.company_data.get('officers', {})
         if not officers or not officers.get('items'):
             return findings
-        
+
         current_company_name = self.company_data['profile'].get('company_name', '')
         current_company_number = self.company_data['profile'].get('company_number', '')
         current_normalised = self._normalise_company_name_for_comparison(current_company_name)
-        
+
         # Skip if we can't extract a distinctive name
         if not current_normalised:
             return findings
-        
-        # Get appointments for key directors
+
+        # Get appointments for key directors (alias-expanded)
         similar_dissolved_companies = []
-        
+        any_alias_expanded = False
+
         for officer in officers['items'][:self.thresholds['phoenix_officer_count']]:
             if self.cancel_flag.is_set():
                 break
-            
-            appointments_link = officer.get('links', {}).get('officer', {}).get('appointments')
-            if not appointments_link:
-                continue
-            
-            all_director_appointments = self._fetch_all_appointments(appointments_link)
+
+            all_director_appointments, alias_count = self._fetch_alias_expanded_appointments(officer)
             if not all_director_appointments:
                 continue
+
+            if alias_count > 1:
+                any_alias_expanded = True
+
+            officer_name = officer.get('name', '')
+            officer_dob = officer.get('date_of_birth')
 
             for appointment in all_director_appointments:
                 company_number = appointment.get('appointed_to', {}).get('company_number', '')
@@ -4883,23 +4997,26 @@ details.entity-section .entity-report {{
                     continue
                 company_status = appointment.get('appointed_to', {}).get('company_status', '').lower()
                 company_name = appointment.get('appointed_to', {}).get('company_name', '')
-                
+
                 if 'dissolved' in company_status or 'liquidation' in company_status:
                     # Normalise the dissolved company name and compare
                     company_normalised = self._normalise_company_name_for_comparison(company_name)
-                    
+
                     # Only compare if we have distinctive content in both names
                     if company_normalised:
                         similarity = WRatio(current_normalised, company_normalised)
-                        
+
                         if similarity >= self.thresholds['phoenix_similarity_pct']:
                             similar_dissolved_companies.append({
                                 'name': company_name,
+                                'number': company_number,
                                 'name_normalised': company_normalised,
                                 'similarity': round(similarity),
-                                'status': company_status
+                                'status': company_status,
+                                'officer_name': officer_name,
+                                'officer_dob': officer_dob,
                             })
-        
+
         if similar_dissolved_companies:
             # Deduplicate by company name
             seen_names = set()
@@ -4908,20 +5025,41 @@ details.entity-section .entity-report {{
                 if c['name'] not in seen_names:
                     seen_names.add(c['name'])
                     unique_matches.append(c)
-            
+
             examples_text = ', '.join([
-                f"{c['name']} ({c['similarity']}% match on '{c['name_normalised']}')" 
+                f"{c['name']} ({c['similarity']}% match on '{c['name_normalised']}')"
                 for c in unique_matches[:3]
             ])
-            
+
+            narrative = f"Directors of this company have previously been involved with {len(unique_matches)} dissolved/insolvent companies with similar distinctive names (after removing generic terms like 'Limited', 'Services', etc.). This pattern may indicate 'phoenixing' - the practice of abandoning a company with debts and starting a new one with a similar name and business. Matches found: {examples_text}."
+
+            if any_alias_expanded:
+                narrative += "\n\nNote: Alias expansion was used \u2014 multiple Companies House officer IDs sharing the same name tokens and date of birth were checked."
+
+            # Build details_html dropdown table
+            details_html = ""
+            if unique_matches:
+                details_html = (
+                    '<details><summary>View phoenix match details</summary>'
+                    '<table border="1" cellpadding="4" cellspacing="0" style="margin-top:8px;border-collapse:collapse;width:100%">'
+                    '<tr><th>Director Name</th><th>DOB (MM/YYYY)</th><th>Dissolved Company</th></tr>'
+                )
+                for c in unique_matches:
+                    dob = c.get('officer_dob')
+                    dob_str = f"{dob['month']:02d}/{dob['year']}" if dob and dob.get('month') and dob.get('year') else 'N/A'
+                    co_display = f"{html.escape(c['name'])} ({html.escape(c.get('number', ''))})"
+                    details_html += f'<tr><td>{html.escape(c["officer_name"])}</td><td>{dob_str}</td><td>{co_display}</td></tr>'
+                details_html += '</table></details>'
+
             findings.append({
                 'category': 'Governance',
                 'severity': 'Critical',
                 'title': 'Potential Phoenix Company Pattern',
-                'narrative': f"Directors of this company have previously been involved with {len(unique_matches)} dissolved/insolvent companies with similar distinctive names (after removing generic terms like 'Limited', 'Services', etc.). This pattern may indicate 'phoenixing' - the practice of abandoning a company with debts and starting a new one with a similar name and business. Matches found: {examples_text}.",
-                'recommendation': 'This is a serious red flag. Conduct thorough investigations into the circumstances of the previous company failures and the transfer of any assets or business. Seek legal advice before proceeding.'
+                'narrative': narrative,
+                'recommendation': 'This is a serious red flag. Conduct thorough investigations into the circumstances of the previous company failures and the transfer of any assets or business. Seek legal advice before proceeding.',
+                'details_html': details_html,
             })
-        
+
         return findings
 
     def _generate_positive_findings(self, existing_findings):
@@ -5913,6 +6051,7 @@ details.entity-section .entity-report {{
                 {html.escape(finding['title'])}
             </h3>
             <p>{html.escape(finding['narrative'])}</p>
+            {finding.get('details_html', '')}
             <div class="recommendation">
                 <strong>Recommendation:</strong> {html.escape(finding['recommendation'])}
             </div>
