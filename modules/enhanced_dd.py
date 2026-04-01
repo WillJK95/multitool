@@ -200,26 +200,12 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         
         self._build_ui()
 
-        # Apply prefill(s) if provided (from working set / quick launch)
+        # Apply prefill(s) if provided (from working set / quick launch).
+        # Fetches are deferred until the window is fully mapped to the
+        # screen (winfo_viewable), then executed one at a time, to avoid
+        # geometry re-entrancy segfaults in the ttk.Notebook.
         if self._prefill_entities:
-            self.after(200, self._apply_prefill_entities)
-        elif self._prefill_entity:
-            etype = self._prefill_entity.get("type", "company")
-            eid = self._prefill_entity.get("id", "")
-            self.entity_type_var.set(etype)
-            self._on_entity_type_changed()
-            self.company_num_var.set(eid)
-            if eid:
-                self.after(200, self.fetch_entity_profile)
-
-    def _apply_prefill_entities(self):
-        """Queue-fetch multiple prefilled entities into the EDD bulk tree.
-
-        Fetches are serialized (one at a time) to avoid concurrent treeview
-        inserts that trigger geometry re-entrancy and cause a C-level segfault.
-        """
-        try:
-            valid = []
+            self._prefill_queue = collections.deque()
             for ent in self._prefill_entities:
                 etype = ent.get("type", "company")
                 if etype not in ("company", "charity"):
@@ -227,15 +213,30 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 eid = str(ent.get("id", "")).strip()
                 if not eid:
                     continue
-                valid.append({"type": etype, "id": eid})
+                self._prefill_queue.append({"type": etype, "id": eid})
+            if self._prefill_queue:
+                self._wait_viewable_then_prefill()
+        elif self._prefill_entity:
+            etype = self._prefill_entity.get("type", "company")
+            eid = self._prefill_entity.get("id", "")
+            self._prefill_queue = collections.deque()
+            if eid:
+                self._prefill_queue.append({"type": etype, "id": eid})
+                self._wait_viewable_then_prefill()
+            else:
+                self.entity_type_var.set(etype)
+                self._on_entity_type_changed()
 
-            if not valid:
-                return
+    # ------------------------------------------------------------------
+    # Prefill: wait-for-viewable → serial fetch queue
+    # ------------------------------------------------------------------
 
-            self._prefill_queue = collections.deque(valid)
-            self.after(200, self._process_next_prefill)
-        except Exception as e:
-            log_message(f"Error applying prefill entities: {e}\n{traceback.format_exc()}")
+    def _wait_viewable_then_prefill(self):
+        """Poll until the OS confirms the window is drawn, then start fetches."""
+        if self.winfo_viewable():
+            self._process_next_prefill()
+        else:
+            self.after(50, self._wait_viewable_then_prefill)
 
     def _process_next_prefill(self):
         """Pop the next entity from the prefill queue and start its fetch."""
@@ -243,7 +244,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             return
         ent = self._prefill_queue.popleft()
         self._prefill_single_entity(ent)
-        self.after(200, self._poll_prefill_done)
+        self._poll_prefill_done()
 
     def _poll_prefill_done(self):
         """Poll until the current fetch completes, then process the next."""
