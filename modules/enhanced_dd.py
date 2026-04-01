@@ -10,6 +10,7 @@ import threading
 import traceback
 import time
 import webbrowser
+import collections
 import tkinter as tk
 from io import BytesIO
 from pathlib import Path
@@ -212,7 +213,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 self.after(200, self.fetch_entity_profile)
 
     def _apply_prefill_entities(self):
-        """Queue-fetch multiple prefilled entities into the EDD bulk tree."""
+        """Queue-fetch multiple prefilled entities into the EDD bulk tree.
+
+        Fetches are serialized (one at a time) to avoid concurrent treeview
+        inserts that trigger geometry re-entrancy and cause a C-level segfault.
+        """
         try:
             valid = []
             for ent in self._prefill_entities:
@@ -227,10 +232,29 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             if not valid:
                 return
 
-            for i, ent in enumerate(valid):
-                self.after(200 + (i * 250), lambda e=ent: self._prefill_single_entity(e))
+            self._prefill_queue = collections.deque(valid)
+            self.after(200, self._process_next_prefill)
         except Exception as e:
             log_message(f"Error applying prefill entities: {e}\n{traceback.format_exc()}")
+
+    def _process_next_prefill(self):
+        """Pop the next entity from the prefill queue and start its fetch."""
+        if not self._prefill_queue:
+            return
+        ent = self._prefill_queue.popleft()
+        self._prefill_single_entity(ent)
+        self.after(200, self._poll_prefill_done)
+
+    def _poll_prefill_done(self):
+        """Poll until the current fetch completes, then process the next."""
+        try:
+            state = str(self.fetch_btn.cget('state'))
+        except Exception:
+            return
+        if state == 'disabled':
+            self.after(200, self._poll_prefill_done)
+        else:
+            self._process_next_prefill()
 
     def _prefill_single_entity(self, ent):
         """Populate inputs and trigger fetch for one prefilled entity."""
