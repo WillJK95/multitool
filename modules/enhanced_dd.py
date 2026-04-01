@@ -4252,6 +4252,8 @@ details.entity-section .entity-report {{
             "matched_alias_names": [],
             "dob_basis": "",
             "canonical_name": "",
+            "direct_appointment_path": None,
+            "path_aliases": {},
         }
 
         if not officer:
@@ -4274,6 +4276,8 @@ details.entity-section .entity-report {{
         )
         if canonical_link:
             result["appointment_paths"].append(canonical_link)
+            result["direct_appointment_path"] = canonical_link
+            result["path_aliases"][canonical_link] = [canonical_name] if canonical_name else []
 
         if not canonical_name or not dob_month or not dob_year:
             result["appointment_paths"] = sorted(set(result["appointment_paths"]))
@@ -4315,8 +4319,13 @@ details.entity-section .entity-report {{
                 appointments_path = self._normalise_appointments_path(
                     (candidate.get("links") or {}).get("self")
                 )
-                if appointments_path and appointments_path not in seen_paths:
+                if not appointments_path:
+                    continue
+                if appointments_path not in seen_paths:
                     seen_paths.add(appointments_path)
+                path_aliases = result["path_aliases"].setdefault(appointments_path, [])
+                if candidate_name and candidate_name not in path_aliases:
+                    path_aliases.append(candidate_name)
 
             total_results = (data or {}).get("total_results", 0)
             start_index += len(items)
@@ -4877,6 +4886,7 @@ details.entity-section .entity-report {{
         active_officers = [o for o in officers['items'] if not o.get('resigned_on')]
         
         directors_with_issues = []
+        alias_trigger_rows = []
         
         for i, officer in enumerate(active_officers):
             if self.cancel_flag.is_set():
@@ -4894,21 +4904,37 @@ details.entity-section .entity-report {{
 
             all_director_appointments = []
             for appointments_link in appointment_paths:
-                all_director_appointments.extend(
-                    self._fetch_all_appointments(appointments_link)
-                )
+                for appointment in self._fetch_all_appointments(appointments_link):
+                    all_director_appointments.append({
+                        "appointment": appointment,
+                        "path": appointments_link,
+                    })
             if not all_director_appointments:
                 continue
             
             # Check each company they're/were involved with
             insolvent_companies = []
             
-            for appointment in all_director_appointments:
+            for appointment_record in all_director_appointments:
+                appointment = appointment_record["appointment"]
                 company_status = appointment.get('appointed_to', {}).get('company_status', '').lower()
                 company_name = appointment.get('appointed_to', {}).get('company_name', '')
+                company_number = appointment.get('appointed_to', {}).get('company_number', '')
                 
                 if any(term in company_status for term in ['liquidation', 'dissolved', 'administration']):
                     insolvent_companies.append(company_name)
+                    source_path = appointment_record["path"]
+                    direct_path = alias_data.get("direct_appointment_path")
+                    if direct_path and source_path == direct_path:
+                        continue
+                    alias_names = alias_data.get("path_aliases", {}).get(source_path, [])
+                    alias_name_text = ", ".join(alias_names) if alias_names else alias_data.get("canonical_name", officer.get("name", "Unknown"))
+                    alias_trigger_rows.append({
+                        "alias_name": alias_name_text,
+                        "dob_basis": alias_data.get("dob_basis", "month/year unavailable"),
+                        "company_name": company_name or "Unknown",
+                        "company_number": company_number or "N/A",
+                    })
             
             if len(insolvent_companies) >= self.thresholds['insolvency_company_count']:
                 directors_with_issues.append({
@@ -4935,6 +4961,20 @@ details.entity-section .entity-report {{
                 'narrative': narrative,
                 'recommendation': 'Conduct enhanced due diligence on the circumstances of previous company failures. Consider requiring personal guarantees or additional security.'
             })
+            if alias_trigger_rows:
+                dedup_rows = []
+                seen = set()
+                for row in alias_trigger_rows:
+                    key = (row["alias_name"], row["dob_basis"], row["company_name"], row["company_number"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    dedup_rows.append(row)
+                findings[-1]['alias_match_table'] = {
+                    'title': 'Alias-triggered matches',
+                    'columns': ['Alias Name [with month and year of birth]', 'Flagged Company [with company name and number]'],
+                    'rows': dedup_rows,
+                }
         
         return findings
     
@@ -4994,6 +5034,7 @@ details.entity-section .entity-report {{
         
         # Get appointments for key directors
         similar_dissolved_companies = []
+        alias_trigger_rows = []
         
         for officer in officers['items'][:self.thresholds['phoenix_officer_count']]:
             if self.cancel_flag.is_set():
@@ -5006,13 +5047,16 @@ details.entity-section .entity-report {{
 
             all_director_appointments = []
             for appointments_link in appointment_paths:
-                all_director_appointments.extend(
-                    self._fetch_all_appointments(appointments_link)
-                )
+                for appointment in self._fetch_all_appointments(appointments_link):
+                    all_director_appointments.append({
+                        "appointment": appointment,
+                        "path": appointments_link,
+                    })
             if not all_director_appointments:
                 continue
 
-            for appointment in all_director_appointments:
+            for appointment_record in all_director_appointments:
+                appointment = appointment_record["appointment"]
                 company_number = appointment.get('appointed_to', {}).get('company_number', '')
                 if company_number == current_company_number:
                     continue
@@ -5032,7 +5076,20 @@ details.entity-section .entity-report {{
                                 'name': company_name,
                                 'name_normalised': company_normalised,
                                 'similarity': round(similarity),
-                                'status': company_status
+                                'status': company_status,
+                                'company_number': company_number or 'N/A',
+                            })
+                            source_path = appointment_record["path"]
+                            direct_path = alias_data.get("direct_appointment_path")
+                            if direct_path and source_path == direct_path:
+                                continue
+                            alias_names = alias_data.get("path_aliases", {}).get(source_path, [])
+                            alias_name_text = ", ".join(alias_names) if alias_names else alias_data.get("canonical_name", officer.get("name", "Unknown"))
+                            alias_trigger_rows.append({
+                                "alias_name": alias_name_text,
+                                "dob_basis": alias_data.get("dob_basis", "month/year unavailable"),
+                                "company_name": company_name or "Unknown",
+                                "company_number": company_number or "N/A",
                             })
         
         if similar_dissolved_companies:
@@ -5056,6 +5113,20 @@ details.entity-section .entity-report {{
                 'narrative': f"Directors of this company have previously been involved with {len(unique_matches)} dissolved/insolvent companies with similar distinctive names (after removing generic terms like 'Limited', 'Services', etc.). This pattern may indicate 'phoenixing' - the practice of abandoning a company with debts and starting a new one with a similar name and business. Matches found: {examples_text}.",
                 'recommendation': 'This is a serious red flag. Conduct thorough investigations into the circumstances of the previous company failures and the transfer of any assets or business. Seek legal advice before proceeding.'
             })
+            if alias_trigger_rows:
+                dedup_rows = []
+                seen = set()
+                for row in alias_trigger_rows:
+                    key = (row["alias_name"], row["dob_basis"], row["company_name"], row["company_number"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    dedup_rows.append(row)
+                findings[-1]['alias_match_table'] = {
+                    'title': 'Alias-triggered matches',
+                    'columns': ['Alias Name [with month and year of birth]', 'Flagged Company [with company name and number]'],
+                    'rows': dedup_rows,
+                }
         
         return findings
 
@@ -6041,6 +6112,7 @@ details.entity-section .entity-report {{
             if finding['severity'] == 'Positive':
                 continue
             sev_class = finding['severity'].lower()
+            alias_table_html = self._render_alias_match_table_html(finding.get('alias_match_table'))
             html_output += f'''
         <div class="finding {sev_class}">
             <h3>
@@ -6051,6 +6123,7 @@ details.entity-section .entity-report {{
             <div class="recommendation">
                 <strong>Recommendation:</strong> {html.escape(finding['recommendation'])}
             </div>
+            {alias_table_html}
         </div>
         '''
 
@@ -6058,6 +6131,39 @@ details.entity-section .entity-report {{
         html_output += ca_cards_html
         html_output += '</div>'
         return html_output
+
+    def _render_alias_match_table_html(self, alias_match_table):
+        """Render optional alias-trigger detail table as collapsible HTML."""
+        if not alias_match_table or not alias_match_table.get("rows"):
+            return ""
+
+        rows_html = ""
+        for row in alias_match_table.get("rows", []):
+            alias_cell = f"{row.get('alias_name', 'Unknown')} [{row.get('dob_basis', 'month/year unavailable')}]"
+            company_cell = f"{row.get('company_name', 'Unknown')} ({row.get('company_number', 'N/A')})"
+            rows_html += (
+                f"<tr><td>{html.escape(alias_cell)}</td>"
+                f"<td>{html.escape(company_cell)}</td></tr>"
+            )
+
+        col1, col2 = alias_match_table.get("columns", ["Alias", "Flagged Company"])[:2]
+        title = alias_match_table.get("title", "Alias detection details")
+        return f"""
+            <details class="alias-match-details">
+                <summary>{html.escape(title)}</summary>
+                <table class="alias-match-table">
+                    <thead>
+                        <tr>
+                            <th>{html.escape(col1)}</th>
+                            <th>{html.escape(col2)}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows_html}
+                    </tbody>
+                </table>
+            </details>
+        """
 
     def _generate_grants_cross_analysis_html(self):
         """Generate cross-analysis cards for grant-specific rules only (G1, G2, G3)."""
