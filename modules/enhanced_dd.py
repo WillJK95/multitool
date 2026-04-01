@@ -25,6 +25,7 @@ from matplotlib.ticker import MaxNLocator
 from rapidfuzz.fuzz import WRatio
 
 from ..utils.financial_analyzer import FinancialAnalyzer, iXBRLParser
+from ..ui.scrollable_frame import ScrollableFrame
 from ..ui.tooltip import Tooltip
 from ..api.companies_house import (
     ch_get_data, ch_get_document_metadata, ch_download_document_content,
@@ -401,18 +402,28 @@ class EnhancedDueDiligence(InvestigationModuleBase):
     def _build_ui(self):
         self._ui_ready = False
 
-        self.notebook = ttk.Notebook(self.content_frame)
+        # Remove the base-class scroller — the notebook must sit OUTSIDE
+        # any ScrollableFrame to prevent a geometry feedback loop between
+        # the notebook's resize events and the ScrollableFrame's
+        # <Configure> handlers (which causes a C-level segfault on first
+        # module load with multiple prefilled entities).
+        self.scroller.pack_forget()
+        self.scroller.destroy()
+
+        self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
         self.config_tab = ttk.Frame(self.notebook)
         self.results_tab = ttk.Frame(self.notebook)
 
         self.notebook.add(self.config_tab, text="Configuration")
-        # Results tab is lazy-loaded: added to the notebook only when
-        # report generation completes, to avoid its Treeview participating
-        # in geometry calculations during entity prefill (which causes a
-        # C-level segfault from re-entrant update_idletasks).
+        # Results tab is lazy-loaded via _ensure_results_tab().
         self._results_tab_built = False
+
+        # Per-tab scroller for the long Configuration content.
+        self.scroller = ScrollableFrame(self.config_tab)
+        self.scroller.pack(fill=tk.BOTH, expand=True)
+        self.content_frame = self.scroller.scrollable_frame
 
         self._build_config_tab()
 
@@ -788,21 +799,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self._results_sort_reverse = False
 
     def _on_tab_changed(self, event=None):
-        """Manage outer scrollbar when switching between Configuration and Results tabs."""
+        """Handle notebook tab switching."""
         if not getattr(self, '_ui_ready', False):
             return
-        selected = self.notebook.select()
-        on_results = (selected == str(self.results_tab))
-        if on_results:
-            self.scroller.scrollbar.pack_forget()
-            self.scroller.canvas.yview_moveto(0)
-            self.scroller.canvas.configure(yscrollcommand=lambda *a: None)
-            self.scroller._disabled = True
-        else:
-            self.scroller.scrollbar.pack(side="right", fill="y")
-            self.scroller.canvas.configure(yscrollcommand=self.scroller.scrollbar.set)
-            self.scroller._disabled = False
-            self._update_scrollregion()
 
     # ------------------------------------------------------------------
     # Treeview event handlers & entity management
