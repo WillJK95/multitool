@@ -10,7 +10,6 @@ import threading
 import traceback
 import time
 import webbrowser
-import collections
 import tkinter as tk
 from io import BytesIO
 from pathlib import Path
@@ -197,75 +196,84 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Composite warning
             'composite_high_count': 3,
         }
-        
+
         self._build_ui()
 
-        # Apply prefill(s) if provided (from working set / quick launch).
-        # Fetches are deferred until the window is fully mapped to the
-        # screen (winfo_viewable), then executed one at a time, to avoid
-        # geometry re-entrancy segfaults in the ttk.Notebook.
+        # Bind the prefill to the <Visibility> event so it CANNOT fire
+        # until the window is completely drawn and mapped by the OS.
+        if self._prefill_entities or self._prefill_entity:
+            self.content_frame.bind('<Visibility>', self._on_module_visible, add='+')
+
+    # ------------------------------------------------------------------
+    # Prefill: <Visibility>-gated → serial fetch queue
+    # ------------------------------------------------------------------
+
+    def _on_module_visible(self, event=None):
+        """Fired by the OS when the module is completely drawn and idle."""
+        # Unbind immediately so this only runs once on fresh launch
+        self.content_frame.unbind('<Visibility>')
+
+        # Force Tkinter to process any lingering geometry math
+        self.update_idletasks()
+
         if self._prefill_entities:
-            self._prefill_queue = collections.deque()
-            for ent in self._prefill_entities:
-                etype = ent.get("type", "company")
-                if etype not in ("company", "charity"):
-                    continue
-                eid = str(ent.get("id", "")).strip()
-                if not eid:
-                    continue
-                self._prefill_queue.append({"type": etype, "id": eid})
-            if self._prefill_queue:
-                self._wait_viewable_then_prefill()
+            self._apply_prefill_entities()
         elif self._prefill_entity:
+            # Single entity prefill
             etype = self._prefill_entity.get("type", "company")
             eid = self._prefill_entity.get("id", "")
-            self._prefill_queue = collections.deque()
+            self.entity_type_var.set(etype)
+            self._on_entity_type_changed()
+            self.company_num_var.set(eid)
             if eid:
-                self._prefill_queue.append({"type": etype, "id": eid})
-                self._wait_viewable_then_prefill()
-            else:
-                self.entity_type_var.set(etype)
-                self._on_entity_type_changed()
+                self.fetch_entity_profile()
 
-    # ------------------------------------------------------------------
-    # Prefill: wait-for-viewable → serial fetch queue
-    # ------------------------------------------------------------------
+    def _apply_prefill_entities(self):
+        """Queue-fetch multiple prefilled entities into the EDD bulk tree."""
+        valid = []
+        for ent in self._prefill_entities:
+            etype = ent.get("type", "company")
+            if etype not in ("company", "charity"):
+                continue
+            eid = str(ent.get("id", "")).strip()
+            if not eid:
+                continue
+            valid.append({"type": etype, "id": eid})
 
-    def _wait_viewable_then_prefill(self):
-        """Poll until the OS confirms the window is drawn, then start fetches."""
-        if self.winfo_viewable():
-            self._process_next_prefill()
-        else:
-            self.after(50, self._wait_viewable_then_prefill)
+        if not valid:
+            return
+
+        self._prefill_queue = valid
+        self._process_next_prefill()
 
     def _process_next_prefill(self):
-        """Pop the next entity from the prefill queue and start its fetch."""
-        if not self._prefill_queue:
+        """Process the next entity in the prefill queue strictly sequentially."""
+        if not hasattr(self, '_prefill_queue') or not self._prefill_queue:
             return
-        ent = self._prefill_queue.popleft()
-        self._prefill_single_entity(ent)
-        self._poll_prefill_done()
+
+        ent = self._prefill_queue.pop(0)
+        self.entity_type_var.set(ent["type"])
+        self._on_entity_type_changed()
+        self.company_num_var.set(ent["id"])
+
+        # Start the fetch (this disables self.fetch_btn)
+        self.fetch_entity_profile()
+
+        # Start polling to see when this specific fetch finishes
+        self.after(200, self._poll_prefill_done)
 
     def _poll_prefill_done(self):
-        """Poll until the current fetch completes, then process the next."""
-        try:
-            state = str(self.fetch_btn.cget('state'))
-        except Exception:
+        """Poll until the current fetch finishes before processing the next."""
+        if not self.winfo_exists():
             return
-        if state == 'disabled':
-            self.after(200, self._poll_prefill_done)
-        else:
-            self._process_next_prefill()
 
-    def _prefill_single_entity(self, ent):
-        """Populate inputs and trigger fetch for one prefilled entity."""
-        try:
-            self.entity_type_var.set(ent["type"])
-            self._on_entity_type_changed()
-            self.company_num_var.set(ent["id"])
-            self.fetch_entity_profile()
-        except Exception as e:
-            log_message(f"Error prefilling entity {ent}: {e}\n{traceback.format_exc()}")
+        # The fetch thread re-enables this button in its 'finally' block
+        # after ALL data (including iXBRL) is loaded and the treeview is updated.
+        if str(self.fetch_btn.cget('state')) == 'normal':
+            # Wait 100ms for the UI to breathe, then do the next one
+            self.after(100, self._process_next_prefill)
+        else:
+            self.after(250, self._poll_prefill_done)
 
     # ------------------------------------------------------------------
     # Entity helpers
