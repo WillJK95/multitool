@@ -112,6 +112,36 @@ def get_canonical_name_key(name: str, dob_obj: dict = None) -> str:
         return name_key
 
 
+def match_officer_name_tokens(search_name: str, candidate_name: str) -> bool:
+    """
+    Check whether a candidate officer name matches a search name by token subset.
+
+    Normalises punctuation, removes common honorifics, handles hyphens and
+    "Surname, Forename" formatting, then verifies that all tokens from
+    ``search_name`` are present in ``candidate_name``.
+    """
+    if not search_name or not candidate_name:
+        return False
+
+    def _normalise(name: str) -> List[str]:
+        cleaned = str(name).lower().strip()
+        if "," in cleaned:
+            parts = cleaned.split(",", 1)
+            cleaned = f"{parts[1].strip()} {parts[0].strip()}"
+        cleaned = cleaned.replace("-", " ")
+        cleaned = re.sub(r"\b(mr|mrs|ms|miss|dr|prof)\b", " ", cleaned)
+        cleaned = re.sub(r"[^a-z0-9\s]", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned.split() if cleaned else []
+
+    search_tokens = set(_normalise(search_name))
+    candidate_tokens = set(_normalise(candidate_name))
+
+    if not search_tokens or not candidate_tokens:
+        return False
+    return search_tokens.issubset(candidate_tokens)
+
+
 def format_address_label(address_str: str, line_length: int = 25) -> str:
     """
     Format an address string for display in graph labels.

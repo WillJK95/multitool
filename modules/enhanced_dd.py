@@ -6,6 +6,7 @@ import csv
 import re
 import base64
 import html
+import urllib.parse
 import threading
 import traceback
 import time
@@ -56,7 +57,12 @@ from ..constants import (
     CHARITY_EDD_THRESHOLDS,
 )
 from .base import InvestigationModuleBase
-from ..utils.helpers import log_message, clean_company_number, format_eta
+from ..utils.helpers import (
+    log_message,
+    clean_company_number,
+    format_eta,
+    match_officer_name_tokens,
+)
 from ..utils.settings import save_recent_reports
 from ..utils.edd_visualizations import (
     generate_company_timeline,
@@ -4201,6 +4207,125 @@ details.entity-section .entity-report {{
             start_index += page_size
         
         return all_items
+
+    @staticmethod
+    def _normalise_appointments_path(raw_link):
+        """Normalise officer links to /officers/<id>/appointments API paths."""
+        if not raw_link:
+            return None
+
+        link = str(raw_link).strip()
+        if not link:
+            return None
+
+        if link.startswith("http://") or link.startswith("https://"):
+            parsed = urllib.parse.urlparse(link)
+            link = parsed.path or ""
+
+        if "/officers/" not in link:
+            return None
+
+        link = "/" + link.split("/officers/", 1)[1].lstrip("/")
+        link = "/officers/" + link[len("/"):]
+        link = "/" + link.strip("/")
+        link = re.sub(r"/+", "/", link)
+
+        if "/appointments" in link:
+            link = link.split("/appointments", 1)[0]
+        link = link.rstrip("/") + "/appointments"
+
+        return link
+
+    def _find_officer_aliases(self, officer):
+        """
+        Discover appointment links for an officer using Companies House search aliases.
+
+        Returns:
+            dict with:
+              - appointment_paths: deduplicated list of /officers/<id>/appointments
+              - matched_alias_names: names matched via search + token match
+              - dob_basis: DOB month/year basis string
+              - canonical_name: canonical officer name used for searching
+        """
+        result = {
+            "appointment_paths": [],
+            "matched_alias_names": [],
+            "dob_basis": "",
+            "canonical_name": "",
+        }
+
+        if not officer:
+            return result
+
+        canonical_name = (officer.get("name") or "").strip()
+        dob = officer.get("date_of_birth") or {}
+        dob_month = dob.get("month")
+        dob_year = dob.get("year")
+
+        result["canonical_name"] = canonical_name
+        result["dob_basis"] = (
+            f"month={int(dob_month):02d}, year={dob_year}"
+            if dob_month and dob_year
+            else "month/year unavailable"
+        )
+
+        canonical_link = self._normalise_appointments_path(
+            (officer.get("links") or {}).get("officer", {}).get("appointments")
+        )
+        if canonical_link:
+            result["appointment_paths"].append(canonical_link)
+
+        if not canonical_name or not dob_month or not dob_year:
+            result["appointment_paths"] = sorted(set(result["appointment_paths"]))
+            return result
+
+        start_index = 0
+        page_size = 100
+        seen_paths = set(result["appointment_paths"])
+        matched_aliases = set()
+        search_limit = 1000
+
+        while not self.cancel_flag.is_set():
+            encoded_query = urllib.parse.quote(canonical_name)
+            path = (
+                f"/search/officers?q={encoded_query}"
+                f"&items_per_page={page_size}&start_index={start_index}"
+            )
+            data, err = ch_get_data(self.api_key, self.ch_token_bucket, path)
+            if err:
+                log_message(f"Officer alias search failed for '{canonical_name}': {err}")
+                break
+
+            items = (data or {}).get("items") or []
+            if not items:
+                break
+
+            for candidate in items:
+                candidate_name = (candidate.get("title") or "").strip()
+                if not match_officer_name_tokens(canonical_name, candidate_name):
+                    continue
+
+                candidate_dob = candidate.get("date_of_birth") or {}
+                if candidate_dob.get("month") != dob_month or candidate_dob.get("year") != dob_year:
+                    continue
+
+                if candidate_name:
+                    matched_aliases.add(candidate_name)
+
+                appointments_path = self._normalise_appointments_path(
+                    (candidate.get("links") or {}).get("self")
+                )
+                if appointments_path and appointments_path not in seen_paths:
+                    seen_paths.add(appointments_path)
+
+            total_results = (data or {}).get("total_results", 0)
+            start_index += len(items)
+            if start_index >= total_results or start_index >= search_limit:
+                break
+
+        result["appointment_paths"] = sorted(seen_paths)
+        result["matched_alias_names"] = sorted(matched_aliases)
+        return result
     
     def _check_filing_compliance(self):
         """Check filing history for late submissions."""
@@ -4762,11 +4887,16 @@ details.entity-section .entity-report {{
             )
             
             # Get all appointments for this director
-            appointments_link = officer.get('links', {}).get('officer', {}).get('appointments')
-            if not appointments_link:
+            alias_data = self._find_officer_aliases(officer)
+            appointment_paths = alias_data.get("appointment_paths", [])
+            if not appointment_paths:
                 continue
-            
-            all_director_appointments = self._fetch_all_appointments(appointments_link)
+
+            all_director_appointments = []
+            for appointments_link in appointment_paths:
+                all_director_appointments.extend(
+                    self._fetch_all_appointments(appointments_link)
+                )
             if not all_director_appointments:
                 continue
             
@@ -4869,11 +4999,16 @@ details.entity-section .entity-report {{
             if self.cancel_flag.is_set():
                 break
             
-            appointments_link = officer.get('links', {}).get('officer', {}).get('appointments')
-            if not appointments_link:
+            alias_data = self._find_officer_aliases(officer)
+            appointment_paths = alias_data.get("appointment_paths", [])
+            if not appointment_paths:
                 continue
-            
-            all_director_appointments = self._fetch_all_appointments(appointments_link)
+
+            all_director_appointments = []
+            for appointments_link in appointment_paths:
+                all_director_appointments.extend(
+                    self._fetch_all_appointments(appointments_link)
+                )
             if not all_director_appointments:
                 continue
 
