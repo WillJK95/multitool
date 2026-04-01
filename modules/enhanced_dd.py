@@ -399,15 +399,26 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self.results_tab = ttk.Frame(self.notebook)
 
         self.notebook.add(self.config_tab, text="Configuration")
-        self.notebook.add(self.results_tab, text="Results")
+        # Results tab is lazy-loaded: added to the notebook only when
+        # report generation completes, to avoid its Treeview participating
+        # in geometry calculations during entity prefill (which causes a
+        # C-level segfault from re-entrant update_idletasks).
+        self._results_tab_built = False
 
         self._build_config_tab()
-        self._build_results_tab()
 
         # Bind AFTER all widgets are built to prevent early handler calls
         # during initial notebook display/mapping.
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         self._ui_ready = True
+
+    def _ensure_results_tab(self):
+        """Lazily build and add the Results tab to the notebook."""
+        if self._results_tab_built:
+            return
+        self.notebook.add(self.results_tab, text="Results")
+        self._build_results_tab()
+        self._results_tab_built = True
 
     def _build_config_tab(self):
         # Step 1: Entity Lookup
@@ -6584,6 +6595,7 @@ details.entity-section .entity-report {{
 
     def _populate_results_tree(self, ranked_summaries):
         """Populate the results treeview and switch to the Results tab."""
+        self._ensure_results_tab()
         # Clear existing
         for iid in self._results_tree.get_children():
             self._results_tree.delete(iid)
