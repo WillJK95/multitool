@@ -203,15 +203,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             'composite_high_count': 3,
         }
         
-        # --- Notebook with Configuration and Results tabs ---
-        self.notebook = ttk.Notebook(self.content_frame)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
-        self.config_tab = ttk.Frame(self.notebook)
-        self.results_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.config_tab, text="Configuration")
-        self.notebook.add(self.results_tab, text="Results")
-
-        # Results tab state
+        # Results window state
         self._results_data = []            # [{name, number, type, critical, elevated, moderate, positive}]
         self._last_report_path = None      # Stacked report path
         self._last_report_mode = None      # 'stacked' or 'separate'
@@ -219,9 +211,10 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         self._pending_results = None       # Built in background thread, transferred on main thread
         self._results_sort_reverse = {}    # col -> bool, tracks sort direction per column
         self._results_iid_map = {}         # treeview iid -> index in _results_data
+        self._results_window = None        # Toplevel window (singleton)
+        self.results_tree = None           # Treeview widget (created inside window)
 
         self._build_ui()
-        self._build_results_tab()
 
         # Apply prefill(s) if provided (from working set / quick launch)
         if self._prefill_entities:
@@ -386,7 +379,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
     def _build_ui(self):
         # Step 1: Entity Lookup
         self._lookup_frame = ttk.LabelFrame(
-            self.config_tab, text="Step 1: Entity Lookup", padding=10
+            self.content_frame, text="Step 1: Entity Lookup", padding=10
         )
         self._lookup_frame.pack(fill=tk.X, pady=5, padx=10)
 
@@ -473,7 +466,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         # Step 2: Fetch Filings (unified for companies and charities)
         self._upload_frame = ttk.LabelFrame(
-            self.config_tab, text="Step 2: Fetch Filings", padding=10
+            self.content_frame, text="Step 2: Fetch Filings", padding=10
         )
         upload_frame = self._upload_frame
         upload_frame.pack(fill=tk.X, pady=5, padx=10)
@@ -533,7 +526,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         # Step 3: Configure Analysis
         config_frame = ttk.LabelFrame(
-            self.config_tab, text="Step 3: Configure Analysis", padding=10
+            self.content_frame, text="Step 3: Configure Analysis", padding=10
         )
         config_frame.pack(fill=tk.X, pady=5, padx=10)
 
@@ -630,7 +623,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         
         # Step 4: Generate Report
         generate_frame = ttk.LabelFrame(
-            self.config_tab, text="Step 4: Generate Report", padding=10
+            self.content_frame, text="Step 4: Generate Report", padding=10
         )
         generate_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=10)
 
@@ -672,15 +665,60 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         )
         # Not packed by default — shown only after separate report generation
 
+        # "View Results" button — shown after report generation completes
+        self._view_results_btn = ttk.Button(
+            generate_frame, text="View Results",
+            command=self._open_results_window,
+            state='disabled',
+        )
+        self._view_results_btn.pack(pady=5)
+        Tooltip(
+            self._view_results_btn,
+            "Open a summary window showing findings counts per entity,\n"
+            "with options to sort, open reports, and send entities to\n"
+            "other modules.",
+        )
+
     # ------------------------------------------------------------------
     # Results tab
     # ------------------------------------------------------------------
 
-    def _build_results_tab(self):
-        """Build the static skeleton of the Results tab (called once from __init__)."""
+    def _open_results_window(self):
+        """Open (or raise) the results summary window. Non-modal Toplevel."""
+        # Singleton: if window already open, just raise it
+        if self._results_window is not None:
+            try:
+                self._results_window.lift()
+                self._results_window.focus_force()
+                return
+            except tk.TclError:
+                self._results_window = None
+
+        if not self._results_data:
+            messagebox.showinfo("Results", "No results to display. Generate reports first.")
+            return
+
+        win = tk.Toplevel(self.winfo_toplevel())
+        self._results_window = win
+        win.title("EDD Results Summary")
+        win.geometry("820x500")
+        win.minsize(640, 350)
+        win.transient(self.winfo_toplevel())
+        # Deliberately no grab_set() — non-modal so user can interact with main window
+
+        def _on_window_close():
+            self._results_window = None
+            self.results_tree = None
+            win.destroy()
+
+        win.protocol('WM_DELETE_WINDOW', _on_window_close)
+
+        main_frame = ttk.Frame(win, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
         # --- Top bar: Select All / Deselect All ---
-        top_bar = ttk.Frame(self.results_tab)
-        top_bar.pack(fill=tk.X, padx=10, pady=(10, 5))
+        top_bar = ttk.Frame(main_frame)
+        top_bar.pack(fill=tk.X, pady=(0, 5))
         ttk.Button(
             top_bar, text="Select All", command=self._select_all_results
         ).pack(side=tk.LEFT, padx=(0, 5))
@@ -689,8 +727,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         ).pack(side=tk.LEFT, padx=(0, 15))
 
         # --- Results Treeview ---
-        tree_frame = ttk.Frame(self.results_tab)
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        tree_frame = ttk.Frame(main_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         tree_frame.columnconfigure(0, weight=1)
         tree_frame.rowconfigure(0, weight=1)
 
@@ -738,33 +776,36 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         )
 
         # --- Bottom bar: Send to ---
-        bottom_bar = ttk.Frame(self.results_tab)
-        bottom_bar.pack(fill=tk.X, padx=10, pady=(5, 10))
+        bottom_bar = ttk.Frame(main_frame)
+        bottom_bar.pack(fill=tk.X, pady=(5, 0))
 
-        self._results_send_menu_btn = ttk.Menubutton(
+        send_menu_btn = ttk.Menubutton(
             bottom_bar, text="Send to\u2026 \u25BC", bootstyle="primary-outline"
         )
-        self._results_send_menu = tk.Menu(self._results_send_menu_btn, tearoff=0)
-        self._results_send_menu.add_command(
+        send_menu = tk.Menu(send_menu_btn, tearoff=0)
+        send_menu.add_command(
             label="Working Set", command=self._send_results_to_working_set
         )
-        self._results_send_menu.add_command(
+        send_menu.add_command(
             label="Network Analytics Workbench", command=self._send_results_to_network_analytics
         )
-        self._results_send_menu.add_command(
+        send_menu.add_command(
             label="Grants Search", command=self._send_results_to_grants_search
         )
-        self._results_send_menu_btn.configure(menu=self._results_send_menu)
-        self._results_send_menu_btn.pack(side=tk.LEFT, padx=(0, 5))
+        send_menu_btn.configure(menu=send_menu)
+        send_menu_btn.pack(side=tk.LEFT, padx=(0, 5))
         Tooltip(
-            self._results_send_menu_btn,
+            send_menu_btn,
             "Send selected entities to another module or the working set.\n"
             "If nothing is selected, all entities will be sent.",
         )
 
+        # Populate the tree with current data
+        self._populate_results_tree()
+
     def _populate_results_tree(self):
         """Populate the results treeview from self._results_data. Must run on main thread."""
-        if self.cancel_flag.is_set():
+        if self.cancel_flag.is_set() or self.results_tree is None:
             return
 
         tree = self.results_tree
@@ -790,6 +831,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
     def _sort_results_column(self, col):
         """Sort results treeview by the given column."""
+        if self.results_tree is None:
+            return
         reverse = self._results_sort_reverse.get(col, False)
 
         if col in ("critical", "elevated", "moderate", "positive"):
@@ -1780,7 +1823,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         """Build the manual input form for grant details and supplementary accounts data."""
         self.show_manual_input = tk.BooleanVar(value=False)
         manual_toggle = ttk.Checkbutton(
-            self.config_tab,
+            self.content_frame,
             text="\u25B6 Grant Details & Supplementary Accounts Data (Optional)",
             variable=self.show_manual_input,
             command=self._toggle_manual_input,
@@ -1788,7 +1831,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         manual_toggle.pack(anchor='w', padx=10, pady=(5, 0))
         self._manual_toggle_widget = manual_toggle
 
-        self.manual_input_frame = ttk.Frame(self.config_tab)
+        self.manual_input_frame = ttk.Frame(self.content_frame)
         # Will be packed/unpacked by toggle
 
         # Active entity indicator
@@ -2440,7 +2483,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
     def _get_config_frame(self):
         """Return the Step 3 config frame widget for insertion ordering."""
-        for widget in self.config_tab.winfo_children():
+        for widget in self.content_frame.winfo_children():
             if isinstance(widget, ttk.LabelFrame) and "Configure Analysis" in str(widget.cget('text')):
                 return widget
         return None
@@ -7057,13 +7100,15 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         except tk.TclError:
             return  # Widget was destroyed
 
-        # Transfer pending results to instance state and populate UI
+        # Transfer pending results to instance state
         pending = getattr(self, '_pending_results', None)
         if pending:
             self._results_data = pending
             self._pending_results = None
-            self._populate_results_tree()
+
+            # Enable the View Results button and auto-open the window
             try:
-                self.notebook.select(self.results_tab)
+                self._view_results_btn.config(state='normal')
             except tk.TclError:
                 pass
+            self._open_results_window()
