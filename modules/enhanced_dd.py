@@ -792,6 +792,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         send_menu.add_command(
             label="Grants Search", command=self._send_results_to_grants_search
         )
+        send_menu.add_command(
+            label="UBO Tracer", command=self._send_results_to_ubo_tracer
+        )
         send_menu_btn.configure(menu=send_menu)
         send_menu_btn.pack(side=tk.LEFT, padx=(0, 5))
         Tooltip(
@@ -985,6 +988,44 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             for r in entities
         ]
         self.app.show_grants_investigation(prefill_entities=ws_entities)
+
+    def _send_results_to_ubo_tracer(self):
+        """Send selected companies to UBO Tracer (companies only)."""
+        entities = self._get_selected_result_entities()
+        if not entities:
+            return
+
+        companies = [r for r in entities if r['type'] == 'company']
+        charities = [r for r in entities if r['type'] != 'company']
+
+        if charities and not companies:
+            messagebox.showinfo(
+                "UBO Tracer",
+                "UBO Tracer supports companies only. No companies were selected.",
+            )
+            return
+
+        if charities:
+            ok = messagebox.askyesno(
+                "UBO Tracer",
+                f"{len(companies)} companies and {len(charities)} charities selected. "
+                f"UBO Tracer supports companies only. Send {len(companies)} companies?",
+            )
+            if not ok:
+                return
+
+        if len(companies) == 1:
+            c = companies[0]
+            self.app.show_ubo_investigation(
+                prefill_company=c['number'],
+                prefill_company_name=c['name'],
+            )
+        else:
+            ws_entities = [
+                {"name": r['name'], "company_number": r['number'], "active": True, "entity_type": "company"}
+                for r in companies
+            ]
+            self.app.show_ubo_investigation(prefill_entities=ws_entities)
 
     # ------------------------------------------------------------------
     # Treeview event handlers & entity management
@@ -6422,7 +6463,7 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         # Fixed axis maximums — update if new checks are added
         _MAX_GOV = 20   # ~9 check methods, up to 20 governance findings
         _MAX_FIN = 20   # ~13 core financial findings + 8 CA rules
-        _MAX_GRA = 3    # G1, G2, G3 cross-analysis rules only
+        _MAX_GRA = 20   # aligned with other domains for visual consistency
 
         financial_rule_ids = {'F1', 'F2', 'F3', 'F4', 'ROE', 'ATR', 'PMG', 'SCB'}
         grant_rule_ids = {'G1', 'G2', 'G3'}
