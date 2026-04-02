@@ -203,6 +203,17 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             'composite_high_count': 3,
         }
         
+        # Results window state
+        self._results_data = []            # [{name, number, type, critical, elevated, moderate, positive}]
+        self._last_report_path = None      # Stacked report path
+        self._last_report_mode = None      # 'stacked' or 'separate'
+        self._entity_report_paths = {}     # number -> file path (separate mode)
+        self._pending_results = None       # Built in background thread, transferred on main thread
+        self._results_sort_reverse = {}    # col -> bool, tracks sort direction per column
+        self._results_iid_map = {}         # treeview iid -> index in _results_data
+        self._results_window = None        # Toplevel window (singleton)
+        self.results_tree = None           # Treeview widget (created inside window)
+
         self._build_ui()
 
         # Apply prefill(s) if provided (from working set / quick launch)
@@ -653,6 +664,368 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             command=self._open_config_folder,
         )
         # Not packed by default — shown only after separate report generation
+
+        # "View Results" button — shown after report generation completes
+        self._view_results_btn = ttk.Button(
+            generate_frame, text="View Results",
+            command=self._open_results_window,
+            state='disabled',
+        )
+        self._view_results_btn.pack(pady=5)
+        Tooltip(
+            self._view_results_btn,
+            "Open a summary window showing findings counts per entity,\n"
+            "with options to sort, open reports, and send entities to\n"
+            "other modules.",
+        )
+
+    # ------------------------------------------------------------------
+    # Results tab
+    # ------------------------------------------------------------------
+
+    def _open_results_window(self):
+        """Open (or raise) the results summary window. Non-modal Toplevel."""
+        # Singleton: if window already open, just raise it
+        if self._results_window is not None:
+            try:
+                self._results_window.lift()
+                self._results_window.focus_force()
+                return
+            except tk.TclError:
+                self._results_window = None
+
+        if not self._results_data:
+            messagebox.showinfo("Results", "No results to display. Generate reports first.")
+            return
+
+        win = tk.Toplevel(self.winfo_toplevel())
+        self._results_window = win
+        win.title("EDD Results Summary")
+        win.geometry("820x500")
+        win.minsize(640, 350)
+        win.transient(self.winfo_toplevel())
+        # Deliberately no grab_set() — non-modal so user can interact with main window
+
+        def _on_window_close():
+            self._results_window = None
+            self.results_tree = None
+            win.destroy()
+
+        win.protocol('WM_DELETE_WINDOW', _on_window_close)
+
+        main_frame = ttk.Frame(win, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # --- Top bar: Select All / Deselect All ---
+        top_bar = ttk.Frame(main_frame)
+        top_bar.pack(fill=tk.X, pady=(0, 5))
+        ttk.Button(
+            top_bar, text="Select All", command=self._select_all_results
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(
+            top_bar, text="Deselect All", command=self._deselect_all_results
+        ).pack(side=tk.LEFT, padx=(0, 15))
+
+        # --- Results Treeview ---
+        tree_frame = ttk.Frame(main_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+
+        cols = ("name", "number", "type", "critical", "elevated", "moderate", "positive")
+        self.results_tree = ttk.Treeview(
+            tree_frame, columns=cols, show="headings",
+            selectmode="extended", height=16,
+        )
+        self.results_tree.heading("name", text="Name", anchor=tk.W,
+                                  command=lambda: self._sort_results_column("name"))
+        self.results_tree.heading("number", text="Number", anchor=tk.W,
+                                  command=lambda: self._sort_results_column("number"))
+        self.results_tree.heading("type", text="Type", anchor=tk.W,
+                                  command=lambda: self._sort_results_column("type"))
+        self.results_tree.heading("critical", text="Critical", anchor=tk.CENTER,
+                                  command=lambda: self._sort_results_column("critical"))
+        self.results_tree.heading("elevated", text="Elevated", anchor=tk.CENTER,
+                                  command=lambda: self._sort_results_column("elevated"))
+        self.results_tree.heading("moderate", text="Moderate", anchor=tk.CENTER,
+                                  command=lambda: self._sort_results_column("moderate"))
+        self.results_tree.heading("positive", text="Positive", anchor=tk.CENTER,
+                                  command=lambda: self._sort_results_column("positive"))
+
+        self.results_tree.column("name", width=250, minwidth=120)
+        self.results_tree.column("number", width=100, minwidth=70)
+        self.results_tree.column("type", width=80, minwidth=60)
+        self.results_tree.column("critical", width=70, minwidth=50, anchor=tk.CENTER)
+        self.results_tree.column("elevated", width=70, minwidth=50, anchor=tk.CENTER)
+        self.results_tree.column("moderate", width=70, minwidth=50, anchor=tk.CENTER)
+        self.results_tree.column("positive", width=70, minwidth=50, anchor=tk.CENTER)
+
+        yscroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.results_tree.yview)
+        xscroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.results_tree.xview)
+        self.results_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+
+        self.results_tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+
+        # Bind events
+        self.results_tree.bind("<Double-1>", self._on_result_double_click)
+        self.results_tree.bind("<<TreeviewSelect>>", self._on_results_selection_changed)
+        self.results_tree.bind(
+            "<Button-1>", lambda e: self.app._toggle_tree_selection(e, self.results_tree)
+        )
+
+        # --- Bottom bar: Send to ---
+        bottom_bar = ttk.Frame(main_frame)
+        bottom_bar.pack(fill=tk.X, pady=(5, 0))
+
+        send_menu_btn = ttk.Menubutton(
+            bottom_bar, text="Send to\u2026 \u25BC", bootstyle="primary-outline"
+        )
+        send_menu = tk.Menu(send_menu_btn, tearoff=0)
+        send_menu.add_command(
+            label="Working Set", command=self._send_results_to_working_set
+        )
+        send_menu.add_command(
+            label="Network Analytics Workbench", command=self._send_results_to_network_analytics
+        )
+        send_menu.add_command(
+            label="Grants Search", command=self._send_results_to_grants_search
+        )
+        send_menu.add_command(
+            label="UBO Tracer", command=self._send_results_to_ubo_tracer
+        )
+        send_menu_btn.configure(menu=send_menu)
+        send_menu_btn.pack(side=tk.LEFT, padx=(0, 5))
+        Tooltip(
+            send_menu_btn,
+            "Send selected entities to another module or the working set.\n"
+            "If nothing is selected, all entities will be sent.",
+        )
+
+        # Populate the tree with current data
+        self._populate_results_tree()
+
+    def _populate_results_tree(self):
+        """Populate the results treeview from self._results_data. Must run on main thread."""
+        if self.cancel_flag.is_set() or self.results_tree is None:
+            return
+
+        tree = self.results_tree
+        tree.delete(*tree.get_children())
+        self._results_iid_map.clear()
+
+        # Apply default sort: critical desc, elevated desc, moderate desc, positive asc, name alpha
+        self._results_data.sort(
+            key=lambda r: (-r['critical'], -r['elevated'], -r['moderate'], r['positive'], r['name'].lower())
+        )
+
+        for idx, row in enumerate(self._results_data):
+            iid = tree.insert(
+                "", "end",
+                values=(
+                    row['name'], row['number'],
+                    row['type'].capitalize(),
+                    row['critical'], row['elevated'],
+                    row['moderate'], row['positive'],
+                ),
+            )
+            self._results_iid_map[iid] = idx
+
+    def _sort_results_column(self, col):
+        """Sort results treeview by the given column."""
+        if self.results_tree is None:
+            return
+        reverse = self._results_sort_reverse.get(col, False)
+
+        if col in ("critical", "elevated", "moderate", "positive"):
+            self._results_data.sort(key=lambda r: r[col], reverse=not reverse)
+        else:
+            self._results_data.sort(key=lambda r: str(r.get(col, "")).lower(), reverse=reverse)
+
+        # Toggle direction for next click
+        self._results_sort_reverse[col] = not reverse
+
+        # Repopulate tree without re-sorting by default
+        tree = self.results_tree
+        tree.delete(*tree.get_children())
+        self._results_iid_map.clear()
+
+        for idx, row in enumerate(self._results_data):
+            iid = tree.insert(
+                "", "end",
+                values=(
+                    row['name'], row['number'],
+                    row['type'].capitalize(),
+                    row['critical'], row['elevated'],
+                    row['moderate'], row['positive'],
+                ),
+            )
+            self._results_iid_map[iid] = idx
+
+    def _on_result_double_click(self, event):
+        """Open the report for the double-clicked entity."""
+        iid = self.results_tree.identify_row(event.y)
+        if not iid or iid not in self._results_iid_map:
+            return
+        idx = self._results_iid_map[iid]
+        row = self._results_data[idx]
+        number = row['number']
+
+        if self._last_report_mode == 'separate':
+            path = self._entity_report_paths.get(number)
+            if path and os.path.exists(path):
+                webbrowser.open(f"file://{path}")
+        elif self._last_report_mode == 'stacked':
+            if self._last_report_path and os.path.exists(self._last_report_path):
+                webbrowser.open(f"file://{self._last_report_path}#entity-{number}")
+
+    def _select_all_results(self):
+        """Select all items in the results treeview."""
+        all_items = self.results_tree.get_children()
+        if all_items:
+            self.results_tree.selection_set(all_items)
+
+    def _deselect_all_results(self):
+        """Clear selection in the results treeview."""
+        self.results_tree.selection_remove(self.results_tree.selection())
+
+    def _on_results_selection_changed(self, event=None):
+        """Update Send to menu state based on current selection."""
+        pass  # All menu items always enabled for EDD results (all are companies/charities)
+
+    def _get_selected_result_entities(self):
+        """Return list of result dicts for selected items, or all if none selected."""
+        sel = self.results_tree.selection()
+        if not sel:
+            return list(self._results_data)
+        results = []
+        for iid in sel:
+            idx = self._results_iid_map.get(iid)
+            if idx is not None and idx < len(self._results_data):
+                results.append(self._results_data[idx])
+        return results
+
+    def _send_results_to_working_set(self):
+        """Append selected entities to the global working set (no duplicates)."""
+        entities = self._get_selected_result_entities()
+        if not entities:
+            return
+        if self.app_state.ubo_working_set is None:
+            self.app_state.ubo_working_set = []
+        existing = set()
+        for ent in self.app_state.ubo_working_set:
+            key = (ent.get("name", ""), ent.get("company_number", ""), ent.get("entity_type", ""))
+            existing.add(key)
+        added = 0
+        for row in entities:
+            ws_dict = {
+                "name": row['name'],
+                "company_number": row['number'],
+                "active": True,
+                "entity_type": row['type'],
+            }
+            key = (ws_dict["name"], ws_dict["company_number"], ws_dict["entity_type"])
+            if key not in existing:
+                self.app_state.ubo_working_set.append(ws_dict)
+                existing.add(key)
+                added += 1
+        self.app._refresh_working_set_indicator()
+        try:
+            self.app._refresh_home_working_set()
+        except Exception:
+            pass
+        if added:
+            messagebox.showinfo("Working Set", f"Added {added} entities to working set.")
+
+    def _send_results_to_network_analytics(self):
+        """Build graph data for selected entities and navigate to Network Analytics."""
+        entities = self._get_selected_result_entities()
+        if not entities:
+            return
+
+        ws_entities = [
+            {"name": r['name'], "company_number": r['number'], "active": True, "entity_type": r['type']}
+            for r in entities
+        ]
+        entity_count = len(ws_entities)
+
+        outer = self
+
+        class _ProgressProxy:
+            def configure(self, **kw):
+                txt = kw.get("text", "")
+                if txt:
+                    outer.safe_ui_call(outer.status_var.set, txt)
+
+        def _build():
+            try:
+                csv_path = self.app._build_ws_graph_csv(ws_entities, _ProgressProxy())
+            except Exception as e:
+                log_message(f"Network send failed: {e}")
+                csv_path = None
+
+            def _navigate():
+                if csv_path:
+                    self.app._navigate_network_with_csv(
+                        csv_path,
+                        source_label=f"Working set: {entity_count} entities from EDD Results",
+                    )
+                else:
+                    messagebox.showwarning("Network Analytics", "No graph data could be generated.")
+
+            self.app.after(0, _navigate)
+
+        threading.Thread(target=_build, daemon=True).start()
+
+    def _send_results_to_grants_search(self):
+        """Send selected entities to Grants Search."""
+        entities = self._get_selected_result_entities()
+        if not entities:
+            return
+        ws_entities = [
+            {"name": r['name'], "company_number": r['number'], "active": True, "entity_type": r['type']}
+            for r in entities
+        ]
+        self.app.show_grants_investigation(prefill_entities=ws_entities)
+
+    def _send_results_to_ubo_tracer(self):
+        """Send selected companies to UBO Tracer (companies only)."""
+        entities = self._get_selected_result_entities()
+        if not entities:
+            return
+
+        companies = [r for r in entities if r['type'] == 'company']
+        charities = [r for r in entities if r['type'] != 'company']
+
+        if charities and not companies:
+            messagebox.showinfo(
+                "UBO Tracer",
+                "UBO Tracer supports companies only. No companies were selected.",
+            )
+            return
+
+        if charities:
+            ok = messagebox.askyesno(
+                "UBO Tracer",
+                f"{len(companies)} companies and {len(charities)} charities selected. "
+                f"UBO Tracer supports companies only. Send {len(companies)} companies?",
+            )
+            if not ok:
+                return
+
+        if len(companies) == 1:
+            c = companies[0]
+            self.app.show_ubo_investigation(
+                prefill_company=c['number'],
+                prefill_company_name=c['name'],
+            )
+        else:
+            ws_entities = [
+                {"name": r['name'], "company_number": r['number'], "active": True, "entity_type": "company"}
+                for r in companies
+            ]
+            self.app.show_ubo_investigation(prefill_entities=ws_entities)
 
     # ------------------------------------------------------------------
     # Treeview event handlers & entity management
@@ -2931,10 +3304,32 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
         self._continue_report_generation(True)
 
+    def _count_findings(self, findings):
+        """Count severity levels in findings list, including cross-analysis results."""
+        counts = {'critical': 0, 'elevated': 0, 'moderate': 0, 'positive': 0}
+        for f in findings:
+            sev = f.get('severity', '')
+            if sev == 'Critical':
+                counts['critical'] += 1
+            elif sev == 'Elevated':
+                counts['elevated'] += 1
+            elif sev == 'Moderate':
+                counts['moderate'] += 1
+            elif sev == 'Positive':
+                counts['positive'] += 1
+        ca_report = getattr(self, '_cross_analysis_report', None)
+        if ca_report:
+            for r in ca_report.results:
+                if r.unified_severity == 'Elevated':
+                    counts['elevated'] += 1
+                elif r.unified_severity == 'Moderate':
+                    counts['moderate'] += 1
+        return counts
+
     def _generate_bulk_report_thread(self):
         """Generate reports for all entities."""
         report_mode = self._report_mode_var.get()  # 'stacked' or 'separate'
-        entity_reports = []  # List of (entity, html_content)
+        entity_reports = []  # List of (entity, html_content, findings_summary)
 
         try:
             total = len(self._entities)
@@ -2969,12 +3364,13 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 self._payment_mechanism = entity.get('payment_mechanism', 'Unknown')
 
                 if entity['type'] == 'company':
-                    html = self._generate_single_company_report()
+                    result = self._generate_single_company_report()
                 else:
-                    html = self._generate_single_charity_report()
+                    result = self._generate_single_charity_report()
 
-                if html:
-                    entity_reports.append((entity, html))
+                if result and result[0]:
+                    report_html, summary = result
+                    entity_reports.append((entity, report_html, summary))
                 else:
                     error_count += 1
 
@@ -2996,10 +3392,27 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 self._set_phase_status("No reports were generated.")
                 return
 
+            # Store report mode for Results tab double-click navigation
+            self._last_report_mode = report_mode
+
             if report_mode == 'separate':
                 self._save_separate_reports(entity_reports)
             else:
                 self._save_stacked_report(entity_reports)
+
+            # Build pending results for the Results tab (pure Python, no UI calls)
+            pending_results = []
+            for entity, html_content, summary in entity_reports:
+                pending_results.append({
+                    'name': entity['name'],
+                    'number': entity['number'],
+                    'type': entity['type'],
+                    'critical': summary['critical'] if summary else 0,
+                    'elevated': summary['elevated'] if summary else 0,
+                    'moderate': summary['moderate'] if summary else 0,
+                    'positive': summary['positive'] if summary else 0,
+                })
+            self._pending_results = pending_results  # Atomic assignment
 
         except Exception as e:
             log_message(f"Error generating bulk report: {e}\n{traceback.format_exc()}")
@@ -3149,13 +3562,16 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Generate positive findings (after all other checks)
             findings.extend(self._generate_positive_findings(findings))
 
+            # Count findings by severity (including cross-analysis)
+            summary = self._count_findings(findings)
+
             # Generate report HTML
             self._set_phase_status("Generating report...")
-            return self._build_report_html(findings)
+            return (self._build_report_html(findings), summary)
 
         except Exception as e:
             log_message(f"Error generating company report: {e}\n{traceback.format_exc()}")
-            return None
+            return (None, None)
     # --- Charity Report Generation ---
 
     def _generate_single_charity_report(self):
@@ -3291,13 +3707,16 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 except Exception as e:
                     log_message(f"Error running cross-analysis for charity: {e}")
 
+            # Count findings by severity (including cross-analysis)
+            summary = self._count_findings(findings)
+
             # Generate report HTML
             self._set_phase_status("Generating report...")
-            return self._build_charity_report_html(findings)
+            return (self._build_charity_report_html(findings), summary)
 
         except Exception as e:
             log_message(f"Error generating charity report: {e}\n{traceback.format_exc()}")
-            return None
+            return (None, None)
 
     def _ensure_charity_financial_fields(self):
         """Normalise optional charity financial fields so checks can run pre auto-fetch."""
@@ -3316,7 +3735,8 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
     def _save_separate_reports(self, entity_reports):
         """Save each entity's report as a separate HTML file."""
-        for entity, html_content in entity_reports:
+        self._entity_report_paths = {}
+        for entity, html_content, _summary in entity_reports:
             etype = entity['type']
             number = entity['number']
             name = entity['name']
@@ -3333,10 +3753,13 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(html_content)
 
+            real_path = os.path.realpath(filename)
+            self._entity_report_paths[number] = real_path
+
             # Record in app_state
             self.app_state.recent_edd_reports.insert(0, {
                 "name": name,
-                "path": os.path.realpath(filename),
+                "path": real_path,
                 "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
             })
 
@@ -3355,7 +3778,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         """Combine entity reports into a single stacked HTML and open in browser."""
         if len(entity_reports) == 1:
             # Single entity — no collapsible wrapper
-            entity, html_content = entity_reports[0]
+            entity, html_content, _summary = entity_reports[0]
             filename = os.path.join(
                 CONFIG_DIR,
                 f"DD_Report_{entity['number']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
@@ -3365,7 +3788,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
         else:
             # Multiple entities — extract body content and wrap in <details>
             body_sections = []
-            for entity, html_content in entity_reports:
+            for entity, html_content, _summary in entity_reports:
                 # Extract content between <body> and </body>
                 body_start = html_content.find('<body')
                 body_end = html_content.find('</body>')
@@ -3379,8 +3802,9 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 etype_label = 'Company' if entity['type'] == 'company' else 'Charity'
                 esc_name = html.escape(entity['name'])
                 esc_num = html.escape(entity['number'])
+                anchor_id = f"entity-{html.escape(entity['number'])}"
                 body_sections.append(
-                    f'<details class="entity-section">\n'
+                    f'<details class="entity-section" id="{anchor_id}">\n'
                     f'<summary>{esc_name} ({esc_num}) \u2014 {etype_label}</summary>\n'
                     f'<div class="entity-report">\n{inner}\n</div>\n'
                     f'</details>'
@@ -3447,6 +3871,9 @@ details.entity-section .entity-report {{
 <p>Generated: {timestamp} &middot; {n} entities analysed</p>
 </div>
 {''.join(body_sections)}
+<script>
+if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.open=true;}}
+</script>
 </body>
 </html>"""
             filename = os.path.join(
@@ -3456,17 +3883,20 @@ details.entity-section .entity-report {{
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(combined_html)
 
+        # Store path for Results tab double-click navigation
+        self._last_report_path = os.path.realpath(filename)
+
         # Record
         self.app_state.recent_edd_reports.insert(0, {
             "name": f"Bulk Report ({len(entity_reports)} entities)" if len(entity_reports) > 1 else entity_reports[0][0]['name'],
-            "path": os.path.realpath(filename),
+            "path": self._last_report_path,
             "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
         })
         self.app_state.recent_edd_reports = self.app_state.recent_edd_reports[:10]
         save_recent_reports(self.app_state.recent_edd_reports)
 
         self._set_phase_status("Report generated! Opening in browser...")
-        webbrowser.open(f"file://{os.path.realpath(filename)}")
+        webbrowser.open(f"file://{self._last_report_path}")
 
     def _build_charity_report_html(self, findings):
         """Generate the full HTML report for a charity."""
@@ -6033,7 +6463,7 @@ details.entity-section .entity-report {{
         # Fixed axis maximums — update if new checks are added
         _MAX_GOV = 20   # ~9 check methods, up to 20 governance findings
         _MAX_FIN = 20   # ~13 core financial findings + 8 CA rules
-        _MAX_GRA = 3    # G1, G2, G3 cross-analysis rules only
+        _MAX_GRA = 20   # aligned with other domains for visual consistency
 
         financial_rule_ids = {'F1', 'F2', 'F3', 'F4', 'ROE', 'ATR', 'PMG', 'SCB'}
         grant_rule_ids = {'G1', 'G2', 'G3'}
@@ -6703,9 +7133,23 @@ details.entity-section .entity-report {{
     
 
     def _finish_report_generation(self):
-        """Re-enable UI after report generation completes or fails."""
+        """Re-enable UI after report generation completes or fails. Runs on main thread."""
+        if self.cancel_flag.is_set():
+            return
         try:
             self.generate_btn.config(state='normal')
         except tk.TclError:
-            # Widget was destroyed
-            pass
+            return  # Widget was destroyed
+
+        # Transfer pending results to instance state
+        pending = getattr(self, '_pending_results', None)
+        if pending:
+            self._results_data = pending
+            self._pending_results = None
+
+            # Enable the View Results button and auto-open the window
+            try:
+                self._view_results_btn.config(state='normal')
+            except tk.TclError:
+                pass
+            self._open_results_window()
