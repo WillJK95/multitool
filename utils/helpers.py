@@ -271,3 +271,25 @@ def format_eta(elapsed_sec: float, processed: int, total: int,
     low = max(1, round(minutes))
     high = low + 1
     return f"~{low}-{high} minutes"
+
+
+def match_officer_name_tokens(search_name: str, officer_title: str) -> bool:
+    """
+    Token-based name matching for CH officer search results.
+
+    Returns True if either name's tokens are a subset of the other
+    (after cleaning titles, punctuation, and hyphens).  This ensures
+    that searching "sacha lord" matches "sacha john edward lord" *and*
+    vice-versa.
+    """
+    # Normalise both sides identically: remove honorifics/punctuation,
+    # replace hyphens with spaces so "lord-marchionne" matches "lord marchionne"
+    def _clean(text):
+        text = re.sub(
+            r"\b(mr|mrs|ms|miss|dr|prof)\b|[.,]", "", text.lower()
+        ).strip()
+        return set(text.replace("-", " ").split())
+
+    search_tokens = _clean(search_name)
+    officer_tokens = _clean(officer_title)
+    return search_tokens.issubset(officer_tokens) or officer_tokens.issubset(search_tokens)
