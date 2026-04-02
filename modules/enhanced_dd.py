@@ -4913,32 +4913,36 @@ details.entity-section .entity-report {{
                     items_per_page=15,
                 )
                 if data and data.get('items'):
-                    # Pass 1: filing type codes (most reliable)
+                    # Pass 1: filing type codes — scan all filings first
+                    saw_ds01 = False
+                    saw_compulsory = False
                     for filing in data['items']:
                         ftype = filing.get('type', '').upper()
-                        if ftype.startswith('GAZ2') or ftype == 'DISS40':
-                            return False, "Compulsory Strike-Off"
                         if ftype.startswith('DS01'):
-                            return True, "Voluntary Strike-Off"
+                            saw_ds01 = True
+                        elif ftype.startswith('GAZ2') or ftype == 'DISS40':
+                            saw_compulsory = True
+                    # DS01 takes priority — company may have received a
+                    # compulsory notice (GAZ2) but eventually been
+                    # voluntarily struck off (DS01)
+                    if saw_ds01:
+                        return True, "Voluntary Strike-Off"
+                    if saw_compulsory:
+                        return False, "Compulsory Strike-Off"
 
-                    # Pass 2: description text for strike-off keywords
+                    # Pass 2: description text (require "dissolved" to
+                    # confirm the strike-off actually completed, not just
+                    # a notice)
                     for filing in data['items']:
                         desc = filing.get('description', '').lower()
-                        if 'strike-off' in desc or 'strike off' in desc:
-                            if 'voluntary' in desc:
-                                return True, "Voluntary Strike-Off"
-                            if 'compulsory' in desc:
-                                return False, "Compulsory Strike-Off"
+                        if 'dissolved' in desc:
+                            if 'strike-off' in desc or 'strike off' in desc:
+                                if 'voluntary' in desc:
+                                    return True, "Voluntary Strike-Off"
+                                if 'compulsory' in desc:
+                                    return False, "Compulsory Strike-Off"
 
-                    # Pass 3: catch "dissolved via compulsory strike-off"
-                    # or similar where "compulsory" appears without
-                    # the exact "strike-off" phrasing
-                    for filing in data['items']:
-                        desc = filing.get('description', '').lower()
-                        if 'compulsory' in desc:
-                            return False, "Compulsory Strike-Off"
-
-                    # No strike-off filings found → can't confirm benign
+                    # No definitive strike-off type found
                     return False, "Dissolved"
 
             return False, "Unknown"
@@ -5185,8 +5189,6 @@ details.entity-section .entity-report {{
 
         for entry in all_data:
             if entry['officer_original_name'] not in phoenix_officers:
-                continue
-            if entry['is_benign']:
                 continue
             if entry['company_number'] == current_company_number:
                 continue
