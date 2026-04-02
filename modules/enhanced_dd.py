@@ -4913,6 +4913,15 @@ details.entity-section .entity-report {{
                     items_per_page=15,
                 )
                 if data and data.get('items'):
+                    # Pass 1: filing type codes (most reliable)
+                    for filing in data['items']:
+                        ftype = filing.get('type', '').upper()
+                        if ftype.startswith('GAZ2') or ftype == 'DISS40':
+                            return False, "Compulsory Strike-Off"
+                        if ftype.startswith('DS01'):
+                            return True, "Voluntary Strike-Off"
+
+                    # Pass 2: description text for strike-off keywords
                     for filing in data['items']:
                         desc = filing.get('description', '').lower()
                         if 'strike-off' in desc or 'strike off' in desc:
@@ -4920,6 +4929,15 @@ details.entity-section .entity-report {{
                                 return True, "Voluntary Strike-Off"
                             if 'compulsory' in desc:
                                 return False, "Compulsory Strike-Off"
+
+                    # Pass 3: catch "dissolved via compulsory strike-off"
+                    # or similar where "compulsory" appears without
+                    # the exact "strike-off" phrasing
+                    for filing in data['items']:
+                        desc = filing.get('description', '').lower()
+                        if 'compulsory' in desc:
+                            return False, "Compulsory Strike-Off"
+
                     # No strike-off filings found → can't confirm benign
                     return False, "Dissolved"
 
@@ -5059,7 +5077,7 @@ details.entity-section .entity-report {{
                     details_rows.append((
                         html.escape(display_name),
                         dob_str,
-                        html.escape(entry['company_name']),
+                        f"{html.escape(entry['company_name'])} ({html.escape(entry['company_number'])})",
                         html.escape(entry['insolvency_type']),
                     ))
 
