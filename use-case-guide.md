@@ -10,13 +10,11 @@ Every button name and field label in **bold** matches the actual interface.
 
 **The problem:** Westborough Metropolitan Borough Council wants to screen staff against supplier officers to catch undisclosed conflicts — the same logic as NFI, but on demand rather than every two years.
 
-**The workflow has two entry points depending on what data you have:**
+**The workflow:**
 
-**Option A** — no supplier list to hand: Use **Contracts Finder** → search "Westborough Metropolitan Borough Council", enrich suppliers with **Fetch Officers/Directors**, **Fetch PSCs**, and **Fetch Registered Address**, then **Export Graph Data**.
+Use **Bulk Entity Search** → upload the supplier CSV, enrich with **Fetch Officers/Directors**, **Fetch PSCs**, and **Fetch Registered Address**, then **Export Graph Data (CSV)**.
 
-**Option B** — Finance has provided a supplier list: Use **Bulk Entity Search** → upload the supplier CSV, enrich with the same officer/PSC/address fields, then **Export Graph Data (CSV)**.
-
-**Both routes converge in the Network Analytics Workbench:**
+Then continue in the Network Analytics Workbench:
 
 1. In the **Data Converter** tab, load your HR staff list. Set Entity Type to **Person**, map the **Full Name** column, and add Home Postcode as a **Linked Attribute**. Generate as **Create Graph File (Nodes & Links)**.
 2. In the **Network Analytics** tab, use **Add File(s)...** to load both the supplier graph and the staff graph.
@@ -65,9 +63,9 @@ Every button name and field label in **bold** matches the actual interface.
 
 **The workflow:**
 
-1. **Contracts Finder** → search "Northern Transport Authority", enrich all suppliers, **Export Graph Data**. Also check historical contracts — bid rotation (where the same three companies take turns winning) leaves a trail.
+1. **Bulk Entity Search** → ingest the three bidders plus known subcontractors, enrich all entities, **Export Graph Data (CSV)**.
 2. **UBO Tracer** → trace each of the three suspect companies through their ownership layers. This is where cartel structures hide. Follow the PSC chain upward through any holding companies.
-3. **Network Analytics Workbench** → load Contracts Finder and UBO Tracer graph data. **Scan for Duplicates**, **Scan for Inferred Links**. Run **Within a single entity list** on the three suspects with a maximum of 5 hops.
+3. **Network Analytics Workbench** → load Bulk Entity Search and UBO Tracer graph data. **Scan for Duplicates**, **Scan for Inferred Links**. Run **Within a single entity list** on the three suspects with a maximum of 5 hops.
 
 **What this finds:** *Pennine Highways Ltd and Northern Road Services Ltd both trace back through intermediate holding companies to the same ultimate parent: Baltic Ventures Holdings BV (Netherlands). CrossCountry Surfacing Ltd shares a registered address with Northern Road Services.* Three "competitors" — two with the same offshore parent, two sharing an address. The competition was illusory.
 

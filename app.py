@@ -202,9 +202,6 @@ class App(tk.Tk):
         self._add_sidebar_button(sb, "Director Search",
                                  "director_search", "primary-outline",
                                  self.show_director_investigation)
-        self._add_sidebar_button(sb, "Contracts Finder",
-                                 "contracts_finder", "primary-outline",
-                                 self.show_contracts_finder)
         self._add_sidebar_button(sb, "UBO Tracer",
                                  "ubo_tracer", "primary-outline",
                                  self.show_ubo_investigation)
@@ -271,7 +268,6 @@ class App(tk.Tk):
         state_map = {
             "bulk_entity_search": unified,
             "director_search": ch,
-            "contracts_finder": ch,
             "ubo_tracer": ch,
             "edd": ch,
         }
@@ -1363,21 +1359,6 @@ class App(tk.Tk):
         )
         self._home_gn_test_btn.pack(anchor="w")
 
-        # --- Contracts Finder panel ---
-        cf_panel = ttk.LabelFrame(zone, text="Contracts Finder", padding=8)
-        cf_panel.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
-
-        ttk.Label(cf_panel, text="No key required", font=("Segoe UI", 9),
-                  foreground="gray").pack(anchor="w")
-        self._home_cf_conn_lbl = ttk.Label(cf_panel, text="", font=("Segoe UI", 9))
-        self._home_cf_conn_lbl.pack(anchor="w")
-
-        self._home_cf_test_btn = ttk.Button(
-            cf_panel, text="Test connection", bootstyle="link",
-            command=lambda: self._test_single_api("contracts_finder")
-        )
-        self._home_cf_test_btn.pack(anchor="w")
-
         # Initial display
         self._update_home_status_display()
 
@@ -1425,9 +1406,6 @@ class App(tk.Tk):
             ct, cc = _conn_text(statuses.get("grantnav", "unknown"))
             self._home_gn_conn_lbl.configure(text=ct, foreground=cc)
 
-            # Contracts Finder
-            ct, cc = _conn_text(statuses.get("contracts_finder", "unknown"))
-            self._home_cf_conn_lbl.configure(text=ct, foreground=cc)
         except tk.TclError:
             pass  # Widgets destroyed during navigation
 
@@ -1437,7 +1415,6 @@ class App(tk.Tk):
             "companies_house": "_home_ch_test_btn",
             "charity_commission": "_home_cc_test_btn",
             "grantnav": "_home_gn_test_btn",
-            "contracts_finder": "_home_cf_test_btn",
         }
         btn_attr = btn_map.get(api_name)
         btn = getattr(self, btn_attr, None) if btn_attr else None
@@ -1985,7 +1962,6 @@ class App(tk.Tk):
             'companies_house': 'unknown',
             'charity_commission': 'unknown',
             'grantnav': 'unknown',
-            'contracts_finder': 'unknown'  # <--- Added new key
         }
         
         # Test Companies House (only if key exists)
@@ -2029,16 +2005,6 @@ class App(tk.Tk):
         except requests.RequestException:
             statuses['grantnav'] = 'error'
 
-        # --- NEW: Test Contracts Finder (no key required) ---
-        try:
-            # Import here to avoid top-level dependency
-            from .api.contracts_finder import check_api_status as check_cf
-            is_online = check_cf()
-            statuses['contracts_finder'] = 'ok' if is_online else 'error'
-        except Exception as e:
-            log_message(f"Contracts Finder check failed: {e}")
-            statuses['contracts_finder'] = 'error'
-        
         # Cache results
         self.api_statuses = statuses
         self.api_status_timestamp = datetime.now()
@@ -2071,14 +2037,12 @@ class App(tk.Tk):
             'companies_house': 'unknown' if self.api_key else 'no_key',
             'charity_commission': 'unknown' if self.charity_api_key else 'no_key',
             'grantnav': 'unknown',
-            'contracts_finder': 'unknown',
         }
 
         api_configs = [
             ('companies_house',   'Companies House',      0, 0, (0, 15)),
             ('charity_commission','Charity Commission',   0, 1, (0, 0)),
             ('grantnav',         'GrantNav (360Giving)', 1, 0, (0, 15)),
-            ('contracts_finder', 'Contracts Finder',     1, 1, (0, 0)),
         ]
 
         grid_frame = ttk.Frame(status_panel)
@@ -2144,7 +2108,6 @@ class App(tk.Tk):
             'companies_house':   'Companies House',
             'charity_commission':'Charity Commission',
             'grantnav':          'GrantNav (360Giving)',
-            'contracts_finder':  'Contracts Finder',
         }
 
         tooltip_templates = {
@@ -2578,17 +2541,4 @@ class App(tk.Tk):
             prefill_entities=prefill_entities
         )
         self._update_sidebar_active("bulk_entity_search")
-        self._refresh_working_set_indicator()
-
-    def show_contracts_finder(self):
-        """Show the Contracts Finder module."""
-        from .modules.contracts_finder import ContractsFinderInvestigation
-        self.clear_container()
-        ContractsFinderInvestigation(
-            self,
-            self.show_main_menu,
-            self.ch_token_bucket,
-            self.api_key
-        )
-        self._update_sidebar_active("contracts_finder")
         self._refresh_working_set_indicator()

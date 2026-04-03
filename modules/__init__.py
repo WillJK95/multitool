@@ -9,7 +9,6 @@ from .network_analytics import NetworkAnalytics, CollapsibleSection
 from .grants_search import GrantsSearch
 from ..utils.financial_analyzer import iXBRLParser, FinancialAnalyzer
 from .enhanced_dd import EnhancedDueDiligence
-from .contracts_finder import ContractsFinderInvestigation
 
 __all__ = [
     'InvestigationModuleBase',
@@ -22,6 +21,4 @@ __all__ = [
     'iXBRLParser',
     'FinancialAnalyzer',
     'EnhancedDueDiligence',
-    'ContractsFinderInvestigations'
-    
 ]
