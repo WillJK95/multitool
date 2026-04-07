@@ -460,6 +460,29 @@ class LinkedAttributeWidget(ttk.LabelFrame):
         """Check if at least one column is mapped."""
         return any(combo.get() for combo in self.field_combos.values())
 
+    def get_state(self) -> dict:
+        """Return serializable snapshot of this widget's configuration."""
+        return {
+            "type": self.type_var.get(),
+            "mode": self.mode_var.get(),
+            "fields": {key: combo.get() for key, combo in self.field_combos.items()},
+            "options": {key: var.get() for key, var in self.option_vars.items()},
+        }
+
+    def restore_state(self, state: dict):
+        """Restore configuration from a serialized snapshot."""
+        self.type_var.set(state.get("type", "address"))
+        self._on_type_changed()
+        if state.get("mode"):
+            self.mode_var.set(state["mode"])
+            self._on_mode_changed()
+        for key, value in state.get("fields", {}).items():
+            if key in self.field_combos:
+                self.field_combos[key].set(value)
+        for key, value in state.get("options", {}).items():
+            if key in self.option_vars:
+                self.option_vars[key].set(value)
+
 
 class CollapsibleSection(ttk.Frame):
     """A collapsible frame with a clickable header."""
@@ -683,7 +706,19 @@ class NetworkAnalytics(InvestigationModuleBase):
         # Bind scroll region enforcer (will only act when on Data Converter tab)
         self.scroller.canvas.bind("<Configure>", self._enforce_outer_scroll_limit, add="+")
         self.scroller.scrollable_frame.bind("<Configure>", self._enforce_outer_scroll_limit, add="+")
-        
+
+        # Restore from in-memory snapshot if one exists (persisted across navigation)
+        if self.app_state.network_analytics_snapshot is not None:
+            self._restore_from_snapshot(self.app_state.network_analytics_snapshot)
+
+    def destroy(self):
+        """Capture state snapshot before widget destruction."""
+        try:
+            self.app_state.network_analytics_snapshot = self._snapshot_state()
+        except Exception:
+            pass  # Don't block destruction if snapshot fails
+        super().destroy()
+
     def _on_tab_changed(self, event=None):
         """Handle tab changes - reset scroll position and manage outer scroll region."""
         selected_tab = self.notebook.select()
@@ -4329,6 +4364,407 @@ class NetworkAnalytics(InvestigationModuleBase):
     #  Save / Load network state
     # ------------------------------------------------------------------
 
+    def _snapshot_state(self) -> dict:
+        """Build a pure-data snapshot of all module state.
+
+        Used both for in-memory persistence (navigate-away) and for
+        writing .mtn save files.
+        """
+        snapshot = {
+            "version": 2,
+
+            # Source files - embed the actual CSV data
+            "source_files": self._serialize_source_files(),
+
+            # Graph data
+            "graph": self._serialize_graph(),
+            "graph_built": self.graph_built,
+            "files_changed_since_build": self.files_changed_since_build,
+
+            # Source file paths (for in-memory restore)
+            "source_file_paths": list(self.source_files),
+
+            # Exclusions
+            "exclusions": {
+                "highly_connected": list(self.highly_connected_exclusions),
+                "peripheral": list(self.peripheral_exclusions),
+                "manual": list(self.manual_exclusions),
+            },
+
+            # Analyse state
+            "analyse_mode": self.analyse_mode_var.get(),
+            "analyse_state": {
+                "entity_list": list(self.analyse_entity_list) if self.analyse_entity_list else None,
+                "entity_list_path": self.analyse_entity_list_path,
+                "cohort_a_ids": list(self.cohort_a_ids),
+                "cohort_b_ids": list(self.cohort_b_ids),
+                "lynchpin_suspects": list(self.lynchpin_suspects),
+                "lynchpin_suspects_path": self.lynchpin_suspects_path,
+                "lynchpin_results": self.lynchpin_results,
+                "lynchpin_suspects_in_graph": list(self.lynchpin_suspects_in_graph),
+            },
+
+            # Hidden links
+            "hidden_links": self.discovered_hidden_links,
+
+            # Visualisation settings
+            "visualisation_settings": {
+                "distinguish": self.distinguish_var.get(),
+                "hide_isolated": self.hide_isolated_var.get(),
+                "show_highlighted_only": self.show_highlighted_only_var.get(),
+                "show_inferred": self.show_inferred_var.get(),
+                "scale_by_connections": self.scale_by_connections_var.get(),
+                "isolated_companies": self.isolated_companies_var.get(),
+                "isolated_persons": self.isolated_persons_var.get(),
+                "isolated_addresses": self.isolated_addresses_var.get(),
+            },
+
+            # Analysis options
+            "analysis_options": {
+                "max_hops": self.max_hops_var.get(),
+                "shortest_only": self.shortest_only_var.get(),
+                "enforce_direction": self.enforce_direction_var.get(),
+                "lynchpin_type": self.lynchpin_type_var.get(),
+                "lynchpin_min_connections": self.lynchpin_min_connections_var.get(),
+                "lynchpin_hop_limit": self.lynchpin_hop_limit_var.get(),
+            },
+
+            # Refine settings
+            "refine_settings": {
+                "highly_connected_threshold": self.highly_connected_threshold_var.get(),
+                "peripheral_threshold": self.peripheral_threshold_var.get(),
+                "proximity_radius": self.proximity_radius_var.get(),
+            },
+
+            # --- Extended v2 fields ---
+
+            # Active tab
+            "active_tab": self.notebook.index(self.notebook.select()),
+
+            # Section expand/enable states
+            "section_states": {
+                "data_sources": {
+                    "expanded": self.data_sources_section.is_expanded(),
+                    "enabled": self.data_sources_section._enabled,
+                },
+                "refine": {
+                    "expanded": self.refine_section.is_expanded(),
+                    "enabled": self.refine_section._enabled,
+                },
+                "analyse": {
+                    "expanded": self.analyse_section.is_expanded(),
+                    "enabled": self.analyse_section._enabled,
+                },
+                "visualise": {
+                    "expanded": self.visualise_section.is_expanded(),
+                    "enabled": self.visualise_section._enabled,
+                },
+            },
+
+            # SearchableEntry values
+            "start_node_entry": self.start_node_entry.get(),
+            "end_node_entry": self.end_node_entry.get(),
+            "manual_exclude_entry": self.manual_exclude_entry.get(),
+
+            # Seed section
+            "seed_cnum": self.seed_cnum_var.get(),
+            "seed_fetch_pscs": self.seed_fetch_pscs_var.get(),
+            "seed_fetch_associated": self.seed_fetch_associated_var.get(),
+
+            # Converter state
+            "converter_state": {
+                "source_data": self.converter_source_data,
+                "headers": list(self.converter_headers) if self.converter_headers else [],
+                "entity_type": self.converter_entity_type.get(),
+                "convert_mode": self.convert_mode.get(),
+                "id_col": self.combo_id_col.get(),
+                "sec_col": self.combo_sec_col.get(),
+                "file_label": self.converter_file_label.cget("text"),
+                "linked_attributes": [w.get_state() for w in self.linked_attribute_widgets],
+            },
+        }
+        return snapshot
+
+    def _restore_from_snapshot(self, snapshot: dict, source_label: str = None):
+        """Restore all module state from a snapshot dictionary.
+
+        Works for both in-memory snapshots and loaded .mtn files.
+        ``source_label`` is shown in the data sources section header
+        (e.g. the filename for .mtn loads).
+        """
+        # Clear existing state
+        self.clear_files()
+
+        # Reset analyse state that clear_files doesn't cover
+        self.analyse_entity_list = None
+        self.analyse_entity_list_path = None
+        self.cohort_a_ids = set()
+        self.cohort_b_ids = set()
+        self.lynchpin_suspects = set()
+        self.lynchpin_suspects_path = None
+        self.lynchpin_results = []
+        self.lynchpin_suspects_in_graph = set()
+        self.discovered_hidden_links = []
+
+        # Reset analyse UI labels
+        self.single_list_status.config(text="No list loaded", foreground="gray")
+        self.list_a_status.config(text="No list loaded", foreground="gray")
+        self.list_b_status.config(text="No list loaded", foreground="gray")
+        self.lynchpin_list_status.config(text="No list loaded", foreground="gray")
+        self.hidden_links_status.config(
+            text="No hidden links discovered yet.", foreground="gray"
+        )
+        self.view_hidden_results_btn.config(state="disabled")
+        self.show_inferred_check.config(state="disabled")
+
+        # --- Restore state from snapshot ---
+
+        # Source files -- prefer direct file paths for in-memory snapshots
+        source_file_paths = snapshot.get("source_file_paths")
+        if source_file_paths:
+            for fpath in source_file_paths:
+                if os.path.exists(fpath):
+                    self.source_files.append(fpath)
+                    basename = os.path.basename(fpath)
+                    if basename.startswith("Seed-"):
+                        self.file_listbox.insert(tk.END, f"SEED: {basename}")
+                    else:
+                        self.file_listbox.insert(tk.END, f"FILE: {basename}")
+            # Fall back to embedded CSV data for any missing files
+            if not self.source_files:
+                self._restore_source_files(snapshot.get("source_files", {}))
+        else:
+            # .mtn file load -- use embedded CSV data
+            self._restore_source_files(snapshot.get("source_files", {}))
+
+        # Graph
+        self._restore_graph(snapshot.get("graph", {}))
+        self.graph_built = snapshot.get("graph_built", False)
+        self.files_changed_since_build = snapshot.get("files_changed_since_build", False)
+
+        # Exclusions
+        exclusions = snapshot.get("exclusions", {})
+        self.highly_connected_exclusions = set(exclusions.get("highly_connected", []))
+        self.peripheral_exclusions = set(exclusions.get("peripheral", []))
+        self.manual_exclusions = set(exclusions.get("manual", []))
+
+        # Analyse state
+        analyse_state = snapshot.get("analyse_state", {})
+        entity_list = analyse_state.get("entity_list")
+        self.analyse_entity_list = set(entity_list) if entity_list else None
+        self.analyse_entity_list_path = analyse_state.get("entity_list_path")
+        self.cohort_a_ids = set(analyse_state.get("cohort_a_ids", []))
+        self.cohort_b_ids = set(analyse_state.get("cohort_b_ids", []))
+        self.lynchpin_suspects = set(analyse_state.get("lynchpin_suspects", []))
+        self.lynchpin_suspects_path = analyse_state.get("lynchpin_suspects_path")
+        self.lynchpin_results = analyse_state.get("lynchpin_results", [])
+        self.lynchpin_suspects_in_graph = set(
+            analyse_state.get("lynchpin_suspects_in_graph", [])
+        )
+
+        # Hidden links
+        self.discovered_hidden_links = snapshot.get("hidden_links", [])
+
+        # Visualisation settings
+        vis = snapshot.get("visualisation_settings", {})
+        self.distinguish_var.set(vis.get("distinguish", False))
+        self.hide_isolated_var.set(vis.get("hide_isolated", False))
+        self.show_highlighted_only_var.set(vis.get("show_highlighted_only", False))
+        self.show_inferred_var.set(vis.get("show_inferred", False))
+        self.scale_by_connections_var.set(vis.get("scale_by_connections", False))
+        self.isolated_companies_var.set(vis.get("isolated_companies", True))
+        self.isolated_persons_var.set(vis.get("isolated_persons", False))
+        self.isolated_addresses_var.set(vis.get("isolated_addresses", False))
+
+        # Analysis options
+        opts = snapshot.get("analysis_options", {})
+        self.max_hops_var.set(opts.get("max_hops", 10))
+        self.shortest_only_var.set(opts.get("shortest_only", True))
+        self.enforce_direction_var.set(opts.get("enforce_direction", False))
+        self.lynchpin_type_var.set(opts.get("lynchpin_type", "all"))
+        self.lynchpin_min_connections_var.set(opts.get("lynchpin_min_connections", 2))
+        self.lynchpin_hop_limit_var.set(opts.get("lynchpin_hop_limit", 1))
+
+        # Refine settings
+        refine = snapshot.get("refine_settings", {})
+        self.highly_connected_threshold_var.set(
+            refine.get("highly_connected_threshold", "50")
+        )
+        self.peripheral_threshold_var.set(refine.get("peripheral_threshold", "2"))
+        self.proximity_radius_var.set(refine.get("proximity_radius", "1.0"))
+
+        # Analyse mode
+        self.analyse_mode_var.set(snapshot.get("analyse_mode", "two_entities"))
+
+        # --- Extended v2 fields ---
+
+        # SearchableEntry values
+        self.start_node_entry.set(snapshot.get("start_node_entry", ""))
+        self.end_node_entry.set(snapshot.get("end_node_entry", ""))
+        self.manual_exclude_entry.set(snapshot.get("manual_exclude_entry", ""))
+
+        # Seed section
+        self.seed_cnum_var.set(snapshot.get("seed_cnum", ""))
+        self.seed_fetch_pscs_var.set(snapshot.get("seed_fetch_pscs", False))
+        self.seed_fetch_associated_var.set(snapshot.get("seed_fetch_associated", False))
+
+        # Converter state
+        conv = snapshot.get("converter_state", {})
+        if conv:
+            self._restore_converter_state(conv)
+
+        # --- Update UI to reflect loaded state ---
+
+        # Enable sections based on state
+        if self.source_files:
+            self.refine_section.set_enabled(True)
+
+        if self.graph_built:
+            self.refine_section.set_enabled(True)
+            self.analyse_section.set_enabled(True)
+            self.visualise_section.set_enabled(True)
+            self._update_section_header_status()
+            self._populate_node_dropdowns()
+            self._update_exclusion_status_labels()
+
+        if source_label:
+            self.data_sources_section.set_status(source_label)
+
+        # Update analyse mode UI (shows/hides the correct sub-frame)
+        self._update_analyse_mode_ui()
+
+        # Update analyse status labels
+        if self.analyse_entity_list:
+            count = len(self.analyse_entity_list)
+            path_display = self.analyse_entity_list_path or "(from save file)"
+            self.single_list_status.config(
+                text=f"{count} entities loaded ({path_display})",
+                foreground="green"
+            )
+
+        if self.cohort_a_ids:
+            self.list_a_status.config(
+                text=f"{len(self.cohort_a_ids)} entities loaded",
+                foreground="green"
+            )
+
+        if self.cohort_b_ids:
+            self.list_b_status.config(
+                text=f"{len(self.cohort_b_ids)} entities loaded",
+                foreground="green"
+            )
+
+        if self.lynchpin_suspects:
+            self.lynchpin_list_status.config(
+                text=f"{len(self.lynchpin_suspects)} suspects loaded",
+                foreground="green"
+            )
+
+        if self.discovered_hidden_links:
+            count = len(self.discovered_hidden_links)
+            self.hidden_links_status.config(
+                text=f"{count} inferred link(s) found.",
+                foreground="green"
+            )
+            self.view_hidden_results_btn.config(state="normal")
+            self.show_inferred_check.config(state="normal")
+
+        # Update isolated network checkbox UI
+        self._toggle_isolated_options()
+
+        # Update visualise checkbox state
+        self._update_visualise_checkbox_state()
+
+        # Section expand/collapse states (v2)
+        section_states = snapshot.get("section_states", {})
+        section_map = {
+            "data_sources": self.data_sources_section,
+            "refine": self.refine_section,
+            "analyse": self.analyse_section,
+            "visualise": self.visualise_section,
+        }
+        for key, section in section_map.items():
+            state = section_states.get(key, {})
+            if state.get("enabled", False):
+                section.set_enabled(True)
+            if state.get("expanded", False) and section._enabled:
+                section.expand()
+            elif not state.get("expanded", True):
+                section.collapse()
+
+        # Active tab (v2)
+        active_tab = snapshot.get("active_tab", 0)
+        try:
+            self.notebook.select(active_tab)
+        except Exception:
+            pass
+
+        # Mark files changed warning if applicable
+        if self.files_changed_since_build and self.graph_built:
+            self.refine_section.set_warning(
+                "Files changed", show_rebuild=True,
+                rebuild_callback=self._auto_build_graph
+            )
+
+    def _restore_converter_state(self, conv: dict):
+        """Restore the Data Converter tab state from a snapshot."""
+        source_data = conv.get("source_data", [])
+        headers = conv.get("headers", [])
+
+        if not headers:
+            return
+
+        self.converter_source_data = source_data
+        self.converter_headers = headers
+
+        # Update file label
+        file_label = conv.get("file_label", "")
+        if file_label:
+            self.converter_file_label.config(text=file_label)
+
+        # Update primary entity combos
+        options = [""] + list(self.converter_headers)
+        self.combo_id_col['values'] = options
+        self.combo_sec_col['values'] = options
+        self.combo_id_col.set(conv.get("id_col", ""))
+        self.combo_sec_col.set(conv.get("sec_col", ""))
+
+        # Entity type and convert mode
+        self.converter_entity_type.set(conv.get("entity_type", "person"))
+        self.convert_mode.set(conv.get("convert_mode", "cohort"))
+
+        # Rebuild preview treeview
+        self.converter_preview_tree['columns'] = self.converter_headers
+        for col in self.converter_headers:
+            self.converter_preview_tree.heading(col, text=col)
+            self.converter_preview_tree.column(col, width=100)
+
+        for item in self.converter_preview_tree.get_children():
+            self.converter_preview_tree.delete(item)
+
+        for row in self.converter_source_data[:5]:
+            vals = [row.get(h, "") for h in self.converter_headers]
+            self.converter_preview_tree.insert("", "end", values=vals)
+
+        # Enable buttons
+        self.add_linked_attr_btn.config(state="normal")
+        self.convert_btn.config(state="normal")
+
+        # Recreate linked attribute widgets
+        for attr_state in conv.get("linked_attributes", []):
+            widget = LinkedAttributeWidget(
+                self.linked_attributes_container,
+                headers=self.converter_headers,
+                on_remove_callback=self._remove_linked_attribute,
+                index=self.linked_attribute_counter
+            )
+            widget.pack(fill=tk.X, pady=5)
+            self.linked_attribute_widgets.append(widget)
+            self.linked_attribute_counter += 1
+            widget.restore_state(attr_state)
+
+        self._update_converter_scroll_region()
+
     def _save_network_state(self):
         """Save the current network state to a .mtn file."""
         if not self.graph_built:
@@ -4347,69 +4783,8 @@ class NetworkAnalytics(InvestigationModuleBase):
             return
 
         try:
-            save_data = {
-                "version": 1,
-                "saved_at": datetime.datetime.now().isoformat(),
-
-                # Source files - embed the actual CSV data
-                "source_files": self._serialize_source_files(),
-
-                # Graph data
-                "graph": self._serialize_graph(),
-                "graph_built": self.graph_built,
-
-                # Exclusions
-                "exclusions": {
-                    "highly_connected": list(self.highly_connected_exclusions),
-                    "peripheral": list(self.peripheral_exclusions),
-                    "manual": list(self.manual_exclusions),
-                },
-
-                # Analyse state
-                "analyse_mode": self.analyse_mode_var.get(),
-                "analyse_state": {
-                    "entity_list": list(self.analyse_entity_list) if self.analyse_entity_list else None,
-                    "entity_list_path": self.analyse_entity_list_path,
-                    "cohort_a_ids": list(self.cohort_a_ids),
-                    "cohort_b_ids": list(self.cohort_b_ids),
-                    "lynchpin_suspects": list(self.lynchpin_suspects),
-                    "lynchpin_suspects_path": self.lynchpin_suspects_path,
-                    "lynchpin_results": self.lynchpin_results,
-                    "lynchpin_suspects_in_graph": list(self.lynchpin_suspects_in_graph),
-                },
-
-                # Hidden links
-                "hidden_links": self.discovered_hidden_links,
-
-                # Visualisation settings
-                "visualisation_settings": {
-                    "distinguish": self.distinguish_var.get(),
-                    "hide_isolated": self.hide_isolated_var.get(),
-                    "show_highlighted_only": self.show_highlighted_only_var.get(),
-                    "show_inferred": self.show_inferred_var.get(),
-                    "scale_by_connections": self.scale_by_connections_var.get(),
-                    "isolated_companies": self.isolated_companies_var.get(),
-                    "isolated_persons": self.isolated_persons_var.get(),
-                    "isolated_addresses": self.isolated_addresses_var.get(),
-                },
-
-                # Analysis options
-                "analysis_options": {
-                    "max_hops": self.max_hops_var.get(),
-                    "shortest_only": self.shortest_only_var.get(),
-                    "enforce_direction": self.enforce_direction_var.get(),
-                    "lynchpin_type": self.lynchpin_type_var.get(),
-                    "lynchpin_min_connections": self.lynchpin_min_connections_var.get(),
-                    "lynchpin_hop_limit": self.lynchpin_hop_limit_var.get(),
-                },
-
-                # Refine settings
-                "refine_settings": {
-                    "highly_connected_threshold": self.highly_connected_threshold_var.get(),
-                    "peripheral_threshold": self.peripheral_threshold_var.get(),
-                    "proximity_radius": self.proximity_radius_var.get(),
-                },
-            }
+            save_data = self._snapshot_state()
+            save_data["saved_at"] = datetime.datetime.now().isoformat()
 
             # Write with gzip compression
             with gzip.open(filepath, "wt", encoding="utf-8") as f:
@@ -4492,99 +4867,11 @@ class NetworkAnalytics(InvestigationModuleBase):
                 )
                 return
 
-            # Clear existing state
-            self.clear_files()
-
-            # Reset analyse state that clear_files doesn't cover
-            self.analyse_entity_list = None
-            self.analyse_entity_list_path = None
-            self.cohort_a_ids = set()
-            self.cohort_b_ids = set()
-            self.lynchpin_suspects = set()
-            self.lynchpin_suspects_path = None
-            self.lynchpin_results = []
-            self.lynchpin_suspects_in_graph = set()
-            self.discovered_hidden_links = []
-
-            # Reset analyse UI labels
-            self.single_list_status.config(text="No list loaded", foreground="gray")
-            self.list_a_status.config(text="No list loaded", foreground="gray")
-            self.list_b_status.config(text="No list loaded", foreground="gray")
-            self.lynchpin_list_status.config(text="No list loaded", foreground="gray")
-            self.hidden_links_status.config(
-                text="No hidden links discovered yet.", foreground="gray"
-            )
-            self.view_hidden_results_btn.config(state="disabled")
-            self.show_inferred_check.config(state="disabled")
-
-            # --- Restore state from save data ---
-
-            # Source files
-            self._restore_source_files(save_data.get("source_files", {}))
-
-            # Graph
-            self._restore_graph(save_data.get("graph", {}))
-            self.graph_built = save_data.get("graph_built", False)
-            self.files_changed_since_build = False
-
-            # Exclusions
-            exclusions = save_data.get("exclusions", {})
-            self.highly_connected_exclusions = set(exclusions.get("highly_connected", []))
-            self.peripheral_exclusions = set(exclusions.get("peripheral", []))
-            self.manual_exclusions = set(exclusions.get("manual", []))
-
-            # Analyse state
-            analyse_state = save_data.get("analyse_state", {})
-            entity_list = analyse_state.get("entity_list")
-            self.analyse_entity_list = set(entity_list) if entity_list else None
-            self.analyse_entity_list_path = analyse_state.get("entity_list_path")
-            self.cohort_a_ids = set(analyse_state.get("cohort_a_ids", []))
-            self.cohort_b_ids = set(analyse_state.get("cohort_b_ids", []))
-            self.lynchpin_suspects = set(analyse_state.get("lynchpin_suspects", []))
-            self.lynchpin_suspects_path = analyse_state.get("lynchpin_suspects_path")
-            self.lynchpin_results = analyse_state.get("lynchpin_results", [])
-            self.lynchpin_suspects_in_graph = set(
-                analyse_state.get("lynchpin_suspects_in_graph", [])
-            )
-
-            # Hidden links
-            self.discovered_hidden_links = save_data.get("hidden_links", [])
-
-            # Visualisation settings
-            vis = save_data.get("visualisation_settings", {})
-            self.distinguish_var.set(vis.get("distinguish", False))
-            self.hide_isolated_var.set(vis.get("hide_isolated", False))
-            self.show_highlighted_only_var.set(vis.get("show_highlighted_only", False))
-            self.show_inferred_var.set(vis.get("show_inferred", False))
-            self.scale_by_connections_var.set(vis.get("scale_by_connections", False))
-            self.isolated_companies_var.set(vis.get("isolated_companies", True))
-            self.isolated_persons_var.set(vis.get("isolated_persons", False))
-            self.isolated_addresses_var.set(vis.get("isolated_addresses", False))
-
-            # Analysis options
-            opts = save_data.get("analysis_options", {})
-            self.max_hops_var.set(opts.get("max_hops", 10))
-            self.shortest_only_var.set(opts.get("shortest_only", True))
-            self.enforce_direction_var.set(opts.get("enforce_direction", False))
-            self.lynchpin_type_var.set(opts.get("lynchpin_type", "all"))
-            self.lynchpin_min_connections_var.set(opts.get("lynchpin_min_connections", 2))
-            self.lynchpin_hop_limit_var.set(opts.get("lynchpin_hop_limit", 1))
-
-            # Refine settings
-            refine = save_data.get("refine_settings", {})
-            self.highly_connected_threshold_var.set(
-                refine.get("highly_connected_threshold", "50")
-            )
-            self.peripheral_threshold_var.set(refine.get("peripheral_threshold", "2"))
-            self.proximity_radius_var.set(refine.get("proximity_radius", "1.0"))
-
-            # Analyse mode
-            self.analyse_mode_var.set(save_data.get("analyse_mode", "two_entities"))
-
-            # --- Update UI to reflect loaded state ---
-            self._restore_ui_state(save_data, filepath)
-
             filename = os.path.basename(filepath)
+            self._restore_from_snapshot(
+                save_data, source_label=f"Loaded from: {filename}"
+            )
+
             self.save_load_status_label.config(text=f"Loaded: {filename}")
             messagebox.showinfo("Load Complete", f"Network loaded from {filename}")
 
@@ -4640,78 +4927,6 @@ class NetworkAnalytics(InvestigationModuleBase):
                 node["source_files"] = set(node["source_files"])
 
         self.full_graph = nx.node_link_graph(graph_data)
-
-    def _restore_ui_state(self, save_data, filepath):
-        """Update all UI elements to reflect the loaded network state."""
-        filename = os.path.basename(filepath)
-
-        if self.source_files:
-            self.refine_section.set_enabled(True)
-
-        if self.graph_built:
-            # Enable downstream sections
-            self.refine_section.set_enabled(True)
-            self.analyse_section.set_enabled(True)
-            self.visualise_section.set_enabled(True)
-
-            # Update Build & Refine status
-            self._update_section_header_status()
-
-            # Populate node dropdowns
-            self._populate_node_dropdowns()
-
-            # Update exclusion labels
-            self._update_exclusion_status_labels()
-
-        # Show loaded-from indicator in data sources section
-        self.data_sources_section.set_status(f"Loaded from: {filename}")
-
-        # Update analyse mode UI (shows/hides the correct sub-frame)
-        self._update_analyse_mode_ui()
-
-        # Update analyse status labels
-        if self.analyse_entity_list:
-            count = len(self.analyse_entity_list)
-            path_display = self.analyse_entity_list_path or "(from save file)"
-            self.single_list_status.config(
-                text=f"{count} entities loaded ({path_display})",
-                foreground="green"
-            )
-
-        if self.cohort_a_ids:
-            self.list_a_status.config(
-                text=f"{len(self.cohort_a_ids)} entities loaded",
-                foreground="green"
-            )
-
-        if self.cohort_b_ids:
-            self.list_b_status.config(
-                text=f"{len(self.cohort_b_ids)} entities loaded",
-                foreground="green"
-            )
-
-        if self.lynchpin_suspects:
-            self.lynchpin_list_status.config(
-                text=f"{len(self.lynchpin_suspects)} suspects loaded",
-                foreground="green"
-            )
-
-        # Update hidden links status
-        if self.discovered_hidden_links:
-            count = len(self.discovered_hidden_links)
-            self.hidden_links_status.config(
-                text=f"{count} inferred link(s) found.",
-                foreground="green"
-            )
-            self.view_hidden_results_btn.config(state="normal")
-            self.show_inferred_check.config(state="normal")
-
-        # Update isolated network checkbox UI
-        self._toggle_isolated_options()
-
-        # Update visualise checkbox state
-        self._update_visualise_checkbox_state()
-
 
     def _get_pruned_graph(self):
         """Modified: Uses all three exclusion sets."""
