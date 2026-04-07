@@ -15,7 +15,6 @@ by pulling data from multiple UK public data sources:
     - UK Companies House (company profiles, officers, PSCs, filings)
     - Charity Commission for England & Wales (charity details, trustees, finances)
     - 360Giving / GrantNav (grant funding records)
-    - UK Government Contracts Finder (public sector contracts)
 
 --- HOW TO USE ---
 
@@ -107,7 +106,6 @@ From the main menu:
 Companies House: 600 requests per 5 minutes (the tool manages this automatically)
 Charity Commission: Approximately 2 requests per second
 GrantNav: 2 requests per second (no key required)
-Contracts Finder: 2 requests per second (no key required)
 """,
 
     "director": """
@@ -372,71 +370,6 @@ Grant Coverage:
     does not necessarily mean no grants were received.
 """,
 
-    "contracts_finder": """
---- Contracts Finder ---
-
-This module searches for public sector contract awards using the UK Government
-Contracts Finder API and enriches supplier information from Companies House.
-
---- WORKFLOW ---
-
-1) Search Contracts
-
-   Buyer Organisation:
-       Enter the name of the public sector buyer organisation.
-       The name must match exactly as it appears in Contracts Finder
-       (including punctuation, commas, etc.).
-
-   Date Range:
-       Set the start and end dates for your search.
-       Defaults to the last 12 months.
-
-   Click "Search" to find all awarded contracts for the specified buyer.
-
-2) View Results
-   The contracts table shows:
-   - Contract title and description
-   - Award date
-   - Contract value
-   - Supplier name and identifier
-
-3) Enrich Suppliers
-   Click "Enrich Suppliers" to fetch additional information from Companies House:
-   - Company status and incorporation date
-   - Registered address
-   - Directors and PSCs
-   - SIC codes
-
---- EXPORT OPTIONS ---
-
-Export Suppliers:
-    Saves enriched supplier details with contract summary fields as CSV.
-
-Export Graph Data:
-    Outputs an edge list showing relationships between:
-    - Supplier companies
-    - Officers and PSCs
-    - Registered addresses
-    Compatible with Network Analytics for cross-referencing with other data sources.
-
---- TIPS ---
-
-Buyer Name Matching:
-    Contracts Finder requires exact buyer name matches. Try variations if
-    your initial search returns no results:
-    - Full legal name vs trading name
-    - With/without "The" prefix
-    - Abbreviations vs full names
-
-Finding Buyer Names:
-    Browse Contracts Finder directly (www.contractsfinder.service.gov.uk)
-    to find the exact buyer name format used.
-
-Supplier Enrichment:
-    Not all suppliers will have Companies House records (e.g., sole traders,
-    partnerships, foreign companies). These will show limited enrichment data.
-""",
-
     "data_match": """
 --- Data Match ---
 
@@ -641,7 +574,6 @@ Add Graph Files:
     - Director Investigation graph exports
     - UBO Tracer graph exports
     - Unified Search graph exports
-    - Contracts Finder graph exports
     - Data Converter outputs
 
     Each file adds its relationships to the combined network.
@@ -803,6 +735,6 @@ Supernode Removal:
 Combining Sources:
     The power of Network Analytics comes from combining multiple data sources.
     A connection visible when combining Director Search, UBO Tracer, and
-    Contracts Finder exports may not be apparent in any single source alone.
+    Unified Search exports may not be apparent in any single source alone.
 """,
 }

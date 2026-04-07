@@ -43,11 +43,6 @@ class LicensesWindow(tk.Toplevel):
                 "url": "https://api-portal.charitycommission.gov.uk/terms",
             },
             {
-                "name": "Contracts Finder",
-                "attribution": "Contracts Finder data is published by Crown Commercial Service and is made available under the Open Government Licence v3.0.",
-                "url": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
-            },
-            {
                 "name": "360Giving",
                 "attribution": "GrantNav data is published under the Creative Commons Attribution 4.0 International license. Additional terms and conditions can be found here: https://www.360giving.org/explore/api-tc/",
                 "url": "https://creativecommons.org/licenses/by/4.0/",
