@@ -949,14 +949,19 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.convert_mode = tk.StringVar(value="cohort")
         ttk.Radiobutton(step3_frame, text="Create Entity List (IDs Only)", variable=self.convert_mode, value="cohort").pack(anchor="w", padx=5)
         ttk.Radiobutton(step3_frame, text="Create Graph File (Nodes & Links)", variable=self.convert_mode, value="graph").pack(anchor="w", padx=5)
-        
+
         btn_frame = ttk.Frame(step3_frame)
         btn_frame.pack(fill=tk.X, pady=10)
-        
-        self.convert_btn = ttk.Button(btn_frame, text="Convert & Save File", command=self._converter_run, state="disabled", bootstyle="success")
-        self.convert_btn.pack(side=tk.LEFT)
+
+        self.send_to_menu_btn = ttk.Menubutton(btn_frame, text="Send to... \u25BC", bootstyle="success", state="disabled")
+        self.send_to_menu = tk.Menu(self.send_to_menu_btn, tearoff=0)
+        self.send_to_menu_btn.configure(menu=self.send_to_menu)
+        self.send_to_menu_btn.pack(side=tk.LEFT)
         self.converter_status = ttk.Label(btn_frame, text="", foreground="green")
         self.converter_status.pack(side=tk.LEFT, padx=10)
+
+        self.convert_mode.trace_add("write", self._rebuild_send_to_menu)
+        self._rebuild_send_to_menu()
     
     def _on_converter_frame_configure(self, event=None):
         """Update scroll region when inner frame size changes."""
@@ -2288,7 +2293,7 @@ class NetworkAnalytics(InvestigationModuleBase):
                 vals = [row.get(h, "") for h in self.converter_headers]
                 self.converter_preview_tree.insert("", "end", values=vals)
 
-            self.convert_btn.config(state="normal")
+            self.send_to_menu_btn.config(state="normal")
             self.converter_status.config(text="File loaded. Please map columns.")
 
         except Exception as e:
@@ -4149,25 +4154,145 @@ class NetworkAnalytics(InvestigationModuleBase):
         ttk.Button(btn_frame, text="Close", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
 
 
-    def _converter_run(self):
-        """Main execution logic for the Data Converter with dynamic linked attributes."""
+    def _rebuild_send_to_menu(self, *args):
+        """Rebuilds the Send To menu based on the current output mode."""
+        menu = self.send_to_menu
+        menu.delete(0, tk.END)
+        mode = self.convert_mode.get()
+
+        if mode == "graph":
+            menu.add_command(
+                label="Data Sources (Graph File)",
+                command=self._send_to_data_sources
+            )
+        else:
+            menu.add_command(
+                label="Analyse \u2192 Single Entity List",
+                command=lambda: self._send_to_entity_list("single")
+            )
+            menu.add_command(
+                label="Analyse \u2192 List A (Comparison)",
+                command=lambda: self._send_to_entity_list("list_a")
+            )
+            menu.add_command(
+                label="Analyse \u2192 List B (Comparison)",
+                command=lambda: self._send_to_entity_list("list_b")
+            )
+            menu.add_command(
+                label="Analyse \u2192 Lynchpin Suspects",
+                command=lambda: self._send_to_entity_list("lynchpin")
+            )
+
+        menu.add_separator()
+        menu.add_command(label="Export as File\u2026", command=self._converter_run)
+
+
+    def _send_to_entity_list(self, target):
+        """Sends converted entity list directly to an Analyse target."""
+        result = self._converter_generate()
+        if result is None:
+            return
+        converted_rows, unique_ids, count_skipped = result
+
+        if not unique_ids:
+            messagebox.showwarning("No Data", "No entity IDs were generated.")
+            return
+
+        count = len(unique_ids)
+        target_labels = {
+            "single": "Single Entity List",
+            "list_a": "List A",
+            "list_b": "List B",
+            "lynchpin": "Lynchpin Suspects",
+        }
+
+        if target == "single":
+            self.analyse_entity_list = unique_ids
+            self.analyse_entity_list_path = None
+            self.single_list_status.config(
+                text=f"{count} entities loaded (from converter)",
+                foreground="green"
+            )
+        elif target == "list_a":
+            self.cohort_a_ids = unique_ids
+            self.list_a_status.config(
+                text=f"{count} entities loaded (from converter)",
+                foreground="green"
+            )
+        elif target == "list_b":
+            self.cohort_b_ids = unique_ids
+            self.list_b_status.config(
+                text=f"{count} entities loaded (from converter)",
+                foreground="green"
+            )
+        elif target == "lynchpin":
+            self.lynchpin_suspects = unique_ids
+            self.lynchpin_suspects_path = None
+            self.lynchpin_list_status.config(
+                text=f"{count} suspects loaded (from converter)",
+                foreground="green"
+            )
+
+        self._update_visualise_checkbox_state()
+        self.converter_status.config(
+            text=f"Sent {count} entities to {target_labels.get(target, target)}."
+        )
+        self.notebook.select(0)
+
+
+    def _send_to_data_sources(self):
+        """Sends converted graph data directly to Data Sources."""
+        result = self._converter_generate()
+        if result is None:
+            return
+        converted_rows, unique_ids, count_skipped = result
+
+        if not converted_rows:
+            messagebox.showwarning("No Data", "No graph data was generated.")
+            return
+
+        filename = f"conv-converted-{int(time.time())}.csv"
+        filepath = os.path.join(CONFIG_DIR, filename)
+
+        fieldnames = [
+            "source_id", "source_label", "source_type",
+            "target_id", "target_label", "target_type", "relationship"
+        ]
+        try:
+            with open(filepath, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(converted_rows)
+        except IOError as e:
+            messagebox.showerror("Write Error", f"Could not create temp file: {e}")
+            return
+
+        if filepath not in self.source_files:
+            self.source_files.append(filepath)
+            self.file_listbox.insert(tk.END, f"CONV: {filename}")
+
+        self.refine_section.set_enabled(True)
+        self._mark_files_changed()
+
+        count = len(converted_rows)
+        self.converter_status.config(text=f"Sent {count} rows to Data Sources.")
+        self.notebook.select(0)
+
+
+    def _converter_generate(self):
+        """Generates converted data from the Data Converter mappings.
+
+        Returns (converted_rows, unique_ids, count_skipped) or None on validation failure.
+        """
         entity_type = self.converter_entity_type.get()  # "person" or "company"
         output_mode = self.convert_mode.get()  # "cohort" or "graph"
-        
+
         col_id = self.combo_id_col.get()
         col_sec = self.combo_sec_col.get()
 
         if not col_id:
             messagebox.showwarning("Missing Map", "Please select the primary ID column.")
-            return
-
-        save_path = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV Files", "*.csv")],
-            title=f"Save {output_mode.title()} File"
-        )
-        if not save_path:
-            return
+            return None
 
         converted_rows = []
         unique_ids = set()
@@ -4194,9 +4319,9 @@ class NetworkAnalytics(InvestigationModuleBase):
                         dob_obj = {"year": str(dt.year), "month": f"{dt.month:02d}"}
                     except ValueError:
                         pass
-                
+
                 entity_id = get_canonical_name_key(raw_id_val, dob_obj)
-            
+
             else:  # Company
                 cnum = clean_company_number(raw_id_val)
                 if not cnum:
@@ -4215,25 +4340,25 @@ class NetworkAnalytics(InvestigationModuleBase):
             # 2. Process Linked Attributes
             if output_mode == "graph":
                 has_any_link = False
-                
+
                 for attr_widget in self.linked_attribute_widgets:
                     if not attr_widget.has_valid_mapping():
                         continue
-                    
+
                     attr_type = attr_widget.get_type()
                     config = ATTRIBUTE_TYPES.get(attr_type, {})
                     options = attr_widget.get_options()
                     values = attr_widget.get_mapped_values(row)
-                    
+
                     # Skip if no values
                     if not any(v for v in values.values()):
                         continue
-                    
+
                     # Handle custom type
                     if attr_type == "custom":
                         node_type = options.get("node_type_label", "custom").strip() or "custom"
                         relationship = options.get("relationship_label", "linked_to").strip() or "linked_to"
-                        
+
                         # Build ID with custom normalisation options
                         raw_value = values.get("value", "")
                         attr_id = raw_value
@@ -4245,25 +4370,25 @@ class NetworkAnalytics(InvestigationModuleBase):
                     else:
                         node_type = config.get("node_type", attr_type)
                         relationship = config.get("relationship", "linked_to")
-                        
+
                         # Handle relationship as dict (varies by entity type)
                         if isinstance(relationship, dict):
                             relationship = relationship.get(entity_type, "linked_to")
-                        
+
                         # Build ID and label using config functions
                         id_builder = config.get("id_builder")
                         label_builder = config.get("label_builder")
-                        
+
                         if id_builder:
                             attr_id = id_builder(values, options)
                         else:
                             attr_id = ""
-                        
+
                         if label_builder:
                             attr_label = label_builder(values, options)
                         else:
                             attr_label = ""
-                    
+
                     # Only add if we got a valid ID
                     if attr_id:
                         has_any_link = True
@@ -4276,7 +4401,7 @@ class NetworkAnalytics(InvestigationModuleBase):
                             "target_type": node_type,
                             "relationship": relationship
                         })
-                
+
                 # If no linked attributes produced output, add entity-only row
                 if not has_any_link:
                     converted_rows.append({
@@ -4288,6 +4413,25 @@ class NetworkAnalytics(InvestigationModuleBase):
                         "target_type": "",
                         "relationship": ""
                     })
+
+        return converted_rows, unique_ids, count_skipped
+
+
+    def _converter_run(self):
+        """Export converted data to a file (Export as File action)."""
+        result = self._converter_generate()
+        if result is None:
+            return
+        converted_rows, unique_ids, count_skipped = result
+
+        output_mode = self.convert_mode.get()
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv")],
+            title=f"Save {output_mode.title()} File"
+        )
+        if not save_path:
+            return
 
         try:
             with open(save_path, "w", newline="", encoding="utf-8") as f:
@@ -4301,7 +4445,7 @@ class NetworkAnalytics(InvestigationModuleBase):
                     writer.writeheader()
                     for r in converted_rows:
                         writer.writerow(r)
-            
+
             count = len(unique_ids) if output_mode == "cohort" else len(converted_rows)
             self.converter_status.config(text=f"Success! Saved {count} items.")
             messagebox.showinfo("Conversion Complete", f"Successfully exported data to:\n{save_path}\n\nItems Processed: {count}")
@@ -4331,7 +4475,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         """Modified: Resets all state and disables sections."""
         for f in self.source_files:
             basename = os.path.basename(f)
-            if (basename.startswith("Seed-") or basename.startswith("mtn-")) and os.path.exists(f):
+            if (basename.startswith("Seed-") or basename.startswith("mtn-") or basename.startswith("conv-")) and os.path.exists(f):
                 try:
                     os.remove(f)
                 except OSError as e:
@@ -4748,7 +4892,7 @@ class NetworkAnalytics(InvestigationModuleBase):
 
         # Enable buttons
         self.add_linked_attr_btn.config(state="normal")
-        self.convert_btn.config(state="normal")
+        self.send_to_menu_btn.config(state="normal")
 
         # Recreate linked attribute widgets
         for attr_state in conv.get("linked_attributes", []):
