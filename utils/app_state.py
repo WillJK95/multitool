@@ -19,3 +19,4 @@ class AppState:
         self.network_working_set_source = None  # "Bulk Entity Search" or "UBO Tracer"
         self.recent_edd_reports = []            # list of {name, path, date}
         self.quick_launch_history = []          # lightweight, last 5 entities resolved
+        self.network_analytics_snapshot = None   # dict, persists across navigation
