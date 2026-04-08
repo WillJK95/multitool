@@ -2521,6 +2521,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             self._manual_toggle_widget.config(
                 text="\u25B6 Grant Details & Supplementary Accounts Data (Optional)"
             )
+        self._update_scrollregion()
 
     def _get_config_frame(self):
         """Return the Step 3 config frame widget for insertion ordering."""

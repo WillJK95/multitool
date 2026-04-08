@@ -15,7 +15,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
-from .helpers import log_message
+from .helpers import log_message, clean_company_number
 from .edd_visualizations import format_display_date
 
 
@@ -308,10 +308,13 @@ def generate_charity_profile_html(charity_data: dict) -> str:
     contact_html = '<br>'.join(contact_parts) if contact_parts else 'Not published'
 
     # Companies House link
-    co_reg = details.get('charity_co_reg_number', '')
+    co_reg_raw = details.get('charity_co_reg_number', '')
+    co_reg = clean_company_number(str(co_reg_raw)) if co_reg_raw else ''
+    if not co_reg:
+        co_reg = str(co_reg_raw).strip() if co_reg_raw else ''
     ch_link = ''
     if co_reg:
-        ch_link = f'{esc(co_reg)} (<a href="https://find-and-update.company-information.service.gov.uk/company/{html.escape(str(co_reg))}" target="_blank">View on Companies House</a>)'
+        ch_link = f'{esc(co_reg)} (<a href="https://find-and-update.company-information.service.gov.uk/company/{html.escape(co_reg)}" target="_blank">View on Companies House</a>)'
 
     # Previous names
     names_html = ''
