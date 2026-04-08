@@ -3698,6 +3698,15 @@ class NetworkAnalytics(InvestigationModuleBase):
         DEFAULT_COLOR = "#808080"
 
         viz = subgraph.copy()
+        # Sanitize non-JSON-serializable attributes (e.g. sets) for gravis
+        for _, attrs in viz.nodes(data=True):
+            for key, val in list(attrs.items()):
+                if isinstance(val, set):
+                    attrs[key] = sorted(val)
+        for _, _, attrs in viz.edges(data=True):
+            for key, val in list(attrs.items()):
+                if isinstance(val, set):
+                    attrs[key] = sorted(val)
         for node_id, attrs in viz.nodes(data=True):
             label = attrs.get("label", str(node_id))
             node_type = attrs.get("type", "unknown")
