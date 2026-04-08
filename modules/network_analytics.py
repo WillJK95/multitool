@@ -3742,7 +3742,8 @@ class NetworkAnalytics(InvestigationModuleBase):
                 collision_force_radius=30.0,
             )
             filename = os.path.join(CONFIG_DIR, "lynchpin_network_graph.html")
-            fig.export_html(filename, overwrite=True)
+            with open(filename, "w", encoding="utf-8") as fh:
+                fh.write(fig.to_html())
             webbrowser.open(f"file://{os.path.realpath(filename)}")
         except Exception as e:
             log_message(f"Failed to save or open lynchpin graph: {e}")
@@ -5628,7 +5629,8 @@ class NetworkAnalytics(InvestigationModuleBase):
                 edge_curvature=0.15,
             )
             filename = os.path.join(CONFIG_DIR, "combined_network_graph.html")
-            fig.export_html(filename, overwrite=True)
+            with open(filename, "w", encoding="utf-8") as fh:
+                fh.write(fig.to_html())
             webbrowser.open(f"file://{os.path.realpath(filename)}")
         except Exception as e:
             log_message(f"Failed to save or open combined graph: {e}")
