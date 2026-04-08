@@ -231,7 +231,8 @@ def generate_company_timeline(
                 'description': filing.get('description', ''),
             })
         elif category in ('Charge Registered', 'Charge Satisfied', 'Allotment of Shares',
-                          'Special Resolution', 'Incorporation'):
+                          'Special Resolution', 'Incorporation',
+                          'Change of Registered Office'):
             filing_events['Other Filings'].append({
                 'date': f_date, 'type': f_type, 'category': category or f_type,
             })
