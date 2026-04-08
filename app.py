@@ -2252,20 +2252,25 @@ class App(tk.Tk):
         """
         import csv as csv_mod
         import tempfile
+        import time
         from .utils.helpers import (
             extract_address_string, clean_address_string,
             format_address_label, get_canonical_name_key,
+            format_eta,
         )
 
         rows = []  # list of 7-element tuples
+        start_time = time.time()
 
         for i, ent in enumerate(entities):
             num = ent.get("company_number", ent.get("number", ""))
             name = ent.get("name", "Unknown")
 
-            self.after(0, lambda n=name, idx=i, tot=len(entities):
+            elapsed = time.time() - start_time
+            eta = format_eta(elapsed, i, len(entities))
+            self.after(0, lambda n=name, idx=i, tot=len(entities), e=eta:
                        progress_lbl.configure(
-                           text=f"Processing {idx+1}/{tot}: {n}"))
+                           text=f"Processing {idx+1}/{tot}: {n}  (ETA: {e})"))
 
             if not num:
                 continue

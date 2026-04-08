@@ -597,6 +597,7 @@ class DirectorSearch(InvestigationModuleBase):
             return None
 
         failed_companies = []
+        start_time = time.time()
         with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
             future_to_cnum = {
                 executor.submit(self._fetch_company_network_data, cnum): cnum
@@ -608,11 +609,14 @@ class DirectorSearch(InvestigationModuleBase):
                     return None  # Stop processing
 
                 cnum = future_to_cnum[future]
+                elapsed = time.time() - start_time
+                eta = format_eta(elapsed, i, len(unique_company_numbers))
                 self.app.after(
                     0,
-                    lambda: self.status_var.set(
-                        f"Fetching network data for {cnum} ({i + 1}/{len(unique_company_numbers)})..."
-                    ),
+                    lambda c=cnum, idx=i, tot=len(unique_company_numbers), e=eta:
+                        self.status_var.set(
+                            f"Fetching network data for {c} ({idx + 1}/{tot})...  ETA: {e}"
+                        ),
                 )
                 profile, officers, pscs, profile_err = future.result()
 

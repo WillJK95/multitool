@@ -4967,7 +4967,7 @@ class NetworkAnalytics(InvestigationModuleBase):
 
     def _serialize_graph(self):
         """Serialize the NetworkX graph to a JSON-compatible dict."""
-        graph_data = nx.node_link_data(self.full_graph)
+        graph_data = nx.node_link_data(self.full_graph, edges="links")
 
         # Convert sets in node attributes to lists for JSON serialization
         for node in graph_data.get("nodes", []):
@@ -5071,7 +5071,7 @@ class NetworkAnalytics(InvestigationModuleBase):
             if "source_files" in node and isinstance(node["source_files"], list):
                 node["source_files"] = set(node["source_files"])
 
-        self.full_graph = nx.node_link_graph(graph_data)
+        self.full_graph = nx.node_link_graph(graph_data, edges="links")
 
     def _get_pruned_graph(self):
         """Modified: Uses all three exclusion sets."""
