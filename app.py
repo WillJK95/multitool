@@ -2367,8 +2367,8 @@ class App(tk.Tk):
                 dob = psc.get("date_of_birth")
                 pkey = canon_key(pname, dob)
                 rows.append((
-                    company_number, company_name, "company",
-                    pkey, pname, "person", "psc"
+                    pkey, pname, "person",
+                    company_number, company_name, "company", "psc"
                 ))
                 paddr_raw = extract_addr(psc.get("address"))
                 if paddr_raw:
@@ -2414,8 +2414,8 @@ class App(tk.Tk):
                     continue
                 pkey = canon_key(tname, None)
                 rows.append((
-                    node_id, charity_name, "charity",
-                    pkey, tname, "person", "trustee"
+                    pkey, tname, "person",
+                    node_id, charity_name, "charity", "trustee"
                 ))
                 trustee_addr = trustee.get("trustee_address")
                 if trustee_addr:

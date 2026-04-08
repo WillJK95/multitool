@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import networkx as nx
 import pgeocode
-from pyvis.network import Network
+import gravis
 
 from ..ui.searchable_entry import SearchableEntry
 # --- From Our Package ---
@@ -3691,58 +3691,58 @@ class NetworkAnalytics(InvestigationModuleBase):
 
 
     def _visualise_lynchpin_subgraph(self, subgraph, lynchpin_ids, suspect_ids):
-        """Visualise a subgraph highlighting lynchpins and suspects."""
-        net = Network(
-            height="900px",
-            width="100%",
-            bgcolor="#FFFFFF",
-            font_color="black",
-            directed=True,
-        )
-        net.barnes_hut(gravity=-3000, central_gravity=0.3, spring_length=150)
-        
-        # Node colors
-        LYNCHPIN_COLOR = "#FF0000"  # Red for lynchpins
-        SUSPECT_COLOR = "#FFA500"   # Orange for suspects
-        
-        NODE_COLORS = {
-            "company": "#4A90D9",
-            "person": "#50C878",
-            "address": "#DA70D6",
-        }
+        """Visualise a subgraph highlighting lynchpins and suspects using gravis."""
+        LYNCHPIN_COLOR = "#FF0000"
+        SUSPECT_COLOR = "#FFA500"
+        NODE_COLORS = {"company": "#4A90D9", "person": "#50C878", "address": "#DA70D6"}
         DEFAULT_COLOR = "#808080"
-        
-        for node_id, attrs in subgraph.nodes(data=True):
+
+        viz = subgraph.copy()
+        for node_id, attrs in viz.nodes(data=True):
             label = attrs.get("label", str(node_id))
             node_type = attrs.get("type", "unknown")
-            
-            # Determine color based on role
             if node_id in lynchpin_ids:
-                color = LYNCHPIN_COLOR
-                size = 30
-                title = f"LYNCHPIN: {label}"
+                attrs["color"] = LYNCHPIN_COLOR
+                attrs["size"] = 30
+                attrs["click"] = f"<h4>LYNCHPIN</h4><p>{html.escape(label)}</p>"
             elif node_id in suspect_ids:
-                color = SUSPECT_COLOR
-                size = 25
-                title = f"SUSPECT: {label}"
+                attrs["color"] = SUSPECT_COLOR
+                attrs["size"] = 25
+                attrs["click"] = f"<h4>SUSPECT</h4><p>{html.escape(label)}</p>"
             else:
-                color = NODE_COLORS.get(node_type, DEFAULT_COLOR)
-                size = 20
-                title = label
-            
-            safe_label = html.escape(str(label)[:50])
-            safe_title = html.escape(title)
-            
-            net.add_node(node_id, label=safe_label, title=safe_title, color=color, size=size)
-        
-        for source, target, edge_attrs in subgraph.edges(data=True):
+                attrs["color"] = NODE_COLORS.get(node_type, DEFAULT_COLOR)
+                attrs["size"] = 20
+                attrs["click"] = f"<p>{html.escape(label)}</p>"
+            attrs["label"] = html.escape(str(label)[:50])
+            attrs["hover"] = html.escape(label)
+
+        for source, target, edge_attrs in viz.edges(data=True):
             edge_label = edge_attrs.get("label", "")
-            safe_title = html.escape(edge_label)
-            net.add_edge(source, target, title=safe_title, width=2)
-        
+            edge_attrs["hover"] = html.escape(edge_label)
+            edge_attrs["size"] = 2
+
         try:
+            fig = gravis.d3(
+                viz,
+                graph_height=800,
+                details_height=150,
+                show_details=True,
+                show_details_toggle_button=True,
+                show_menu=True,
+                show_menu_toggle_button=True,
+                node_label_data_source="label",
+                show_node_label=True,
+                node_hover_tooltip=True,
+                show_edge_label=True,
+                edge_label_data_source="label",
+                edge_hover_tooltip=True,
+                layout_algorithm_active=True,
+                many_body_force_strength=-200.0,
+                use_collision_force=True,
+                collision_force_radius=30.0,
+            )
             filename = os.path.join(CONFIG_DIR, "lynchpin_network_graph.html")
-            net.write_html(filename, notebook=False)
+            fig.export_html(filename, overwrite=True)
             webbrowser.open(f"file://{os.path.realpath(filename)}")
         except Exception as e:
             log_message(f"Failed to save or open lynchpin graph: {e}")
@@ -5436,26 +5436,22 @@ class NetworkAnalytics(InvestigationModuleBase):
             ]
             viz_graph.remove_edges_from(inferred_edges)
 
-        # Build the visual network
-        net = Network(height="95vh", width="100%", directed=True, notebook=False, cdn_resources="local")
+        # --- Edge direction normalisation ---
+        PERSON_TO_ORG_ROLES = {"psc", "trustee"}
+        edges_to_flip = []
+        for u, v, eattrs in viz_graph.edges(data=True):
+            rel = eattrs.get("label", "").lower()
+            src_type = viz_graph.nodes[u].get("type", "")
+            tgt_type = viz_graph.nodes[v].get("type", "")
+            if rel in PERSON_TO_ORG_ROLES and src_type in ("company", "charity") and tgt_type == "person":
+                edges_to_flip.append((u, v, eattrs.copy()))
+            elif rel in ("director", "secretary", "officer") and src_type == "person" and tgt_type in ("company", "charity"):
+                edges_to_flip.append((u, v, eattrs.copy()))
+        for u, v, ea in edges_to_flip:
+            viz_graph.remove_edge(u, v)
+            viz_graph.add_edge(v, u, **ea)
 
-        # Configure options
-        # NOTE: Removed the 'scaling' block from set_options because it does not work 
-        # for 'box' and 'ellipse' shapes (which require font-size adjustment instead).
         scale_by_connections = self.scale_by_connections_var.get()
-        if scale_by_connections:
-            # Enable avoidOverlap so physics respects node sizes
-            net.set_options("""{
-                "configure": {"enabled": true},
-                "physics": {
-                    "solver": "forceAtlas2Based",
-                    "forceAtlas2Based": {
-                        "avoidOverlap": 0.2
-                    }
-                }
-            }""")
-        else:
-            net.set_options("""{"configure": {"enabled": true}, "physics": {"solver": "forceAtlas2Based"}}""")
 
         path_edges = set()
         if path:
@@ -5474,155 +5470,155 @@ class NetworkAnalytics(InvestigationModuleBase):
             )
             file_color_map = {source: color for source, color in zip(unique_sources, border_colors)}
 
-        # --- Pre-calculate log scaling values explicitly in Python ---
-        scale_by_connections = self.scale_by_connections_var.get()
-        log_degree_map = {}
-        min_log = 0.0
-        max_log = 1.0
-        min_size_px = 20
-        max_size_px = 55
-        
-        if scale_by_connections:
-            # Use the degree of the *visualised* graph
-            degrees = dict(viz_graph.degree())
-            log_degree_map = {n: math.log1p(d) for n, d in degrees.items()}
-            
-            if log_degree_map:
-                min_log = min(log_degree_map.values())
-                max_log = max(log_degree_map.values())
-                if max_log == min_log:
-                    max_log = min_log + 1
+        # Shape / colour maps for gravis d3
+        SHAPE_MAP = {"company": "rectangle", "charity": "rectangle", "person": "circle", "address": "hexagon"}
+        COLOR_MAP = {"company": "#B9D9EB", "charity": "#B9D9EB", "person": "#D9E8B9", "address": "#FFB347"}
 
+        # --- Set gravis-compatible attributes on each node ---
         for node_id, attrs in viz_graph.nodes(data=True):
-            node_type = attrs.get("type")
-            base_color = "#B9D9EB" if node_type == "company" else ("#FFB347" if node_type == "address" else "#D9E8B9")
-            size = 15
-            shape = "box" if node_type in ["company", "address"] else "ellipse"
-            final_color = base_color
-            border_width = 1
-            shape_properties = {}
+            node_type = attrs.get("type", "")
+            base_color = COLOR_MAP.get(node_type, "#C0C0C0")
+            shape = SHAPE_MAP.get(node_type, "circle")
+            node_color = base_color
+            border_color = None
+            border_size = 1
 
+            # Highlighting
             if highlight_ids and node_id in highlight_ids:
-                shape_properties["borderDashes"] = [10, 10]
-                border_width = 5
-                # For highlighting, we normally bump size, but if scaling is ON, 
-                # we let the degree dictate size and use border/color to highlight.
-                if not scale_by_connections:
-                    size = max(size, 30)
-
-            if path and node_id in path:
-                final_color = "#FF0000"
-                if not scale_by_connections:
-                    size = max(size, 25)
-
-            if node_id in highlight_ids:
-                shape_properties["borderDashes"] = [10, 10]
-                border_width = 5
-                if not scale_by_connections:
-                    size = max(size, 30)
-                
-                # Optional: Distinguish List A vs List B with border colors
+                border_size = 5
                 if mode == "two_lists":
-                    if node_id in list_a: 
-                        final_color = {"background": base_color, "border": "#0000FF"} # Blue for A
+                    if node_id in list_a:
+                        border_color = "#0000FF"
                     elif node_id in list_b:
-                        final_color = {"background": base_color, "border": "#FF0000"} # Red for B
+                        border_color = "#FF0000"
 
+            # Path highlighting
+            if path and node_id in path:
+                node_color = "#FF0000"
+                border_color = "#FF0000"
+
+            # Distinguish by source file
             if distinguish_by_file:
                 source_files = attrs.get("source_files", set())
-                if border_width == 1:
-                    border_width = 3
-                border_color = "#FFFFFF"
+                if border_size <= 1:
+                    border_size = 3
                 if len(source_files) > 1:
                     border_color = "#000000"
                 elif len(source_files) == 1:
-                    filename = list(source_files)[0]
-                    border_color = file_color_map.get(filename, "#FFFFFF")
-                bg_color = final_color if path and node_id in path else base_color
-                final_color = {"background": bg_color, "border": border_color}
+                    border_color = file_color_map.get(list(source_files)[0], "#FFFFFF")
 
-            label_lines = []
+            # Build label
             raw_label = attrs.get("label", "")
-            if node_type == "company":
-                wrapped = "\n".join(textwrap.wrap(raw_label, width=25))
-                label_lines.append(html.escape(wrapped))
-                label_lines.append(f"({html.escape(node_id)})")
+            if node_type in ("company", "charity"):
+                display_label = raw_label
             elif node_type == "address":
-                wrapped = "\n".join(textwrap.wrap(raw_label, width=25))
-                label_lines.append(html.escape(wrapped))
+                parts = [p.strip() for p in raw_label.split(",")]
+                first_line = parts[0] if parts else raw_label
+                postcode = parts[-1] if len(parts) > 1 and len(parts[-1]) <= 10 else ""
+                display_label = f"{first_line}, {postcode}" if postcode else first_line
             else:
-                label_lines.append(html.escape(raw_label))
+                display_label = raw_label
+
+            # Build click sidebar HTML
+            safe_name = html.escape(raw_label)
+            if node_type in ("company", "charity"):
+                click_html = f"<h4>{safe_name}</h4><p>{html.escape(str(node_id))}</p>"
+            elif node_type == "person":
+                dob_str = ""
                 if "-" in str(node_id):
                     try:
-                        parts = str(node_id).rsplit("-", 2)
-                        if len(parts) == 3:
-                            name_key, year, month = parts
-                            label_lines.append(f"DOB: {month}/{year}")
+                        id_parts = str(node_id).rsplit("-", 2)
+                        if len(id_parts) == 3:
+                            dob_str = f"{id_parts[2]}/{id_parts[1]}"
                     except (ValueError, TypeError):
                         pass
-
-            safe_label_multiline = "\n".join(label_lines)
-            safe_title = html.escape(raw_label)
-
-            node_kwargs = {
-                "label": safe_label_multiline,
-                "title": safe_title,
-                "color": final_color,
-                "borderWidth": border_width,
-                "shape": shape,
-                "shapeProperties": shape_properties,
-            }
-
-            # Apply size
-            if scale_by_connections:
-                # Calculate normalized size
-                val = log_degree_map.get(node_id, 0)
-                norm = (val - min_log) / (max_log - min_log)
-                calculated_size = min_size_px + (norm * (max_size_px - min_size_px))
-                
-                # IMPORTANT: For 'box' and 'ellipse' shapes, 'size' does not work in VisJS scaling.
-                # We must set the font size to make the box/ellipse bigger.
-                if shape in ["box", "ellipse", "database", "text"]:
-                    node_kwargs["font"] = {"size": int(calculated_size)}
-                    # Also set 'value' so physics avoidOverlap knows the node's collision radius
-                    node_kwargs["value"] = calculated_size * 2
-                else:
-                    node_kwargs["size"] = int(calculated_size)
+                # Build role table from edges
+                roles = []
+                for eu, ev, ea in viz_graph.edges(data=True):
+                    if eu == node_id and viz_graph.nodes[ev].get("type") in ("company", "charity"):
+                        roles.append((html.escape(viz_graph.nodes[ev].get("label", str(ev))), html.escape(ea.get("label", ""))))
+                    elif ev == node_id and viz_graph.nodes[eu].get("type") in ("company", "charity"):
+                        roles.append((html.escape(viz_graph.nodes[eu].get("label", str(eu))), html.escape(ea.get("label", ""))))
+                click_html = f"<h4>{safe_name}</h4>"
+                if dob_str:
+                    click_html += f"<p>DOB: {html.escape(dob_str)}</p>"
+                if roles:
+                    click_html += "<table border='1' cellpadding='4' cellspacing='0'><tr><th>Organisation</th><th>Role</th></tr>"
+                    for org, role in roles:
+                        click_html += f"<tr><td>{org}</td><td>{role}</td></tr>"
+                    click_html += "</table>"
+            elif node_type == "address":
+                click_html = f"<h4>Address</h4><p>{safe_name}</p>"
             else:
-                node_kwargs["size"] = size
+                click_html = f"<h4>{html.escape(node_type)}</h4><p>{safe_name}</p>"
 
-            net.add_node(node_id, **node_kwargs)
+            # Set node size for scaling
+            if scale_by_connections:
+                attrs["size"] = math.log1p(viz_graph.degree(node_id))
+            else:
+                attrs["size"] = 15
 
+            attrs["color"] = node_color
+            attrs["shape"] = shape
+            attrs["label"] = display_label
+            attrs["hover"] = html.escape(raw_label)
+            attrs["click"] = click_html
+            if border_color:
+                attrs["border_color"] = border_color
+            attrs["border_size"] = border_size
+
+        # --- Set gravis-compatible attributes on each edge ---
         for source, target, edge_attrs in viz_graph.edges(data=True):
-            width = 1
             edge_color = "#848484"
-            dashes = False
+            edge_size = 1
 
-            # Check if this is an inferred edge
             if edge_attrs.get("type") == "inferred":
-                edge_color = "#FF00FF"  # Magenta
-                width = 3
-                dashes = [10, 10]
-                # Check label or method to distinguish Relatives vs Neighbours
                 lbl = edge_attrs.get("label", "").lower()
                 method = edge_attrs.get("method", "")
-                
-                # If it involves a Surname match (Relative), make it Yellow/Gold
                 if "surname" in lbl or "surname" in method:
-                    edge_color = "#FFD700"  # Gold
+                    edge_color = "#FFD700"
                 else:
-                    # Otherwise it's just a Neighbour/Proximity match
-                    edge_color = "#FF00FF"  # Magenta
+                    edge_color = "#FF00FF"
+                edge_size = 3
+
             if path and (source, target) in path_edges:
-                width = 5
+                edge_size = 5
                 edge_color = "#FF0000"
 
-            safe_title = html.escape(edge_attrs.get("label", ""))
-            net.add_edge(source, target, title=safe_title, width=width, color=edge_color, dashes=dashes)
+            edge_attrs["color"] = edge_color
+            edge_attrs["size"] = edge_size
+            edge_label = edge_attrs.get("label", "")
+            edge_attrs["hover"] = html.escape(edge_label)
 
         try:
+            fig = gravis.d3(
+                viz_graph,
+                graph_height=800,
+                details_height=200,
+                show_details=True,
+                show_details_toggle_button=True,
+                show_menu=True,
+                show_menu_toggle_button=True,
+                node_label_data_source="label",
+                show_node_label=True,
+                node_hover_neighborhood=True,
+                node_hover_tooltip=True,
+                show_edge_label=True,
+                edge_label_data_source="label",
+                edge_label_size_factor=0.8,
+                edge_hover_tooltip=True,
+                node_size_data_source="size",
+                use_node_size_normalization=scale_by_connections,
+                node_size_normalization_min=10.0,
+                node_size_normalization_max=55.0,
+                use_collision_force=True,
+                collision_force_radius=30.0,
+                layout_algorithm_active=True,
+                many_body_force_strength=-120.0,
+                edge_curvature=0.15,
+            )
             filename = os.path.join(CONFIG_DIR, "combined_network_graph.html")
-            net.write_html(filename, notebook=False)
+            fig.export_html(filename, overwrite=True)
             webbrowser.open(f"file://{os.path.realpath(filename)}")
         except Exception as e:
             log_message(f"Failed to save or open combined graph: {e}")

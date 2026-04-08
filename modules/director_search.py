@@ -1,18 +1,16 @@
 # modules/director_search.py
 """Director search module."""
 import csv
-import html
 import os
 import re
+import tempfile
 import textwrap
 import threading
 import time
-import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- Third-Party ---
 import networkx as nx
-from pyvis.network import Network
 
 # --- Tkinter ---
 import tkinter as tk
@@ -21,15 +19,9 @@ from tkinter import ttk, messagebox, filedialog
 # --- From Our Package ---
 # API functions (were global functions in original file)
 from ..api.companies_house import ch_get_data
-from ..api.grantnav import grantnav_get_data
 
 # Constants (were at top of original file)
-from ..constants import (
-    CONFIG_DIR,
-    API_BASE_URL,
-    GRANTNAV_API_BASE_URL,
-    GRANT_DATA_FIELDS,
-)
+from ..constants import API_BASE_URL
 
 # Utility functions (were global functions or duplicated in classes)
 from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary, format_eta, match_officer_name_tokens
@@ -195,42 +187,20 @@ class DirectorSearch(InvestigationModuleBase):
             "Export selected directorship rows to CSV. If no rows are selected, all rows are exported.",
         )
 
-        self.grants_btn = ttk.Button(
-            button_export_frame,
-            text="Obtain Grants Data & Export",
-            state="disabled",
-            command=self.start_grants_investigation,
+        # --- Send to… dropdown menu ---
+        self._send_menu_btn = ttk.Menubutton(
+            button_export_frame, text="Send to\u2026 \u25BC", bootstyle="primary-outline"
         )
-        self.grants_btn.pack(side=tk.RIGHT, padx=(5, 0))
-        Tooltip(
-            self.grants_btn,
-            "For selected companies, fetch all associated grant data from the 360Giving API. If no rows are selected, all companies are searched.",
-        )
-
-        # --- MODIFIED: Graph and Export Buttons ---
-        self.graph_btn = ttk.Button(
-            button_export_frame,
-            text="Generate Visual Graph",
-            state="disabled",
-            command=self.start_visual_graph_generation,
-        )
-        self.graph_btn.pack(side=tk.RIGHT, padx=(5, 0))
-        Tooltip(
-            self.graph_btn,
-            "Generate an interactive network graph for selected companies, including their directors, PSCs, and addresses. If no rows are selected, all companies are included.",
-        )
-
-        self.export_graph_data_btn = ttk.Button(
-            button_export_frame,
-            text="Export Graph Data (CSV)",
-            state="disabled",
-            command=self.start_graph_data_export,
-        )
-        self.export_graph_data_btn.pack(side=tk.RIGHT, padx=(5, 0))
-        Tooltip(
-            self.export_graph_data_btn,
-            "Export the network graph data (companies, people, addresses) for selected rows to CSV. If no rows are selected, all data is exported.",
-        )
+        self._send_menu = tk.Menu(self._send_menu_btn, tearoff=0)
+        self._send_menu.add_command(label="Working Set", command=self._send_to_working_set)
+        self._send_menu.add_command(label="Network Analytics Workbench", command=self._send_to_network_analytics)
+        self._send_menu.add_command(label="UBO Tracer", command=self._send_to_ubo_tracer)
+        self._send_menu.add_command(label="Bulk Entity Search", command=self._send_to_bulk_entity_search)
+        self._send_menu.add_command(label="Enhanced Due Diligence", command=self._send_to_edd)
+        self._send_menu.add_command(label="Grants Search", command=self._send_to_grants_search)
+        self._send_menu_btn.configure(menu=self._send_menu)
+        self._send_menu_btn.pack(side=tk.RIGHT, padx=(5, 0))
+        Tooltip(self._send_menu_btn, "Send selected results to another module for further analysis.")
 
         # Apply prefill from Quick Launch or UBO Tracer
         if self._prefill_name:
@@ -264,18 +234,12 @@ class DirectorSearch(InvestigationModuleBase):
         """Helper to disable all action buttons during processing."""
         self.search_btn.config(state="disabled")
         self.export_btn.config(state="disabled")
-        self.grants_btn.config(state="disabled")
-        self.graph_btn.config(state="disabled")
-        self.export_graph_data_btn.config(state="disabled")
 
     def _restore_button_states(self):
         """Helper to re-enable buttons after a process finishes."""
         self.search_btn.config(state="normal")
         if self.results_data:
             self.export_btn.config(state="normal")
-            self.grants_btn.config(state="normal")
-            self.graph_btn.config(state="normal")
-            self.export_graph_data_btn.config(state="normal")
 
     def validate_year(self, P):
         return (str.isdigit(P) or P == "") and len(P) <= 4
@@ -607,246 +571,9 @@ class DirectorSearch(InvestigationModuleBase):
 
         self._restore_button_states()
 
-    def start_grants_investigation(self):
-        """Kicks off the grant fetching process in a new thread."""
-        if not self.results_data:
-            messagebox.showinfo("No Data", "Please run a director search first.")
-            return
-
-        selected_results = self._get_selected_results()
-        if not selected_results:
-            messagebox.showinfo(
-                "No Selection",
-                "No rows selected for grants search. Please select rows or use 'Select All'."
-            )
-            return
-
-        self._disable_all_buttons()
-        self.cancel_flag.clear()
-        self.grants_results = []
-        # Store selected results for the thread to use
-        self._selected_for_processing = selected_results
-
-        threading.Thread(target=self._run_grants_thread, daemon=True).start()
-
-    def _run_grants_thread(self):
-
-        unique_companies = {
-            d["company_number"]: d for d in self._selected_for_processing if d.get("company_number")
-        }.values()
-
-        if not unique_companies:
-            self.app.after(
-                0,
-                lambda: self.status_var.set(
-                    "No companies with numbers to search for grants."
-                ),
-            )
-            self.after(100, self._finish_grants_investigation)
-            return
-
-        self.app.after(
-            0,
-            lambda: self.status_var.set(
-                f"Fetching grants for {len(unique_companies)} companies..."
-            ),
-        )
-
-        with ThreadPoolExecutor(
-            max_workers=2
-        ) as executor:  # Respect GrantNav rate limits
-            futures = {
-                executor.submit(
-                    self._process_company_for_grants, company_row
-                ): company_row
-                for company_row in unique_companies
-            }
-
-            for i, future in enumerate(as_completed(futures)):
-                if self.cancel_flag.is_set():
-                    break
-                company_row = futures[future]
-                cnum = company_row.get("company_number")
-                self.app.after(
-                    0,
-                    lambda: self.status_var.set(
-                        f"Processing {cnum} ({i + 1}/{len(unique_companies)})..."
-                    ),
-                )
-                try:
-                    new_rows = future.result()
-                    if new_rows:
-                        self.grants_results.extend(new_rows)
-                except Exception as e:
-                    log_message(f"Error processing grants for {cnum}: {e}")
-
-        self.after(100, self._finish_grants_investigation)
-
-    def _process_company_for_grants(self, company_row):
-        """For a single company row, find all grants and create combined result rows."""
-        if self.cancel_flag.is_set():
-            return []
-
-        company_number = company_row.get("company_number")
-        if not company_number:
-            return []
-
-        org_id = f"GB-COH-{company_number}"
-        grants = self._fetch_all_grants(org_id)
-
-        new_rows = []
-        if grants:
-            for grant in grants:
-                new_row = company_row.copy()
-                self._add_selected_grant_data(new_row, grant)
-                new_rows.append(new_row)
-        return new_rows
-
-    def _finish_grants_investigation(self):
-        """Finalizes the grant search, triggers export, and resets the UI."""
-        self._restore_button_states()
-
-        if self.cancel_flag.is_set():
-            self.app.after(0, lambda: self.status_var.set("Grant search cancelled."))
-            return
-
-        if not self.grants_results:
-            self.app.after(
-                0,
-                lambda: self.status_var.set("Grant search complete. No grants found."),
-            )
-            messagebox.showinfo(
-                "No Grants Found",
-                "The search finished, but no grant data was found for the listed companies.",
-            )
-        else:
-            self.app.after(
-                0,
-                lambda: self.status_var.set(
-                    f"Grant search complete. Found {len(self.grants_results)} grants."
-                ),
-            )
-            self.export_grants_csv()
-
-    def export_grants_csv(self):
-        """Exports the combined director and grant data to a CSV file."""
-        if not self.grants_results:
-            return
-
-        original_headers = [
-            "officer_name",
-            "date_of_birth",
-            "company_name",
-            "company_number",
-            "company_status",
-            "role",
-            "address",
-        ]
-        grant_headers = list(GRANT_DATA_FIELDS.values())
-        all_headers = original_headers + grant_headers
-
-        original_results = self.results_data
-        self.results_data = self.grants_results
-        self.generic_export_csv(all_headers)
-        self.results_data = original_results
-
-    def _fetch_all_grants(self, org_id):
-        """Helper to fetch all grants from GrantNav API, handling pagination."""
-        all_results = []
-        url = f"{GRANTNAV_API_BASE_URL}/org/{org_id}/grants_received?limit=1000"
-        while url:
-            if self.cancel_flag.is_set():
-                break
-            data, error = grantnav_get_data(url)
-            if error:
-                log_message(f"GrantNav error for {org_id}: {error}")
-                return {"error_reason": error}
-                break
-            if data and "results" in data:
-                all_results.extend(item.get("data", {}) for item in data["results"])
-                url = data.get("next")
-            else:
-                break
-        return all_results
-
-    def _add_selected_grant_data(self, row, grant_data):
-        """Flattens nested grant data into the provided row."""
-        for key, text in GRANT_DATA_FIELDS.items():
-            row[text] = self.get_nested_value(grant_data, key)
-
     def _format_address_label(self, address_str: str, line_length: int = 25) -> str:
         """Wraps a long address string into multiple lines for graph readability."""
-        import textwrap
-
         return textwrap.fill(address_str, width=line_length)
-
-    # --- REFACTORED: Graphing Logic ---
-
-    def start_visual_graph_generation(self):
-        """Initiates the visual graph generation process."""
-        self._start_graph_process(self._run_visual_graph_thread)
-
-    def start_graph_data_export(self):
-        """Initiates the graph data export process."""
-        self._start_graph_process(self._run_export_graph_thread)
-
-    def _start_graph_process(self, target_thread_function):
-        """Generic starter for any graph-related process."""
-        if not self.results_data:
-            messagebox.showinfo(
-                "No Data", "Please run a director search before generating graph data."
-            )
-            return
-
-        selected_results = self._get_selected_results()
-        if not selected_results:
-            messagebox.showinfo(
-                "No Selection",
-                "No rows selected for graph generation. Please select rows or use 'Select All'."
-            )
-            return
-
-        self._disable_all_buttons()
-        self.cancel_flag.clear()
-        # Store selected results for the thread to use
-        self._selected_for_processing = selected_results
-
-        self.app.after(
-            0, lambda: self.status_var.set("Starting network data collection...")
-        )
-        threading.Thread(target=target_thread_function, daemon=True).start()
-
-    def _run_visual_graph_thread(self):
-        """Thread for building the graph object and then rendering it."""
-        try:
-            graph_object = self._build_network_graph_object()
-            if graph_object is not None and not self.cancel_flag.is_set():
-                self.after(100, self._generate_and_open_graph, graph_object)
-        except Exception as e:
-            log_message(f"Visual graph generation failed: {e}")
-            self.app.after(
-                0, lambda: messagebox.showerror(
-                    "Error", f"An error occurred during graph generation: {e}"
-                )
-            )
-        finally:
-            self.after(200, self._finish_graph_generation)
-
-    def _run_export_graph_thread(self):
-        """Thread for building the graph object and then exporting it."""
-        try:
-            graph_object = self._build_network_graph_object()
-            if graph_object is not None and not self.cancel_flag.is_set():
-                self.after(100, self._export_graph_to_csv, graph_object)
-        except Exception as e:
-            log_message(f"Graph data export failed: {e}")
-            self.app.after(
-                0, lambda: messagebox.showerror(
-                    "Error", f"An error occurred during graph data export: {e}"
-                )
-            )
-        finally:
-            self.after(200, self._finish_graph_generation)
 
     def _build_network_graph_object(self):
         """
@@ -970,7 +697,7 @@ class DirectorSearch(InvestigationModuleBase):
                             G.add_node(person_key, label=name, type="person", dob=dob)
                         elif dob and not G.nodes[person_key].get("dob"):
                             G.nodes[person_key]["dob"] = dob
-                        G.add_edge(cnum, person_key, label="psc")
+                        G.add_edge(person_key, cnum, label="psc")
 
                         # Add PSC correspondence address
                         psc_addr_raw = extract_address_string(psc.get("address"))
@@ -1012,180 +739,165 @@ class DirectorSearch(InvestigationModuleBase):
         )
         return profile, officers, pscs, profile_err
 
-    def _generate_and_open_graph(self, G):
-        """Converts the networkx graph to a pyvis graph and opens it."""
-        if G is None or G.number_of_nodes() == 0:
-            self.app.after(
-                0,
-                lambda: self.status_var.set(
-                    "Graph generation complete. No data to display."
-                ),
-            )
+    # --- Send to… methods ---
+
+    def _get_unique_companies(self):
+        """Return unique company working-set dicts from selected results."""
+        selected = self._get_selected_results()
+        seen = set()
+        companies = []
+        for row in selected:
+            cnum = row.get("company_number", "")
+            if cnum and cnum not in seen:
+                seen.add(cnum)
+                companies.append({
+                    "name": row.get("company_name", ""),
+                    "company_number": cnum,
+                    "active": row.get("company_status", "").lower() == "active",
+                    "entity_type": "company",
+                })
+        return companies
+
+    def _send_to_working_set(self):
+        """Send selected companies and directors to the Working Set."""
+        selected = self._get_selected_results()
+        if not selected:
             return
-
-        self.app.after(
-            0, lambda: self.status_var.set("Rendering graph... Please wait.")
-        )
-        net = Network(
-            height="95vh",
-            width="100%",
-            directed=True,
-            notebook=False,
-            cdn_resources="local",
-        )
-
-        net.set_options(
-            """var options = {"configure": {"enabled": true }, "physics": {"solver": "forceAtlas2Based"}}"""
-        )
-
-        for node_id, attrs in G.nodes(data=True):
-            node_type = attrs.get("type")
-            color = "#D9E8B9"  # Default Green (Person)
-            shape = "ellipse"
-            font_options = {}
-
-            safe_name = html.escape(attrs.get("label", ""))
-
-            label_lines = [safe_name]
-            if node_type == "person":
-                dob_obj = attrs.get("dob")
-                if dob_obj and "year" in dob_obj and "month" in dob_obj:
-                    dob_str = f"DOB: {dob_obj['month']:02d}-{dob_obj['year']}"
-                    label_lines.append(dob_str)
-
-            final_label = "\n".join(label_lines)
-            title = final_label
-
-            if node_type == "company":
-                color = "#B9D9EB" if attrs.get("active") else "#E0E0E0"
-                shape = "box"
-                if attrs.get("status") in [
-                    "liquidation",
-                    "administration",
-                ] or attrs.get("liquidated"):
-                    bolded_name = f"<b>{label_lines[0]}</b>"
-                    remaining_lines = label_lines[1:]
-                    final_label = bolded_name + (
-                        "\n" + "\n".join(remaining_lines) if remaining_lines else ""
-                    )
-                    font_options = {"multi": True, "color": "red"}
-
-            elif node_type == "address":
-                color = "#FFB347"
-                shape = "box"
-
-            net.add_node(
-                node_id,
-                label=final_label,
-                title=title,
-                shape=shape,
-                color=color,
-                font=font_options,
-            )
-
-        for source, target, attrs in G.edges(data=True):
-            net.add_edge(source, target, title=attrs.get("label", ""))
-
+        entities = []
+        seen = set()
+        for row in selected:
+            cnum = row.get("company_number", "")
+            if cnum and cnum not in seen:
+                seen.add(cnum)
+                entities.append({
+                    "name": row.get("company_name", ""),
+                    "company_number": cnum,
+                    "active": row.get("company_status", "").lower() == "active",
+                    "entity_type": "company",
+                })
+            oname = row.get("officer_name", "")
+            if oname and oname not in seen:
+                seen.add(oname)
+                entities.append({
+                    "name": oname,
+                    "company_number": "",
+                    "active": True,
+                    "entity_type": "person",
+                })
+        if not entities:
+            return
+        if self.app_state.ubo_working_set is None:
+            self.app_state.ubo_working_set = []
+        existing = {
+            (e.get("name", ""), e.get("company_number", ""), e.get("entity_type", ""))
+            for e in self.app_state.ubo_working_set
+        }
+        added = 0
+        for ent in entities:
+            key = (ent["name"], ent["company_number"], ent["entity_type"])
+            if key not in existing:
+                self.app_state.ubo_working_set.append(ent)
+                existing.add(key)
+                added += 1
+        self.app._refresh_working_set_indicator()
         try:
-            filename = os.path.join(CONFIG_DIR, "director_network_graph.html")
-            net.write_html(filename, notebook=False)
-            self.app.after(
-                0, lambda: self.status_var.set("Graph generated! Opening in browser...")
-            )
-            webbrowser.open(f"file://{os.path.realpath(filename)}")
-        except Exception as e:
-            log_message(f"Failed to save or open graph: {e}")
-            messagebox.showerror(
-                "Graph Error", f"Could not save or open the graph file: {e}"
-            )
-            self.app.after(
-                0, lambda: self.status_var.set("Error generating graph file.")
-            )
+            self.app._refresh_home_working_set()
+        except Exception:
+            pass
+        if added:
+            messagebox.showinfo("Working Set", f"Added {added} entities to working set.")
 
-    # --- NEW: Rewritten CSV Export Function ---
-    def _export_graph_to_csv(self, G):
-        """
-        Exports the graph's connections (edges) to a CSV file.
-        This format is ideal for combining multiple exports later.
-        """
+    def _send_to_network_analytics(self):
+        """Build network graph data and send to Network Analytics."""
+        selected = self._get_selected_results()
+        if not selected:
+            return
+        self._selected_for_processing = selected
+        self._disable_all_buttons()
+        self.cancel_flag.clear()
+        self.app.after(0, lambda: self.status_var.set("Building network data..."))
+
+        def _build():
+            try:
+                G = self._build_network_graph_object()
+                if G is None or self.cancel_flag.is_set():
+                    self.app.after(0, self._restore_button_states)
+                    return
+                csv_path = self._graph_to_temp_csv(G)
+                if csv_path:
+                    count = G.number_of_nodes()
+                    def _navigate():
+                        self._restore_button_states()
+                        self.app._navigate_network_with_csv(
+                            csv_path,
+                            source_label=f"Working set: {count} entities from Director Search",
+                        )
+                    self.app.after(0, _navigate)
+                else:
+                    self.app.after(0, self._restore_button_states)
+            except Exception as e:
+                log_message(f"Send to Network Analytics failed: {e}")
+                self.app.after(0, self._restore_button_states)
+
+        threading.Thread(target=_build, daemon=True).start()
+
+    def _graph_to_temp_csv(self, G):
+        """Write graph edges to a temporary CSV in the 7-column network format."""
         if G is None or G.number_of_edges() == 0:
-            self.app.after(
-                0,
-                lambda: self.status_var.set(
-                    "Export complete. No connections to export."
-                ),
-            )
-            return
-
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv")],
-            title="Save Graph Edge List As",
-        )
-        if not filepath:
-            self.app.after(0, lambda: self.status_var.set("Export cancelled by user."))
-            return
-
-        self.app.after(
-            0, lambda: self.status_var.set("Exporting graph connections to CSV...")
-        )
-        headers = [
-            "source_id",
-            "source_label",
-            "source_type",
-            "target_id",
-            "target_label",
-            "target_type",
-            "relationship",
-        ]
-
+            return None
+        fd, path = tempfile.mkstemp(prefix="DS-", suffix=".csv")
         try:
-            with open(filepath, "w", newline="", encoding="utf-8") as f:
+            with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(headers)
+                writer.writerow([
+                    "source_id", "source_label", "source_type",
+                    "target_id", "target_label", "target_type", "relationship",
+                ])
+                for src, tgt, eattrs in G.edges(data=True):
+                    sa = G.nodes[src]
+                    ta = G.nodes[tgt]
+                    writer.writerow([
+                        src,
+                        sa.get("label", "").replace("\n", " "),
+                        sa.get("type", ""),
+                        tgt,
+                        ta.get("label", "").replace("\n", " "),
+                        ta.get("type", ""),
+                        eattrs.get("label", ""),
+                    ])
+        except Exception as e:
+            log_message(f"Failed to write temp CSV: {e}")
+            return None
+        return path
 
-                # Iterate over edges to capture the connections
-                for source_id, target_id, edge_attrs in G.edges(data=True):
-                    source_attrs = G.nodes[source_id]
-                    target_attrs = G.nodes[target_id]
+    def _send_to_ubo_tracer(self):
+        """Send selected companies to UBO Tracer."""
+        companies = self._get_unique_companies()
+        if not companies:
+            return
+        self.app.show_ubo_investigation(prefill_entities=companies)
 
-                    row = [
-                        source_id,
-                        source_attrs.get("label", "").replace("\n", " "),
-                        source_attrs.get("type", ""),
-                        target_id,
-                        target_attrs.get("label", "").replace("\n", " "),
-                        target_attrs.get("type", ""),
-                        edge_attrs.get("label", ""),
-                    ]
-                    writer.writerow(row)
+    def _send_to_bulk_entity_search(self):
+        """Send selected companies to Bulk Entity Search."""
+        companies = self._get_unique_companies()
+        if not companies:
+            return
+        self.app.show_unified_search(prefill_entities=companies)
 
-            log_message(
-                f"Successfully exported {G.number_of_edges()} graph connections to {os.path.basename(filepath)}."
-            )
-            messagebox.showinfo(
-                "Export Successful",
-                f"Successfully exported {G.number_of_edges()} connections to CSV.",
-            )
-            self.app.after(
-                0, lambda: self.status_var.set("Graph data export complete.")
-            )
+    def _send_to_edd(self):
+        """Send selected companies to Enhanced Due Diligence."""
+        companies = self._get_unique_companies()
+        if not companies:
+            return
+        payload = [{"type": "company", "id": c["company_number"]} for c in companies]
+        self.app.show_enhanced_dd(prefill_entities=payload)
 
-        except IOError as e:
-            log_message(f"Graph data export failed: {e}")
-            messagebox.showerror("Export Error", f"Could not write to file: {e}")
-            self.app.after(0, lambda: self.status_var.set("Error during CSV export."))
-
-    def _finish_graph_generation(self):
-        """Resets the UI after any graph process completes or is cancelled."""
-        if self.cancel_flag.is_set():
-            self.app.after(0, lambda: self.status_var.set("Operation cancelled."))
-        else:
-            # Don't overwrite success messages from export/generation
-            if "..." not in self.status_var.get():
-                self.app.after(0, lambda: self.status_var.set("Ready."))
-
-        self._restore_button_states()
+    def _send_to_grants_search(self):
+        """Send selected companies to Grants Search."""
+        companies = self._get_unique_companies()
+        if not companies:
+            return
+        self.app.show_grants_investigation(prefill_entities=companies)
 
     def export_csv(self):
         """Export selected directorship rows to CSV."""

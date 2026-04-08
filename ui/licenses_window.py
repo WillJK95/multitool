@@ -166,8 +166,8 @@ https://github.com/dateutil/dateutil
 pytz (MIT License)
 https://github.com/stub42/pytz
 
-pyvis (BSD License)
-https://github.com/WestHealth/pyvis
+gravis (Apache 2.0 License)
+https://github.com/robert-haas/gravis
 
 pywin32-ctypes (BSD-3-Clause) [Windows only]
 https://github.com/enthought/pywin32-ctypes
