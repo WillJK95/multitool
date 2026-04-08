@@ -2252,20 +2252,25 @@ class App(tk.Tk):
         """
         import csv as csv_mod
         import tempfile
+        import time
         from .utils.helpers import (
             extract_address_string, clean_address_string,
             format_address_label, get_canonical_name_key,
+            format_eta,
         )
 
         rows = []  # list of 7-element tuples
+        start_time = time.time()
 
         for i, ent in enumerate(entities):
             num = ent.get("company_number", ent.get("number", ""))
             name = ent.get("name", "Unknown")
 
-            self.after(0, lambda n=name, idx=i, tot=len(entities):
+            elapsed = time.time() - start_time
+            eta = format_eta(elapsed, i, len(entities))
+            self.after(0, lambda n=name, idx=i, tot=len(entities), e=eta:
                        progress_lbl.configure(
-                           text=f"Processing {idx+1}/{tot}: {n}"))
+                           text=f"Processing {idx+1}/{tot}: {n}  (ETA: {e})"))
 
             if not num:
                 continue
@@ -2367,8 +2372,8 @@ class App(tk.Tk):
                 dob = psc.get("date_of_birth")
                 pkey = canon_key(pname, dob)
                 rows.append((
-                    company_number, company_name, "company",
-                    pkey, pname, "person", "psc"
+                    pkey, pname, "person",
+                    company_number, company_name, "company", "psc"
                 ))
                 paddr_raw = extract_addr(psc.get("address"))
                 if paddr_raw:
@@ -2414,8 +2419,8 @@ class App(tk.Tk):
                     continue
                 pkey = canon_key(tname, None)
                 rows.append((
-                    node_id, charity_name, "charity",
-                    pkey, tname, "person", "trustee"
+                    pkey, tname, "person",
+                    node_id, charity_name, "charity", "trustee"
                 ))
                 trustee_addr = trustee.get("trustee_address")
                 if trustee_addr:
