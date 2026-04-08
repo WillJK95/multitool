@@ -94,6 +94,7 @@ FILING_TYPE_CATEGORIES = {
     'CS01': 'Confirmation Statement',
     'GAZ1': 'First Gazette (Strike-off)',
     'GAZ2': 'Second Gazette (Strike-off)',
+    'NM01': 'Change of Name',
     'LIQEN': 'Liquidation',
     'LIQEO': 'Liquidation',
     'AD01': 'Administration',
