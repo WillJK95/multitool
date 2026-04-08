@@ -658,7 +658,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         
         # --- Exclusion tracking (soft exclusions) ---
         self.highly_connected_exclusions = set()  # Node IDs excluded as highly connected
-        self.peripheral_exclusions = set()        # Node IDs excluded as peripheral
+        self.peripheral_exclusions = set()        # Node IDs excluded via isolated network scan
         self.manual_exclusions = set()            # Node IDs manually excluded
         
         # --- State tracking ---
@@ -1171,14 +1171,14 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.hc_status_label = ttk.Label(hc_frame, text="No exclusions", foreground="gray")
         self.hc_status_label.pack(side=tk.LEFT, padx=(5, 0))
         
-        # Peripheral nodes
+        # Isolated networks
         pn_frame = ttk.Frame(exclusions_frame)
         pn_frame.pack(fill=tk.X, pady=(5, 5))
-        ttk.Label(pn_frame, text="Peripheral nodes (fewer than").pack(side=tk.LEFT)
+        ttk.Label(pn_frame, text="Isolated networks (fewer than").pack(side=tk.LEFT)
         self.peripheral_threshold_var = tk.StringVar(value="2")
         pn_entry = ttk.Entry(pn_frame, textvariable=self.peripheral_threshold_var, width=5)
         pn_entry.pack(side=tk.LEFT, padx=5)
-        ttk.Label(pn_frame, text="connections):").pack(side=tk.LEFT)
+        ttk.Label(pn_frame, text="nodes):").pack(side=tk.LEFT)
         self.scan_pn_btn = ttk.Button(
             pn_frame,
             text="Scan...",
@@ -1707,6 +1707,7 @@ class NetworkAnalytics(InvestigationModuleBase):
             self.shortest_only_check.config(state="disabled")
             self.enforce_direction_check.config(state="disabled")
         self._update_visualise_checkbox_state()
+        self._update_scrollregion()
 
     def _build_visualise_content(self, container):
         """Builds the Visualise section content."""
@@ -1826,6 +1827,7 @@ class NetworkAnalytics(InvestigationModuleBase):
             self.isolated_options_frame.pack(fill=tk.X, padx=(25, 0), pady=(2, 0))
         else:
             self.isolated_options_frame.pack_forget()
+        self._update_scrollregion()
 
 
 
@@ -2521,92 +2523,114 @@ class NetworkAnalytics(InvestigationModuleBase):
 
 
     def _open_peripheral_dialog(self):
-        """Opens dialog to scan and exclude peripheral nodes."""
+        """Opens dialog to scan and exclude isolated networks (small components)."""
         try:
             threshold = int(self.peripheral_threshold_var.get())
         except ValueError:
             messagebox.showerror("Invalid Threshold", "Please enter a valid number for the threshold.")
             return
-        
+
+        if threshold < 2 or threshold > 5:
+            messagebox.showerror("Invalid Threshold", "Threshold must be between 2 and 5.")
+            return
+
         if not self.graph_built:
             messagebox.showwarning("No Graph", "Please load data first.")
             return
-        
-        # Find nodes below threshold
+
+        # Find isolated components using undirected view
+        undirected = self.full_graph.to_undirected()
+        components = nx.connected_components(undirected)
+
+        # Filter: keep components smaller than threshold, skip fully-excluded ones
         candidates = []
-        for node_id, attrs in self.full_graph.nodes(data=True):
-            degree = self.full_graph.degree(node_id)
-            if degree < threshold and node_id not in self.peripheral_exclusions:
-                candidates.append((
-                    node_id,
-                    attrs.get("label", node_id),
-                    attrs.get("type", "unknown"),
-                    degree
-                ))
-        
-        candidates.sort(key=lambda x: x[3])
-        
+        for component in components:
+            non_excluded = component - self.peripheral_exclusions
+            if not non_excluded:
+                continue
+            if len(component) < threshold:
+                node_labels = []
+                for node_id in sorted(component):
+                    attrs = self.full_graph.nodes[node_id]
+                    node_labels.append(attrs.get("label", node_id))
+                candidates.append((frozenset(component), node_labels))
+
         if not candidates:
             messagebox.showinfo(
                 "No Results",
-                f"No nodes found with fewer than {threshold} connections\n"
+                f"No isolated networks found with fewer than {threshold} nodes\n"
                 f"(excluding already excluded nodes)."
             )
             return
-        
+
+        # Sort by component size (smallest first)
+        candidates.sort(key=lambda x: len(x[1]))
+
         # Create dialog
         dialog = tk.Toplevel(self.app)
-        dialog.title("Peripheral Nodes")
+        dialog.title("Isolated Networks")
         dialog.geometry("700x500")
-        
+
         ttk.Label(
             dialog,
-            text=f"Found {len(candidates)} node(s) with fewer than {threshold} connections.",
+            text=f"Found {len(candidates)} isolated network(s) with fewer than {threshold} nodes.",
             padding=10
         ).pack(anchor="w")
-        
-        # Treeview
+
+        # Treeview with dynamic columns (max cluster size is threshold-1)
         tree_frame = ttk.Frame(dialog)
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        
+
         tree_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        cols = ("Type", "Node", "Connections")
+
+        max_cols = threshold - 1
+        cols = tuple(f"Node {i+1}" for i in range(max_cols))
         tree = ttk.Treeview(tree_frame, columns=cols, show="headings", yscrollcommand=tree_scroll.set)
         tree_scroll.config(command=tree.yview)
-        
-        tree.heading("Type", text="Type")
-        tree.heading("Node", text="Node")
-        tree.heading("Connections", text="Connections")
-        
-        tree.column("Type", width=80, anchor="center")
-        tree.column("Node", width=450)
-        tree.column("Connections", width=100, anchor="center")
-        
+
+        col_width = max(150, 650 // max_cols)
+        for col in cols:
+            tree.heading(col, text=col)
+            tree.column(col, width=col_width)
+
         tree.pack(fill=tk.BOTH, expand=True)
-        
-        for node_id, label, ntype, degree in candidates:
-            display_label = label[:60] + "..." if len(label) > 60 else label
-            tree.insert("", "end", iid=node_id, values=(ntype.title(), display_label, degree))
-        
+
+        # Map treeview item IDs to component node sets
+        component_map = {}
+
+        for idx, (node_set, node_labels) in enumerate(candidates):
+            iid = f"component_{idx}"
+            padded_labels = node_labels[:max_cols]
+            while len(padded_labels) < max_cols:
+                padded_labels.append("")
+            display_labels = tuple(
+                lbl[:50] + "..." if len(lbl) > 50 else lbl
+                for lbl in padded_labels
+            )
+            tree.insert("", "end", iid=iid, values=display_labels)
+            component_map[iid] = node_set
+
         # Buttons
         btn_frame = ttk.Frame(dialog)
         btn_frame.pack(fill=tk.X, padx=10, pady=10)
-        
+
         def exclude_selected():
             selected = tree.selection()
             if not selected:
-                messagebox.showwarning("No Selection", "Please select nodes to exclude.")
+                messagebox.showwarning("No Selection", "Please select networks to exclude.")
                 return
-            
-            for node_id in selected:
-                self.peripheral_exclusions.add(node_id)
-            
+
+            total_nodes = 0
+            for iid in selected:
+                node_set = component_map.get(iid, frozenset())
+                self.peripheral_exclusions.update(node_set)
+                total_nodes += len(node_set)
+
             self._update_exclusion_status_labels()
-            messagebox.showinfo("Success", f"Excluded {len(selected)} node(s).")
+            messagebox.showinfo("Success", f"Excluded {len(selected)} network(s) ({total_nodes} nodes).")
             dialog.destroy()
-        
+
         ttk.Button(btn_frame, text="Exclude Selected", command=exclude_selected).pack(side=tk.RIGHT, padx=5)
         ttk.Button(btn_frame, text="Close", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
         ttk.Button(
@@ -2645,7 +2669,7 @@ class NetworkAnalytics(InvestigationModuleBase):
                     attrs.get("label", node_id),
                     attrs.get("type", "unknown"),
                     f"{degree} connections",
-                    "Peripheral"
+                    "Isolated network"
                 ))
         
         for node_id in self.manual_exclusions:
@@ -2678,7 +2702,7 @@ class NetworkAnalytics(InvestigationModuleBase):
         filter_combo = ttk.Combobox(
             filter_frame,
             textvariable=filter_var,
-            values=["All", "Highly connected", "Peripheral", "Manual"],
+            values=["All", "Highly connected", "Isolated network", "Manual"],
             state="readonly",
             width=20
         )
@@ -2742,7 +2766,7 @@ class NetworkAnalytics(InvestigationModuleBase):
                 reason = exclusion_map.get(node_id)
                 if reason == "Highly connected":
                     self.highly_connected_exclusions.discard(node_id)
-                elif reason == "Peripheral":
+                elif reason == "Isolated network":
                     self.peripheral_exclusions.discard(node_id)
                 elif reason == "Manual":
                     self.manual_exclusions.discard(node_id)

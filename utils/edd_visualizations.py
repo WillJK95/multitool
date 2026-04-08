@@ -193,6 +193,12 @@ def generate_company_timeline(
                 category = cat
                 break
 
+        # Fallback: detect name changes from description text
+        if category is None:
+            desc = filing.get('description', '')
+            if 'company name changed' in desc.lower():
+                category = 'Change of Name'
+
         if category in ('Accounts Filed',):
             # Determine if filing was late using statutory deadlines:
             # First-year: 21 months from incorporation; subsequent: 9 months from made-up-to date
