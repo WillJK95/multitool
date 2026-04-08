@@ -5428,6 +5428,16 @@ class NetworkAnalytics(InvestigationModuleBase):
         # Create a working copy for visualization
         viz_graph = graph_to_render.copy()
 
+        # Sanitize non-JSON-serializable attributes (e.g. sets) for gravis
+        for _, attrs in viz_graph.nodes(data=True):
+            for key, val in list(attrs.items()):
+                if isinstance(val, set):
+                    attrs[key] = sorted(val)
+        for _, _, attrs in viz_graph.edges(data=True):
+            for key, val in list(attrs.items()):
+                if isinstance(val, set):
+                    attrs[key] = sorted(val)
+
         # Filter out inferred edges if the checkbox is unchecked
         if not self.show_inferred_var.get():
             inferred_edges = [
