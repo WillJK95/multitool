@@ -2543,6 +2543,7 @@ class App(tk.Tk):
             self.api_key,
             self.charity_api_key,
             self.ch_token_bucket,
+            help_key="unified_search",
             prefill_entities=prefill_entities
         )
         self._update_sidebar_active("bulk_entity_search")

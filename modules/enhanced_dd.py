@@ -109,7 +109,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
     def __init__(self, parent_app, api_key, back_callback, ch_token_bucket,
                  charity_api_key=None, prefill_entity=None, prefill_entities=None):
-        super().__init__(parent_app, back_callback, api_key, help_key=None)
+        super().__init__(parent_app, back_callback, api_key, help_key="enhanced_dd")
         self.ch_token_bucket = ch_token_bucket
         self.charity_api_key = charity_api_key
         self._prefill_entity = prefill_entity

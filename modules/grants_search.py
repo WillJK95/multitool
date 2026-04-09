@@ -32,7 +32,7 @@ from .base import InvestigationModuleBase
 
 class GrantsSearch(InvestigationModuleBase):
     def __init__(self, parent_app, api_key, back_callback, prefill_entities=None, prefill_source=None):
-        super().__init__(parent_app, back_callback, api_key)
+        super().__init__(parent_app, back_callback, api_key, help_key="grants_search")
         self._prefill_entities = prefill_entities
         self._prefill_source = prefill_source
         self._tree_row_data = {}
