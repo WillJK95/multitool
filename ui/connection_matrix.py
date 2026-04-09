@@ -15,12 +15,44 @@ CELL_WIDTH = 70
 CELL_HEIGHT = 28
 ROW_HEADER_WIDTH = 200
 COL_HEADER_HEIGHT = 90
-SUMMARY_BG = "#E8F0FE"
-SELF_BG = "#D0D0D0"
-GRID_COLOR = "#CCCCCC"
-ALT_ROW_BG = "#F5F5F5"
 SYMBOL_DIRECT = "\u25cf"   # ●
 SYMBOL_INDIRECT = "\u25cb"  # ○
+
+
+def _theme_colors():
+    """Query current ttkbootstrap theme for foreground / background."""
+    style = ttk.Style()
+    bg = style.lookup("TFrame", "background") or "#FFFFFF"
+    fg = style.lookup("TLabel", "foreground") or "#000000"
+    return bg, fg
+
+
+def _is_dark_bg(hex_color):
+    """Return True if *hex_color* is perceptually dark."""
+    h = hex_color.lstrip("#")
+    if len(h) != 6:
+        return False
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    return luminance < 128
+
+
+def _derived_colors(bg):
+    """Return grid, alt-row, summary, and self-bg colours derived from *bg*."""
+    dark = _is_dark_bg(bg)
+    if dark:
+        return {
+            "grid": "#555555",
+            "alt_row": "#2A2A2A",
+            "summary": "#1E3A5F",
+            "self_bg": "#3A3A3A",
+        }
+    return {
+        "grid": "#CCCCCC",
+        "alt_row": "#F5F5F5",
+        "summary": "#E8F0FE",
+        "self_bg": "#D0D0D0",
+    }
 
 
 def _pick_best_path(paths):
@@ -85,6 +117,10 @@ class ConnectionMatrixWindow:
     # Window construction
     # ------------------------------------------------------------------
     def _build_window(self):
+        # Resolve theme colours once at build time
+        self._bg, self._fg = _theme_colors()
+        self._colors = _derived_colors(self._bg)
+
         self.win = tk.Toplevel(self.parent)
         self.win.title("Connection Matrix")
         n_rows = len(self.all_row_entities)
@@ -112,9 +148,6 @@ class ConnectionMatrixWindow:
         connected_pairs = sum(
             1 for v in self.connection_results.values() if v
         )
-        total_pairs = n_rows * n_cols
-        if self.is_within_mode:
-            total_pairs = n_rows * (n_cols - 1) // 2
         self._summary_label = ttk.Label(
             toolbar,
             text=f"{connected_pairs} connected pair(s) found",
@@ -140,31 +173,32 @@ class ConnectionMatrixWindow:
         matrix_frame.rowconfigure(1, weight=1)
         matrix_frame.columnconfigure(1, weight=1)
 
+        bg = self._bg
+
         # Corner
         self.corner_canvas = tk.Canvas(
             matrix_frame, width=ROW_HEADER_WIDTH,
-            height=COL_HEADER_HEIGHT, highlightthickness=0,
-            bg="#FFFFFF",
+            height=COL_HEADER_HEIGHT, highlightthickness=0, bg=bg,
         )
         self.corner_canvas.grid(row=0, column=0, sticky="nsew")
 
         # Column headers
         self.col_header_canvas = tk.Canvas(
             matrix_frame, height=COL_HEADER_HEIGHT,
-            highlightthickness=0, bg="#FFFFFF",
+            highlightthickness=0, bg=bg,
         )
         self.col_header_canvas.grid(row=0, column=1, sticky="nsew")
 
         # Row headers
         self.row_header_canvas = tk.Canvas(
             matrix_frame, width=ROW_HEADER_WIDTH,
-            highlightthickness=0, bg="#FFFFFF",
+            highlightthickness=0, bg=bg,
         )
         self.row_header_canvas.grid(row=1, column=0, sticky="nsew")
 
         # Body
         self.body_canvas = tk.Canvas(
-            matrix_frame, highlightthickness=0, bg="#FFFFFF",
+            matrix_frame, highlightthickness=0, bg=bg,
         )
         self.body_canvas.grid(row=1, column=1, sticky="nsew")
 
@@ -282,6 +316,7 @@ class ConnectionMatrixWindow:
         c.create_text(
             ROW_HEADER_WIDTH // 2, COL_HEADER_HEIGHT // 2,
             text="Entity", font=("", 9, "bold"), anchor="center",
+            fill=self._fg,
         )
 
     def _redraw_col_headers(self):
@@ -289,35 +324,40 @@ class ConnectionMatrixWindow:
         c.delete("all")
         first_row, last_row, first_col, last_col = self._get_visible_range()
         n_ent = len(self.col_entities)
+        fg = self._fg
+        grid = self._colors["grid"]
 
         for ci in range(first_col, last_col):
-            x = ci * CELL_WIDTH + CELL_WIDTH // 2
+            x = ci * CELL_WIDTH
+            x_mid = x + CELL_WIDTH // 2
             if ci < n_ent:
                 ent = self.col_entities[ci]
                 label = ent["label"]
                 if len(label) > 22:
                     label = label[:20] + "\u2026"
+                # Draw text bottom-up, anchored at sw so the full label
+                # extends upward from just above the grid line
                 c.create_text(
-                    x, COL_HEADER_HEIGHT - 6,
-                    text=label, angle=55, anchor="e",
-                    font=("", 8),
+                    x_mid + 4, COL_HEADER_HEIGHT - 4,
+                    text=label, angle=55, anchor="s",
+                    font=("", 8), fill=fg,
                 )
             else:
-                # Summary column header
                 c.create_text(
-                    x, COL_HEADER_HEIGHT - 6,
-                    text="Total", angle=55, anchor="e",
-                    font=("", 8, "bold"),
+                    x_mid + 4, COL_HEADER_HEIGHT - 4,
+                    text="Total", angle=55, anchor="s",
+                    font=("", 8, "bold"), fill=fg,
                 )
             # Column gridline
-            cx = ci * CELL_WIDTH
-            c.create_line(cx, 0, cx, COL_HEADER_HEIGHT, fill=GRID_COLOR)
+            c.create_line(x, 0, x, COL_HEADER_HEIGHT, fill=grid)
 
     def _redraw_row_headers(self):
         c = self.row_header_canvas
         c.delete("all")
         first_row, last_row, first_col, last_col = self._get_visible_range()
         n_ent = len(self.row_entities)
+        fg = self._fg
+        grid = self._colors["grid"]
 
         for ri in range(first_row, last_row):
             y = ri * CELL_HEIGHT
@@ -329,16 +369,16 @@ class ConnectionMatrixWindow:
                     label = label[:26] + "\u2026"
                 c.create_text(
                     ROW_HEADER_WIDTH - 6, y_mid,
-                    text=label, anchor="e", font=("", 8),
+                    text=label, anchor="e", font=("", 8), fill=fg,
                 )
             else:
-                # Summary row header
                 c.create_text(
                     ROW_HEADER_WIDTH - 6, y_mid,
                     text="Total", anchor="e", font=("", 8, "bold"),
+                    fill=fg,
                 )
             # Row gridline
-            c.create_line(0, y, ROW_HEADER_WIDTH, y, fill=GRID_COLOR)
+            c.create_line(0, y, ROW_HEADER_WIDTH, y, fill=grid)
 
     def _redraw_body(self):
         c = self.body_canvas
@@ -346,6 +386,13 @@ class ConnectionMatrixWindow:
         first_row, last_row, first_col, last_col = self._get_visible_range()
         n_row_ent = len(self.row_entities)
         n_col_ent = len(self.col_entities)
+
+        base_bg = self._bg
+        fg = self._fg
+        grid = self._colors["grid"]
+        alt_bg = self._colors["alt_row"]
+        summary_bg = self._colors["summary"]
+        self_bg = self._colors["self_bg"]
 
         for ri in range(first_row, last_row):
             y = ri * CELL_HEIGHT
@@ -355,21 +402,21 @@ class ConnectionMatrixWindow:
                 is_summary_col = ci >= n_col_ent
 
                 # Background
-                bg = "#FFFFFF"
+                bg = base_bg
                 if is_summary_row or is_summary_col:
-                    bg = SUMMARY_BG
+                    bg = summary_bg
                 elif ri % 2 == 1:
-                    bg = ALT_ROW_BG
+                    bg = alt_bg
 
                 text, color = self._get_cell_content(
-                    ri, ci, n_row_ent, n_col_ent)
+                    ri, ci, n_row_ent, n_col_ent, fg)
 
                 if text == "X":
-                    bg = SELF_BG
+                    bg = self_bg
 
                 c.create_rectangle(
                     x, y, x + CELL_WIDTH, y + CELL_HEIGHT,
-                    fill=bg, outline=GRID_COLOR,
+                    fill=bg, outline=grid,
                 )
                 if text:
                     c.create_text(
@@ -378,25 +425,22 @@ class ConnectionMatrixWindow:
                         anchor="center",
                     )
 
-    def _get_cell_content(self, ri, ci, n_row_ent, n_col_ent):
+    def _get_cell_content(self, ri, ci, n_row_ent, n_col_ent, fg):
         """Return (display_text, color) for the cell at visual index (ri, ci)."""
         is_summary_row = ri >= n_row_ent
         is_summary_col = ci >= n_col_ent
 
         if is_summary_row and is_summary_col:
-            # Corner: total connected pairs
-            total = sum(1 for v in self.connection_results.values() if v)
-            return (str(total), "#000000")
+            # Bottom-right corner: intentionally blank
+            return ("", fg)
 
         if is_summary_row:
-            # Bottom summary: connections for this column entity
             col_id = self.col_entities[ci]["id"]
-            return (str(self._col_counts.get(col_id, 0)), "#000000")
+            return (str(self._col_counts.get(col_id, 0)), fg)
 
         if is_summary_col:
-            # Right summary: connections for this row entity
             row_id = self.row_entities[ri]["id"]
-            return (str(self._row_counts.get(row_id, 0)), "#000000")
+            return (str(self._row_counts.get(row_id, 0)), fg)
 
         row_id = self.row_entities[ri]["id"]
         col_id = self.col_entities[ci]["id"]
@@ -406,11 +450,11 @@ class ConnectionMatrixWindow:
 
         paths = self._lookup_paths(row_id, col_id)
         if not paths:
-            return ("", "#000000")
+            return ("", fg)
 
         best = _pick_best_path(paths)
         symbol = SYMBOL_DIRECT if best["is_direct"] else SYMBOL_INDIRECT
-        return (f"{symbol}({best['hops']})", "#000000")
+        return (f"{symbol}({best['hops']})", fg)
 
     def _lookup_paths(self, row_id, col_id):
         """Look up paths for a pair, checking both orderings for within-mode."""
@@ -679,16 +723,19 @@ class ConnectionDrilldownWindow:
 
             # Build structural summary line
             summary = self._build_group_summary(key, group_paths, min_hops)
-            section_label = "Shortest connection" if is_shortest else "Alternative connection"
+            section_label = (
+                "Shortest connection" if is_shortest
+                else "Alternative connection"
+            )
 
             # Section header
             section_id = self.tree.insert(
                 "", "end",
-                text=f"\u25bc {section_label}: {summary}",
+                text=f"{section_label}: {summary}",
                 open=is_shortest,
             )
 
-            # Determine if this is a simple 1-hop person-collapsed group
+            # Determine if this is a simple person-collapsed group
             # where we just list the people
             person_slots = [
                 i for i, (ntype, _) in enumerate(key)
@@ -697,7 +744,6 @@ class ConnectionDrilldownWindow:
 
             if len(person_slots) == 1 and len(key) <= 3:
                 # Simple case: Entity A -> [persons] -> Entity B
-                # List each unique person
                 seen = set()
                 for p in sorted(group_paths, key=lambda x: x["hops"]):
                     slot_idx = person_slots[0]
@@ -705,21 +751,35 @@ class ConnectionDrilldownWindow:
                     person_id = p["node_ids"][slot_idx]
                     if person_id not in seen:
                         seen.add(person_id)
-                        edge_info = self._edge_info_str(p, slot_idx)
+                        edge_desc = ""
+                        if slot_idx > 0 and slot_idx - 1 < len(p["edge_types"]):
+                            edge_desc = f"  [{p['edge_types'][slot_idx - 1]}]"
                         self.tree.insert(
                             section_id, "end",
-                            text=f"    {person_label}{edge_info}",
+                            text=f"    {person_label}{edge_desc}",
                         )
             else:
-                # Complex case: show full path for each variant
+                # Complex case: show each route vertically
                 for p_idx, p in enumerate(
                     sorted(group_paths, key=lambda x: x["hops"])
                 ):
-                    path_str = self._format_full_path(p)
-                    self.tree.insert(
+                    route_id = self.tree.insert(
                         section_id, "end",
-                        text=f"    Route {p_idx + 1}: {path_str}",
+                        text=f"    Route {p_idx + 1}  ({p['hops']} hop{'s' if p['hops'] != 1 else ''})",
+                        open=is_shortest and p_idx == 0,
                     )
+                    # One child row per hop in the path
+                    for i, label in enumerate(p["node_labels"]):
+                        node_type = p["node_types"][i].title() if i < len(p["node_types"]) else ""
+                        if i < len(p["edge_types"]):
+                            edge = p["edge_types"][i]
+                            line = f"{label}  ({node_type})  \u2500\u2500 {edge} \u2500\u2500\u25b8"
+                        else:
+                            line = f"{label}  ({node_type})"
+                        self.tree.insert(
+                            route_id, "end",
+                            text=f"        {line}",
+                        )
 
     def _build_group_summary(self, key, group_paths, min_hops):
         """Build a human-readable summary for a structural group."""
@@ -727,21 +787,17 @@ class ConnectionDrilldownWindow:
         # key entries map 1:1 to path node positions
         for pos, (ktype, kid) in enumerate(key):
             if ktype == "person":
-                # Count unique persons at this specific position
-                unique_persons = {}  # id -> label
+                unique_persons = {}
                 for p in group_paths:
                     if pos < len(p["node_ids"]):
-                        pid = p["node_ids"][pos]
-                        plbl = p["node_labels"][pos]
-                        unique_persons[pid] = plbl
+                        unique_persons[p["node_ids"][pos]] = p["node_labels"][pos]
                 n = len(unique_persons)
                 if n == 1:
                     parts.append(next(iter(unique_persons.values())))
                 else:
                     parts.append(f"[{n} person(s)]")
             else:
-                # Find label for this non-person entity
-                label = kid  # fallback to ID
+                label = kid
                 for p in group_paths:
                     if pos < len(p["node_ids"]):
                         label = p["node_labels"][pos]
@@ -753,22 +809,3 @@ class ConnectionDrilldownWindow:
         type_marker = SYMBOL_DIRECT if all_direct else SYMBOL_INDIRECT
         arrow = " \u2192 "
         return f"{type_marker} {arrow.join(parts)} {hops_str}"
-
-    def _edge_info_str(self, path, node_idx):
-        """Build edge type annotation for a node in the path."""
-        edge_parts = []
-        if node_idx > 0 and node_idx - 1 < len(path["edge_types"]):
-            edge_parts.append(path["edge_types"][node_idx - 1])
-        if edge_parts:
-            return f"  [{', '.join(edge_parts)}]"
-        return ""
-
-    def _format_full_path(self, path):
-        """Format a complete path as 'A --(type)--> B --(type)--> C'."""
-        parts = []
-        for i, label in enumerate(path["node_labels"]):
-            parts.append(label)
-            if i < len(path["edge_types"]):
-                etype = path["edge_types"][i]
-                parts.append(f"\u2192({etype})\u2192")
-        return " ".join(parts)
