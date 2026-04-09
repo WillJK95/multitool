@@ -679,6 +679,9 @@ class NetworkAnalytics(InvestigationModuleBase):
 
         # --- Hidden links discovery ---
         self.discovered_hidden_links = []
+
+        # --- Connection matrix window ---
+        self._connection_matrix_window = None
         
         # --- Converter state variables ---
         self.converter_source_data = []
@@ -3303,29 +3306,20 @@ class NetworkAnalytics(InvestigationModuleBase):
         if not self.analyse_entity_list:
             messagebox.showwarning("No List", "Please upload an entity list first.")
             return
-        
+
         if not self.graph_built:
             messagebox.showwarning("No Graph", "Please build the graph first.")
             return
-        
+
         # Use cohort A/B infrastructure but with same list
         self.cohort_a_ids = self.analyse_entity_list.copy()
         self.cohort_b_ids = self.analyse_entity_list.copy()
-        
-        output_filepath = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv")],
-            title="Save Connection Paths As",
-        )
-        if not output_filepath:
-            return
-        
-        # Use existing cohort connection thread
+
         self.find_connections_btn.config(state="disabled")
         self.analyse_status_var.set("Starting search...")
         threading.Thread(
             target=self._run_cohort_connection_thread,
-            args=(output_filepath,),
+            args=("within",),
             daemon=True,
         ).start()
 
@@ -3335,24 +3329,16 @@ class NetworkAnalytics(InvestigationModuleBase):
         if not self.cohort_a_ids or not self.cohort_b_ids:
             messagebox.showwarning("Missing Lists", "Please upload both List A and List B.")
             return
-        
+
         if not self.graph_built:
             messagebox.showwarning("No Graph", "Please build the graph first.")
             return
-        
-        output_filepath = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv")],
-            title="Save Connection Paths As",
-        )
-        if not output_filepath:
-            return
-        
+
         self.find_connections_btn.config(state="disabled")
         self.analyse_status_var.set("Starting search...")
         threading.Thread(
             target=self._run_cohort_connection_thread,
-            args=(output_filepath,),
+            args=("between",),
             daemon=True,
         ).start()
 
@@ -5148,8 +5134,17 @@ class NetworkAnalytics(InvestigationModuleBase):
                 return "Explicit"
         return "Unknown"
 
-    def _run_cohort_connection_thread(self, output_filepath):
-        """Runs the cohort connection search in a background thread."""
+    def _run_cohort_connection_thread(self, mode):
+        """Runs the cohort connection search in a background thread.
+
+        Instead of writing CSV, builds an in-memory dict of connection
+        results and opens a matrix window on the main thread.
+
+        Parameters
+        ----------
+        mode : str
+            "within" for single-list mode, "between" for two-list mode.
+        """
         try:
             self.app.after(0, lambda: self.analyse_status_var.set("Preparing graph for analysis..."))
 
@@ -5158,6 +5153,7 @@ class NetworkAnalytics(InvestigationModuleBase):
 
             max_hops = self.max_hops_var.get()
             shortest_only = self.shortest_only_var.get()
+            is_within = mode == "within"
 
             cohort_a = {node for node in self.cohort_a_ids if node in undirected_graph}
             cohort_b = {node for node in self.cohort_b_ids if node in undirected_graph}
@@ -5165,82 +5161,98 @@ class NetworkAnalytics(InvestigationModuleBase):
             total_pairs = len(cohort_a) * len(cohort_b)
             self.app.after(0, lambda: self.analyse_progress_bar.config(maximum=total_pairs, value=0))
 
-            headers = [f"Hop {i+1}" for i in range(max_hops + 1)] + ["Edge Types"]
+            connection_results = {}  # (src_id, tgt_id) -> list of path dicts
+            seen_pairs = set()      # for within-mode deduplication
 
-            with open(output_filepath, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(headers)
+            processed_pairs = 0
+            for start_node in cohort_a:
+                for end_node in cohort_b:
+                    if start_node == end_node:
+                        continue
 
-                processed_pairs = 0
-                for start_node in cohort_a:
-                    for end_node in cohort_b:
-                        if start_node == end_node:
+                    # For within-mode, skip reversed duplicate pairs
+                    if is_within:
+                        canonical = tuple(sorted((start_node, end_node)))
+                        if canonical in seen_pairs:
+                            processed_pairs += 1
                             continue
+                        seen_pairs.add(canonical)
 
-                        processed_pairs += 1
-                        if processed_pairs % 20 == 0:
-                            self.app.after(
-                                0,
-                                lambda p=processed_pairs, t=total_pairs: self.analyse_status_var.set(
-                                    f"Checking pair {p}/{t}..."
-                                ),
-                            )
-                            self.app.after(0, lambda p=processed_pairs: self.analyse_progress_bar.config(value=p))
+                    processed_pairs += 1
+                    if processed_pairs % 20 == 0:
+                        self.app.after(
+                            0,
+                            lambda p=processed_pairs, t=total_pairs: self.analyse_status_var.set(
+                                f"Checking pair {p}/{t}..."
+                            ),
+                        )
+                        self.app.after(0, lambda p=processed_pairs: self.analyse_progress_bar.config(value=p))
 
-                        if shortest_only:
-                            try:
-                                path = nx.shortest_path(
-                                    undirected_graph, source=start_node, target=end_node
-                                )
-                                if len(path) - 1 <= max_hops:
-                                    labeled_path = [
-                                        pruned_graph.nodes[node_id].get("label", node_id)
-                                        for node_id in path
-                                    ]
-                                    # Build edge types string
-                                    edge_types = []
-                                    for i in range(len(path) - 1):
-                                        edge_type = self._get_edge_type_description(pruned_graph, path[i], path[i+1])
-                                        edge_types.append(edge_type)
-                                    edge_types_str = ", ".join(edge_types)
-                                    padded_path = labeled_path + [''] * (max_hops + 1 - len(labeled_path))
-                                    writer.writerow(padded_path + [edge_types_str])
-                            except nx.NetworkXNoPath:
-                                continue
-                        else:
-                            all_paths = nx.all_simple_paths(
-                                undirected_graph,
-                                source=start_node,
-                                target=end_node,
-                                cutoff=max_hops,
+                    pair_paths = []
+
+                    if shortest_only:
+                        try:
+                            path = nx.shortest_path(
+                                undirected_graph, source=start_node, target=end_node
                             )
-                            for path in all_paths:
-                                labeled_path = [
-                                    pruned_graph.nodes[node_id].get("label", node_id)
-                                    for node_id in path
-                                ]
-                                # Build edge types string
-                                edge_types = []
-                                for i in range(len(path) - 1):
-                                    edge_type = self._get_edge_type_description(pruned_graph, path[i], path[i+1])
-                                    edge_types.append(edge_type)
-                                edge_types_str = ", ".join(edge_types)
-                                padded_path = labeled_path + [''] * (max_hops + 1 - len(labeled_path))
-                                writer.writerow(padded_path + [edge_types_str])
+                            if len(path) - 1 <= max_hops:
+                                pair_paths.append(self._build_path_dict(pruned_graph, path))
+                        except nx.NetworkXNoPath:
+                            pass
+                    else:
+                        all_paths = nx.all_simple_paths(
+                            undirected_graph,
+                            source=start_node,
+                            target=end_node,
+                            cutoff=max_hops,
+                        )
+                        for path in all_paths:
+                            pair_paths.append(self._build_path_dict(pruned_graph, path))
+
+                    if pair_paths:
+                        connection_results[(start_node, end_node)] = pair_paths
+
+            # Build entity metadata lists
+            row_entities = [
+                {
+                    "id": nid,
+                    "label": pruned_graph.nodes[nid].get("label", nid),
+                    "type": pruned_graph.nodes[nid].get("type", ""),
+                }
+                for nid in sorted(cohort_a)
+                if nid in pruned_graph
+            ]
+            col_entities = (
+                row_entities if is_within
+                else [
+                    {
+                        "id": nid,
+                        "label": pruned_graph.nodes[nid].get("label", nid),
+                        "type": pruned_graph.nodes[nid].get("type", ""),
+                    }
+                    for nid in sorted(cohort_b)
+                    if nid in pruned_graph
+                ]
+            )
+            # Materialise col_entities if it's a generator
+            col_entities = list(col_entities)
 
             self.app.after(0, lambda: self.analyse_progress_bar.config(value=total_pairs))
+
+            connected = sum(1 for v in connection_results.values() if v)
             self.app.after(
                 0,
                 lambda: self.analyse_status_var.set(
-                    f"Complete! Results saved to {os.path.basename(output_filepath)}"
-                )
+                    f"Complete \u2013 {connected} connected pair(s) found."
+                ),
             )
+
+            # Open matrix window on main thread
             self.app.after(
                 0,
-                lambda: messagebox.showinfo(
-                    "Success",
-                    f"Processing complete. The results have been saved to:\n{output_filepath}",
-                )
+                lambda cr=connection_results, re=row_entities,
+                       ce=col_entities, iw=is_within:
+                    self._show_connection_matrix(cr, re, ce, iw),
             )
 
         except Exception as e:
@@ -5249,6 +5261,47 @@ class NetworkAnalytics(InvestigationModuleBase):
             self.app.after(0, lambda: self.analyse_status_var.set("Error during search."))
         finally:
             self.app.after(0, lambda: self.find_connections_btn.config(state="normal"))
+
+    def _build_path_dict(self, pruned_graph, path):
+        """Build a path-info dict from a list of node IDs."""
+        node_ids = list(path)
+        node_labels = [
+            pruned_graph.nodes[nid].get("label", nid) for nid in node_ids
+        ]
+        node_types = [
+            pruned_graph.nodes[nid].get("type", "") for nid in node_ids
+        ]
+        edge_types = []
+        for i in range(len(node_ids) - 1):
+            edge_types.append(
+                self._get_edge_type_description(
+                    pruned_graph, node_ids[i], node_ids[i + 1]
+                )
+            )
+        is_direct = all(et.startswith("Explicit") for et in edge_types)
+        return {
+            "node_ids": node_ids,
+            "node_labels": node_labels,
+            "node_types": node_types,
+            "edge_types": edge_types,
+            "hops": len(node_ids) - 1,
+            "is_direct": is_direct,
+        }
+
+    def _show_connection_matrix(self, connection_results, row_entities,
+                                col_entities, is_within_mode):
+        """Open (or replace) the connection matrix window."""
+        if self._connection_matrix_window is not None:
+            try:
+                self._connection_matrix_window.destroy()
+            except tk.TclError:
+                pass
+            self._connection_matrix_window = None
+        from ..ui.connection_matrix import ConnectionMatrixWindow
+        self._connection_matrix_window = ConnectionMatrixWindow(
+            self.app, connection_results, row_entities,
+            col_entities, is_within_mode,
+        )
 
     def _add_edge_to_graph(self, edge_data, source_name):
         target_id = edge_data.get("target_id")
