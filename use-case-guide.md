@@ -21,7 +21,7 @@ Then continue in the Network Analytics Workbench:
 3. **Scan for Duplicates** to merge name variants across sources (Companies House records "SMITH, John" while HR has "John Smith").
 4. Exclude supernodes — formation agent addresses that connect to dozens of unrelated companies and drown out real signals.
 5. **Scan for Inferred Links** — this is the key step. The Workbench finds people who share a surname and postcode, surfacing family connections a simple name match would miss entirely.
-6. Under **ANALYSE**, select **Between two entity lists** (staff vs suppliers) and run **Find Connections & Export**.
+6. Under **ANALYSE**, select **Between two entity lists** (staff vs suppliers) and run **Find Connections**.
 7. **Generate Network Graph** with **Show inferred connections (dotted lines)** and **Colour-code nodes by source file** enabled.
 
 **What this finds:** Rather than just catching "John Smith is a director of his own supplier" (which is rare and usually declared), the power is in inferred links. The Workbench might surface: *Sarah Okonkwo (Staff, Housing Dept) lives at postcode BD7 3PQ → David Okonkwo (Director, Okonkwo & Partners Consulting Ltd) is also at BD7 3PQ*. A likely spousal connection to a supplier holding a £420,000 housing maintenance contract — invisible to any name-matching exercise, but clear as day in the network graph.
@@ -80,6 +80,6 @@ Then continue in the Network Analytics Workbench:
 1. **UBO Tracer** + **Bulk Entity Search** → trace and enrich all 15 companies. Export all graph data. You want maximum data depth here: ownership chains, officers, PSCs, addresses.
 2. **Network Analytics Workbench** → load everything. Use **Fetch & Add Network Data** with **Seed from Company** on key suspects to pull in associated entities beyond the original 15. **Scan for Duplicates** aggressively (essential for accurate connection counts). Remove supernode virtual offices. **Scan for Inferred Links**.
 3. **Find Lynchpins** → add the 15 suspects. First run: **People only**, minimum 2 connections, max hop distance 1 (tight, conservative). Second run: **All entity types**, max hop distance 2 (wider, catches intermediary companies and controlling addresses).
-4. **Generate Network Graph** with **Scale node size by connection count** and **Show only networks containing connections**.
+4. **Generate Network Graph** with **Scale node size by connection count** and **Hide isolated networks**.
 
 **What this finds:** *Michael Reeves connects to 6 of the 15 suspect companies as director or PSC — 40% of the network, from a single individual. At hop distance 2, "14 Thornton Business Park" emerges as a shared registered address for 6 companies — a virtual office arranged specifically for the fraud infrastructure.* The lynchpin analysis surfaces the ringleader and the enabling address that a company-by-company investigation would have taken months to piece together.
