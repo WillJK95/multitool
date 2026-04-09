@@ -208,48 +208,34 @@ Historical Data:
 """,
 
     "unified_search": """
---- Unified Bulk Search ---
+--- Bulk Entity Search ---
 
-This module checks a list of identifiers against multiple databases in one run,
+Check a list of identifiers against Companies House and/or the Charity Commission,
 enriching your data with company and charity information.
 
---- SETUP ---
+--- WORKFLOW ---
 
-1) Select Databases
-   Tick which sources you want to query:
-   - Companies House (UK company register)
-   - Charity Commission (England & Wales charities)
-
-2) Set Search Priority
-   If your file is mostly companies or mostly charities, set the priority accordingly.
-   Both sources can still be queried, but the priority setting speeds up matching.
-
-3) Upload Your File
+1) Upload Your File
    Upload a CSV containing organisation identifiers (numbers or names).
 
+2) Select Databases & Search Priority
+   - Tick which sources to query: Companies House, Charity Commission, or both.
+   - When using a single mixed column, choose which database to search first.
+     If no match is found, the tool automatically falls back to the other source.
+
+3) Configure Fuzzy Matching (optional)
+   Enable for name-based matching when you don't have registration numbers.
+   - Set accuracy threshold (85-100%): higher = stricter matching
+   - Outputs include match_score and matched_name for auditability
+
 4) Select Columns
-   Map your columns to the appropriate identifier types:
+   Map your CSV columns to identifier types:
+   - Company Number (Companies House registration numbers)
+   - Charity Number (Charity Commission registration numbers)
+   - Name column (for fuzzy name matching)
 
-   Distinct Columns:
-       - Map company numbers to "Company Number"
-       - Map charity numbers to "Charity Number"
-
-   Single Mixed Column:
-       - Map the same column to both dropdowns
-       - The tool will try Companies House first, then Charity Commission if no match
-
-5) Configure Matching
-
-   Exact Matching:
-       Used for registration numbers. Fast and precise.
-
-   Fuzzy Matching (optional):
-       Enable for name-based matching when you don't have registration numbers.
-       - Set accuracy threshold (85-100%): higher = stricter matching
-       - Outputs include match_score and matched_name for auditability
-
-6) Select Enrichment Fields
-   Choose which data fields to include in the output:
+5) Configure Data Fields
+   Choose which fields to include in the output:
 
    Companies House fields:
        Company number, status, type, incorporation date, registered address,
@@ -351,15 +337,22 @@ Grant Coverage:
 Generate due diligence reports for one or many entities (companies and charities).
 
 --- WORKFLOW ---
-1) Add entities:
-   - Single lookup by number, or
+
+1) Add entities (Step 1: Entity Lookup)
+   - Single lookup by registration number, or
    - Upload CSV for bulk processing.
-2) Select active entity and optional supporting data:
-   - Company mode: Companies House profile/officers/PSCs/filings
-   - Charity mode: Charity details/trustees/financial history/regulatory data
-3) (Optional) Upload iXBRL accounts files for deeper company financial analysis.
-4) Choose checks and thresholds.
-5) Generate individual or bulk HTML reports.
+
+2) Fetch data (Step 2: Fetch Filings)
+   - Companies: fetches profile, officers, PSCs, and filing history from Companies House
+   - Charities: fetches details, trustees, financial history, and regulatory data
+   - Optionally upload iXBRL accounts files for deeper company financial analysis
+
+3) Configure analysis (Step 3)
+   - Standard checks run automatically
+   - Configure thresholds and enable optional deep investigation checks
+
+4) Generate reports (Step 4)
+   - Individual or bulk HTML due diligence reports
 
 --- OUTPUT ---
 Reports include:
@@ -372,13 +365,6 @@ Reports include:
 --- NOTES ---
 - Results are based on available public filings and registry data.
 - Use reports as evidence support, not sole decision basis.
-""",
-
-    "network_analytics": """
---- Network Analytics ---
-
-This module has been renamed to Network Analytics.
-Please see the Network Analytics help section for the current workflow.
 """,
 
     "network_creator": """
