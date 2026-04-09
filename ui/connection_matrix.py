@@ -117,9 +117,10 @@ class ConnectionMatrixWindow:
     # Window construction
     # ------------------------------------------------------------------
     def _build_window(self):
-        # Resolve theme colours once at build time
+        # Resolve theme colours
         self._bg, self._fg = _theme_colors()
         self._colors = _derived_colors(self._bg)
+        self._last_theme = ttk.Style().theme_use()
 
         self.win = tk.Toplevel(self.parent)
         self.win.title("Connection Matrix")
@@ -239,6 +240,33 @@ class ConnectionMatrixWindow:
         self._update_scroll_region()
         self.win.after(50, self._redraw_all)
 
+        # Poll for theme changes so colours update on toggle
+        self._theme_poll_id = self.win.after(500, self._poll_theme)
+
+    def _poll_theme(self):
+        """Check if the ttkbootstrap theme changed and refresh colours."""
+        try:
+            current = ttk.Style().theme_use()
+        except tk.TclError:
+            return  # window gone
+        if current != self._last_theme:
+            self._last_theme = current
+            self._refresh_theme()
+        try:
+            self._theme_poll_id = self.win.after(500, self._poll_theme)
+        except tk.TclError:
+            pass  # window destroyed
+
+    def _refresh_theme(self):
+        """Re-resolve theme colours and repaint everything."""
+        self._bg, self._fg = _theme_colors()
+        self._colors = _derived_colors(self._bg)
+        bg = self._bg
+        for canvas in (self.corner_canvas, self.col_header_canvas,
+                       self.row_header_canvas, self.body_canvas):
+            canvas.configure(bg=bg)
+        self._redraw_all()
+
     # ------------------------------------------------------------------
     # Scroll helpers
     # ------------------------------------------------------------------
@@ -333,20 +361,17 @@ class ConnectionMatrixWindow:
             if ci < n_ent:
                 ent = self.col_entities[ci]
                 label = ent["label"]
-                if len(label) > 22:
-                    label = label[:20] + "\u2026"
-                # Draw text bottom-up, anchored at sw so the full label
-                # extends upward from just above the grid line
+                # Horizontal wrapped text — width constrains to cell
                 c.create_text(
-                    x_mid + 4, COL_HEADER_HEIGHT - 4,
-                    text=label, angle=55, anchor="s",
-                    font=("", 8), fill=fg,
+                    x_mid, COL_HEADER_HEIGHT - 4,
+                    text=label, anchor="s", width=CELL_WIDTH - 4,
+                    font=("", 7), fill=fg, justify=tk.CENTER,
                 )
             else:
                 c.create_text(
-                    x_mid + 4, COL_HEADER_HEIGHT - 4,
-                    text="Total", angle=55, anchor="s",
-                    font=("", 8, "bold"), fill=fg,
+                    x_mid, COL_HEADER_HEIGHT - 4,
+                    text="Total", anchor="s",
+                    font=("", 7, "bold"), fill=fg,
                 )
             # Column gridline
             c.create_line(x, 0, x, COL_HEADER_HEIGHT, fill=grid)
