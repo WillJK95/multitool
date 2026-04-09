@@ -7,61 +7,37 @@ and consistent with the current UI labels.
 
 HELP_CONTENT = {
     "main": """
---- Data Investigation Multi-Tool ---
+--- Multi-Tool ---
 
-This tool supports due diligence, counter-fraud, and conflict-of-interest investigations
-by pulling data from multiple UK public data sources:
+This desktop tool supports due diligence and investigation workflows using UK public data:
+- Companies House
+- Charity Commission (England & Wales)
+- 360Giving / GrantNav
 
-    - UK Companies House (company profiles, officers, PSCs, filings)
-    - Charity Commission for England & Wales (charity details, trustees, finances)
-    - 360Giving / GrantNav (grant funding records)
+--- QUICK START ---
+1) Add API keys via File → Manage API Keys (Companies House and/or Charity Commission).
+2) Choose a module from the sidebar.
+3) Load data (CSV or direct search, depending on module).
+4) Run analysis, then export CSV and/or graph outputs.
 
---- HOW TO USE ---
+--- SETTINGS & STATUS ---
+Theme and font size are available from the menu bar.
+API status indicators are shown for:
+- Companies House
+- Charity Commission
+- GrantNav (360Giving)
+Use the ↻ button in the status panel to refresh checks.
 
-1. Select a module from the main menu
-2. Follow the numbered steps inside that module (typically: upload CSV, select columns, run, export)
-3. Use Export buttons to save outputs for casework, audit trails, or further analysis
-
---- APPLICATION SETTINGS ---
-
-Theme Toggle:
-    Switch between Dark Mode (Superhero theme) and Light Mode (Litera theme)
-    using the toggle in the main menu.
-
-Font Size:
-    Adjust the application font size (8-16pt) using the slider in the main menu.
-    Changes apply immediately across all modules.
-
-API Status Monitor:
-    The main menu displays real-time status indicators for all four data sources.
-    - Green: API is responding normally
-    - Red: API is unavailable or returning errors
-    - Orange: API is responding with warnings
-    - Grey: Status not yet checked
-    Click "Refresh" to manually update the status of all APIs.
+--- FILES & CACHE ---
+Local settings, logs, and temp outputs are stored in:
+~/.multitool
+Use “Clear Cache & Logs” to remove temporary files.
 
 --- COMMON TIPS ---
-
-API Keys:
-    Companies House and Charity Commission modules require free API keys.
-    Use "Manage API Keys" from the main menu to add, update, or delete stored keys.
-    Keys are stored securely in your system's credential manager (keyring).
-
-Cache & Logs:
-    The tool saves temporary files (logs, graphs, reports) in a hidden folder
-    in your user directory (~/.DataInvestigatorTool/).
-    Use "Clear Cache & Logs" to remove these files.
-
-CSV Encoding:
-    The tool attempts to read CSVs as UTF-8 first, then falls back to CP1252.
-
-Graph Workflow:
-    Several modules can export graph data (edge lists). These can be combined in
-    Network Analytics to build a larger graph and search for connections between entities.
-
-Cancellation:
-    Long-running operations can be cancelled using the Cancel button.
-    The tool will stop at the next safe point and preserve any data already processed.
+- Prefer exact identifier matching (company/charity number) where possible.
+- Treat fuzzy and inferred links as investigative leads, not proof.
+- Use Network Analytics to combine exports from multiple modules for cross-source analysis.
+- Long tasks can be cancelled safely with the Cancel button.
 """,
 
     "api_keys": """
@@ -99,7 +75,6 @@ Keys are never stored in plain text and are not shared with anyone.
 
 From the main menu:
     - "Manage API Keys" opens a dialog to view, update, or delete stored keys
-    - "Reset API Keys" removes all stored keys (you will be prompted to re-enter them)
 
 --- API Rate Limits ---
 
@@ -370,182 +345,33 @@ Grant Coverage:
     does not necessarily mean no grants were received.
 """,
 
-    "data_match": """
---- Data Match ---
-
-This module joins (matches) two CSV files together using either exact or fuzzy matching.
-
---- WORKFLOW ---
-
-1) Upload Files
-
-   Primary File (Left):
-       Your main dataset - all rows will be preserved in the output.
-
-   Matching File (Right):
-       The lookup dataset - matching columns will be appended to your primary file.
-
-2) Choose Matching Logic
-
-   Exact Match on Identifier:
-       Best for: company numbers, payroll IDs, invoice references, postcodes
-       - Fast and precise
-       - Optional: Pad numeric identifiers to 8 digits (useful for UK company numbers)
-
-   Fuzzy Match on Text:
-       Best for: organisation names, person names where spelling varies
-       - Uses advanced text matching algorithms
-       - Configurable accuracy threshold
-
-3) Configure Fuzzy Matching (if selected)
-
-   Accuracy Slider (0-100%):
-       - Higher values = stricter matching (fewer false positives)
-       - Lower values = looser matching (may catch more variations)
-       - Recommended: Start at 85% and adjust based on results
-
-   Algorithm Selection:
-       - Weighted Ratio: Smart combination of methods (recommended default)
-       - Token Sort: Good for names in different orders ("Smith John" vs "John Smith")
-       - Token Set: Good for partial matches and extra words
-       - Partial Ratio: Good for substring matching
-
-4) Select Columns
-
-   Join Column (Primary):
-       The column in your primary file to match on.
-
-   Join Column (Matching):
-       The column in your matching file to match against.
-
-   Columns to Append:
-       Select which columns from the matching file to add to your output.
-
-5) Run & Export
-   The output contains:
-   - All rows from your primary file
-   - Appended columns from matching file (where matches found)
-   - Match metadata: match_score, match_type, matched_value (for fuzzy matches)
-
---- TIPS ---
-
-Prefer Numbers Over Names:
-    If you have both an identifier and a name, prefer exact matching on the
-    identifier first. Use fuzzy name matching as a fallback for unmatched records.
-
-False Positives:
-    Fuzzy matching can create false positives. Treat outputs as leads requiring
-    verification, not definitive matches. Sort by match_score to review
-    lower-confidence matches first.
-
-Data Preparation:
-    Clean your data before matching:
-    - Remove extra whitespace
-    - Standardise case (the tool handles this, but consistency helps)
-    - Remove common prefixes/suffixes that might interfere with matching
-""",
-
     "enhanced_dd": """
 --- Enhanced Due Diligence (EDD) ---
 
-This module generates comprehensive due diligence reports for a single company,
-combining Companies House data with optional financial analysis from iXBRL accounts.
+Generate due diligence reports for one or many entities (companies and charities).
 
 --- WORKFLOW ---
+1) Add entities:
+   - Single lookup by number, or
+   - Upload CSV for bulk processing.
+2) Select active entity and optional supporting data:
+   - Company mode: Companies House profile/officers/PSCs/filings
+   - Charity mode: Charity details/trustees/financial history/regulatory data
+3) (Optional) Upload iXBRL accounts files for deeper company financial analysis.
+4) Choose checks and thresholds.
+5) Generate individual or bulk HTML reports.
 
-1) Enter Company Number
-   Enter the 8-character Companies House registration number.
-   Click "Fetch Company Data" to retrieve:
-   - Company profile (status, type, incorporation date, address)
-   - Officers (directors, secretaries)
-   - Persons with Significant Control (PSCs)
-   - Filing history (recent submissions)
+--- OUTPUT ---
+Reports include:
+- Executive summary
+- Risk indicators grouped by severity
+- Entity profile details
+- Financial and governance checks
+- Limitations/disclaimer section
 
-2) Upload Accounts (Optional)
-   Upload one or more iXBRL accounts files (.xhtml or .html format).
-   These are the machine-readable accounts filed with Companies House.
-   If accounts are loaded, additional financial analysis becomes available.
-
-   Note: The tool validates that uploaded accounts match the company number.
-   You will be warned if there appears to be a mismatch.
-
-3) Select Checks
-   Choose which due diligence checks to run. Checks are organised in three tiers:
-
-   CORE CHECKS (fast, always available):
-       - Company status warnings (dissolved, liquidation, etc.)
-       - Filing compliance (overdue accounts/confirmation statements)
-       - Late filing history analysis
-       - Solvency position (if accounts loaded)
-       - Liquidity ratios (if accounts loaded)
-
-   ENHANCED CHECKS (moderate speed):
-       - Director/PSC turnover analysis (unusual changes)
-       - Revenue and profitability trends (if accounts loaded)
-       - Predictive financial outlook
-       - Companies House default address detection
-       - Accounting reference date changes
-       - Filing category changes (audit exemptions, etc.)
-       - Offshore PSC analysis (non-UK controlling entities)
-
-   DEEP INVESTIGATION (slower, more thorough):
-       - Director insolvency history search
-       - Phoenix company detection (similar names after dissolution)
-       - Duplicate registered address analysis (shared addresses)
-
-4) Generate Report
-   Click "Generate Report" to produce an HTML report containing:
-   - Executive summary with key findings
-   - Company profile overview
-   - Risk indicators grouped by severity (High/Medium/Low)
-   - Officer and PSC listings
-   - Financial analysis and charts (if accounts were uploaded)
-   - Limitations and disclaimers section
-
-   The report opens automatically in your default web browser.
-
---- FINANCIAL ANALYSIS ---
-
-When iXBRL accounts are uploaded, the tool extracts and analyses:
-
-Financial Position:
-    - Total assets and liabilities
-    - Net assets / shareholders' funds
-    - Cash and cash equivalents
-    - Trade debtors and creditors
-
-Financial Ratios:
-    - Current ratio (current assets / current liabilities)
-    - Quick ratio (liquid assets / current liabilities)
-    - Debt-to-equity ratio
-    - Gross and net profit margins (if P&L data available)
-
-Trend Analysis:
-    - Year-on-year changes in key metrics
-    - Revenue growth trends
-    - Profitability trajectory
-    - Employee count changes
-
-Charts:
-    - Asset/liability composition
-    - Revenue and profit trends over time
-    - Key ratio comparisons
-
---- TIPS ---
-
-Multiple Years of Accounts:
-    Upload accounts from multiple years to enable trend analysis.
-    The tool will compare figures across periods.
-
-Report Limitations:
-    The report is point-in-time and relies on filed public data.
-    It should not be the sole basis for decisions. Always consider
-    information from other sources and professional judgement.
-
-iXBRL Availability:
-    iXBRL accounts are available from Companies House for most companies
-    filing online since 2011. Download from the company's filing history
-    on the Companies House website.
+--- NOTES ---
+- Results are based on available public filings and registry data.
+- Use reports as evidence support, not sole decision basis.
 """,
 
     "network_analytics": """
@@ -570,7 +396,7 @@ The module has two tabs:
 --- DATA SOURCES ---
 
 Add Graph Files:
-    Import one or more CSV edge list files exported from other modules:
+    Import one or more edge lists from other modules or the working set:
     - Director Investigation graph exports
     - UBO Tracer graph exports
     - Unified Search graph exports
