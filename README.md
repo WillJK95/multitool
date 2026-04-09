@@ -1,25 +1,25 @@
-# Data Investigation Multi-Tool
+# MultiTool
 
 A desktop application for conducting corporate due diligence investigations using UK public data sources. Built for fraud analysts, financial investigators, and compliance professionals.
 
 ## Features
 
-### 🔍 Director Search
+### Director Search
 Search for company directors by name and explore their network of appointments. Generate interactive network graphs showing connections between individuals and companies. Includes integration with 360Giving to find associated grant funding.
 
-### 🏢 Unified Company & Charity Search
-Batch lookup companies and charities from a CSV file. Automatically enriches records with registration details, status, addresses, and financial information from Companies House and the Charity Commission.
+### Bulk Entity Search
+Batch lookup companies and charities from a CSV file. Automatically enriches records with registration details, status, addresses, and financial information from Companies House and the Charity Commission. Supports exact and fuzzy matching, and exports graph data for use in Network Analytics.
 
-### 👤 Ultimate Beneficial Ownership (UBO) Tracer
+### Ultimate Beneficial Ownership (UBO) Tracer
 Trace ownership chains through corporate structures to identify ultimate beneficial owners. Handles complex multi-level ownership with configurable depth limits and generates hierarchical visualisation graphs.
 
-### 🕸️ Network Analytics
-Build and analyse corporate networks starting from seed companies or exported files from other modules. Combine multiple network files, identify key nodes, customise networks, and find paths between entities.
+### Network Analytics Workbench
+Build and analyse corporate networks by combining graph exports from other modules. Identify key nodes, find paths between entities, discover hidden links via address proximity and surname matching, and generate interactive visualisations.
 
-### 💰 Grants Search
-Search the 360Giving database for grants awarded to organisations. Supports lookup by company number, charity number, or organisation name with full pagination support.
+### Grants Search
+Search the 360Giving GrantNav database for grants awarded to organisations. Supports lookup by company number or charity number, with fallback between sources.
 
-### 📊 Enhanced Due Diligence
+### Enhanced Due Diligence
 Comprehensive due diligence reports combining data from all sources. Automated risk detection including:
 - Insolvency indicators
 - Phoenix company patterns
@@ -59,7 +59,7 @@ The tool requires API keys for full functionality:
 - **Companies House API**: Free registration at https://developer.company-information.service.gov.uk/
 - **Charity Commission API**: Free registration at https://api-portal.charitycommission.gov.uk/
 
-API keys can be configured in File → Manage API Keys within the application.
+API keys can be configured in File → Manage API Keys within the application. Keys are stored securely using the system keychain (Windows Credential Manager / macOS Keychain / Linux Secret Service) and are never stored in plain text.
 
 The 360Giving GrantNav API does not require authentication.
 
@@ -71,10 +71,12 @@ The 360Giving GrantNav API does not require authentication.
 
 1. Launch the application
 2. Configure your API keys (File → Manage API Keys)
-3. Select an investigation module from the main menu
-4. Load your data (CSV file or manual entry)
+3. Select an investigation module from the sidebar
+4. Load your data (CSV file or direct search entry, depending on the module)
 5. Run the investigation
-6. Export results to CSV or generate network graphs
+6. Export results as CSV, HTML report, or graph edge list
+
+Each module has a Help button in its header with workflow guidance.
 
 ### Input File Format
 
@@ -86,8 +88,8 @@ Most modules accept CSV files with identifier columns. The tool automatically de
 ### Output Formats
 
 - **CSV**: Enriched data with all retrieved fields
-- **HTML**: Interactive network graphs (using vis.js)
-- **Graph Data**: Edge lists for import into other network analysis tools
+- **HTML**: Interactive network graphs and due diligence reports
+- **Graph edge list**: CSV format for import into Network Analytics or other tools
 
 ## Data Sources
 
@@ -104,32 +106,45 @@ This tool aggregates data from the following public sources:
 
 ```
 multitool/
-├── main.py              # Application entry point
-├── app.py               # Main window and navigation
-├── constants.py         # Configuration and field definitions
-├── api/                 # API client modules
+├── main.py                        # Application entry point
+├── app.py                         # Main window and navigation
+├── constants.py                   # Configuration and field definitions
+├── help_content.py                # In-app help text
+├── api/                           # API client modules
 │   ├── companies_house.py
 │   ├── charity_commission.py
 │   └── grantnav.py
-├── modules/             # Investigation modules
+├── modules/                       # Investigation modules
+│   ├── base.py                    # Base class for all modules
 │   ├── director_search.py
-│   ├── unified_search.py
+│   ├── unified_search.py          # Bulk Entity Search
 │   ├── ubo_tracer.py
-│   ├── network_analytics.py
+│   ├── network_analytics.py       # Network Analytics Workbench
 │   ├── grants_search.py
 │   └── enhanced_dd.py
-├── ui/                  # Reusable UI components
+├── ui/                            # Reusable UI components
+│   ├── connection_matrix.py
 │   ├── help_window.py
 │   ├── licenses_window.py
 │   ├── scrollable_frame.py
 │   ├── searchable_entry.py
 │   └── tooltip.py
-├── utils/		 # Shared utilities
+├── utils/                         # Shared utilities
+│   ├── app_state.py               # Cross-module working set state
+│   ├── charity_financial_data.py
+│   ├── edd_charity_checks.py
+│   ├── edd_charity_visualizations.py
+│   ├── edd_cross_analysis.py
+│   ├── edd_visualizations.py
 │   ├── enrichment.py
-│   ├── financial_analyzer.py 
+│   ├── financial_analyzer.py
 │   ├── fuzzy_match.py
 │   ├── helpers.py
-│   └── token_bucket.py             
+│   ├── settings.py
+│   └── token_bucket.py
+└── lib/                           # Bundled front-end assets
+    ├── bindings/
+    └── tom-select/
 ```
 
 ## Building an Executable
@@ -138,7 +153,7 @@ To create a standalone Windows executable:
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --noconsole --name "DataInvestigationMultiTool" multitool/main.py
+pyinstaller --onefile --noconsole --name "MultiTool" multitool/main.py
 ```
 
 The executable will be created in the `dist/` folder.
@@ -165,10 +180,16 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 Created by William Kenny (2025).
 
 Built with:
-- [ttkbootstrap](https://github.com/israel-dryer/ttkbootstrap) - Modern UI themes
+- [ttkbootstrap](https://github.com/israel-dryer/ttkbootstrap) - Modern UI themes for tkinter
 - [NetworkX](https://networkx.org/) - Network analysis
-- [pyvis](https://github.com/WestHealth/pyvis) - Interactive network visualisation
+- [gravis](https://github.com/robert-haas/gravis) - Interactive network visualisation
 - [RapidFuzz](https://github.com/rapidfuzz/RapidFuzz) - Fuzzy string matching
+- [pandas](https://pandas.pydata.org/) - Data manipulation
+- [matplotlib](https://matplotlib.org/) - Data visualisation
+- [lxml](https://lxml.de/) - XML/HTML parsing (iXBRL financial accounts)
+- [keyring](https://github.com/jaraco/keyring) - Secure credential storage
+- [pgeocode](https://github.com/symerio/pgeocode) - Postcode geolocation
+- [Pillow](https://python-pillow.org/) - Image handling
 
 ## Disclaimer
 
