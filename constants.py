@@ -13,6 +13,7 @@ CHARITY_API_BASE_URL = "https://api.charitycommission.gov.uk/register/api"
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".multitool")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.ini")
 RECENT_REPORTS_FILE = os.path.join(CONFIG_DIR, "recent_reports.json")
+EDD_THRESHOLDS_FILE = os.path.join(CONFIG_DIR, "edd_thresholds.json")
 
 # --- Keyring Configuration ---
 SERVICE_NAME = "multitool"

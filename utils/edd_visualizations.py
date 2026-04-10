@@ -893,7 +893,7 @@ def generate_static_ownership_graph(
         mpatches.Patch(facecolor='#D9E8B9', edgecolor='#333', label='Individual PSC'),
         mpatches.Patch(facecolor='#E0E0E0', edgecolor='#333', label='Ceased'),
     ]
-    ax.legend(handles=legend_items, loc='lower right', fontsize=7, framealpha=0.9)
+    ax.legend(handles=legend_items, loc='upper right', fontsize=7, framealpha=0.9)
 
     plt.tight_layout()
     return _fig_to_svg(fig)

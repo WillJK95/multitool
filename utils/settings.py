@@ -8,6 +8,7 @@ from ..constants import (
     CONFIG_DIR,
     CONFIG_FILE,
     RECENT_REPORTS_FILE,
+    EDD_THRESHOLDS_FILE,
     DEFAULT_CH_PACING_MODE,
     DEFAULT_CH_MAX_WORKERS,
     INITIAL_RATE_LIMIT,
@@ -136,3 +137,29 @@ def load_recent_reports() -> list:
         return [r for r in reports if os.path.exists(r.get("path", ""))]
     except Exception:
         return []
+
+
+def save_edd_thresholds(thresholds: dict) -> None:
+    """Persist EDD Rules and Thresholds overrides to JSON."""
+    import json
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    try:
+        with open(EDD_THRESHOLDS_FILE, "w", encoding="utf-8") as f:
+            json.dump(thresholds, f, indent=2)
+    except Exception:
+        pass
+
+
+def load_edd_thresholds() -> dict:
+    """Load persisted EDD Rules and Thresholds overrides from JSON."""
+    import json
+    if not os.path.exists(EDD_THRESHOLDS_FILE):
+        return {}
+    try:
+        with open(EDD_THRESHOLDS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+        return {}
+    except Exception:
+        return {}

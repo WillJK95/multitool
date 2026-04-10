@@ -59,7 +59,7 @@ from ..constants import (
 )
 from .base import InvestigationModuleBase
 from ..utils.helpers import log_message, clean_company_number, format_eta, match_officer_name_tokens
-from ..utils.settings import save_recent_reports
+from ..utils.settings import save_recent_reports, load_edd_thresholds, save_edd_thresholds
 from ..utils.edd_visualizations import (
     generate_company_timeline,
     fetch_grants_for_company,
@@ -202,7 +202,16 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Composite warning
             'composite_high_count': 3,
         }
-        
+
+        # Overlay any user-saved threshold overrides persisted from a prior session
+        try:
+            saved_thresholds = load_edd_thresholds()
+            for _k, _v in saved_thresholds.items():
+                if _k in self.thresholds:
+                    self.thresholds[_k] = _v
+        except Exception:
+            pass
+
         # Results window state
         self._results_data = []            # [{name, number, type, critical, elevated, moderate, positive}]
         self._last_report_path = None      # Stacked report path
@@ -1853,6 +1862,10 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     self.thresholds[key] = var.get()
                 except Exception:
                     pass
+            try:
+                save_edd_thresholds(self.thresholds)
+            except Exception:
+                pass
             win.destroy()
 
         ttk.Button(btn_frame, text="Reset to Defaults", command=_reset).pack(side='left')
