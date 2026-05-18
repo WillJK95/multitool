@@ -91,6 +91,7 @@ def normalize_company_name(name: str) -> str:
         (r'\blimited\b', 'ltd'),
         (r'\bpublic limited company\b', 'plc'),
         (r'\bcommunity interest company\b', 'cic'),
+        (r'\bc\.?\s*i\.?\s*c\.?\b', 'cic'),
         (r'\blimited liability partnership\b', 'llp'),
         (r'\bincorporated\b', 'inc'),
         (r'\bcorporation\b', 'corp'),
