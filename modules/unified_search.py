@@ -791,7 +791,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
         # Insert all rows
         self._insert_results_rows(self.results_data)
 
-        # Auto-sort: unmatched and dissolved at top
+        # Auto-sort: matched results first, then unmatched at the bottom
         self._auto_sort_initial()
 
     def _insert_results_rows(self, rows):
@@ -806,7 +806,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
             self._row_index_map[iid] = idx
 
     def _auto_sort_initial(self):
-        """Sort so unmatched and dissolved entities appear at the top."""
+        """Sort so matched entities appear first and unmatched appear last."""
         if not self._results_columns:
             return
 
@@ -814,12 +814,12 @@ class CompanyCharitySearch(InvestigationModuleBase):
             vals = {c: self.results_tree.set(item, c) for c in self._results_columns}
             status = vals.get("match_status", "").lower()
             company_status = vals.get("company_status", "").lower()
-            # Priority: 0 = unmatched, 1 = dissolved/inactive, 2 = matched/active
+            # Priority: 0 = matched/active, 1 = matched/inactive, 2 = unmatched
             if "no match" in status:
-                return (0, company_status)
+                return (2, company_status)
             if company_status and company_status != "active":
                 return (1, company_status)
-            return (2, company_status)
+            return (0, company_status)
 
         sorted_items = sorted(self.results_tree.get_children(), key=sort_key)
         for idx, item in enumerate(sorted_items):
@@ -1217,6 +1217,7 @@ class CompanyCharitySearch(InvestigationModuleBase):
         start_time = time.monotonic()
         processed_count = 0
         found_count = 0
+        no_match_count = 0
         failed_rows = []
         self._ratelimit_ticking = False
 
@@ -1281,7 +1282,10 @@ class CompanyCharitySearch(InvestigationModuleBase):
                         result = future.result()
                         if result:
                             self.results_data.append(result)
-                            found_count += 1
+                            if result.get("match_status", "").lower() == "match found":
+                                found_count += 1
+                            else:
+                                no_match_count += 1
                     except Exception as exc:
                         failed_rows.append((str(row_data), str(exc)))
 
@@ -1307,7 +1311,10 @@ class CompanyCharitySearch(InvestigationModuleBase):
                         eta = format_eta(elapsed, processed_count, total,
                                          rate_limit_wait=rate_wait)
                         entity = f"Searching: {row_name} ({processed_count} of {total})"
-                        stats = f"ETA: {eta} | Found: {found_count} matches | Errors: {error_count}"
+                        stats = (
+                            f"ETA: {eta} | Matches found: {found_count} | "
+                            f"Rows with no match: {no_match_count} | Errors: {error_count}"
+                        )
                         self.app.after(0, lambda e=entity: self.status_entity_var.set(e))
                         self.app.after(0, lambda s=stats: self.status_var.set(s))
 
