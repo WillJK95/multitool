@@ -7,7 +7,9 @@ import tempfile
 import textwrap
 import threading
 import time
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 # --- Third-Party ---
 import networkx as nx
@@ -18,13 +20,21 @@ from tkinter import ttk, messagebox, filedialog
 
 # --- From Our Package ---
 # API functions (were global functions in original file)
-from ..api.companies_house import ch_get_data
+from ..api.companies_house import ch_get_data, ch_get_insolvency
 
 # Constants (were at top of original file)
-from ..constants import API_BASE_URL
+from ..constants import API_BASE_URL, CONFIG_DIR
 
 # Utility functions (were global functions or duplicated in classes)
 from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary, format_eta, match_officer_name_tokens
+from ..utils.edd_visualizations import fetch_grants_for_company
+from ..utils.person_edd import (
+    build_company_record,
+    build_subject,
+    run_person_edd,
+)
+from ..utils.person_edd_visualizations import generate_person_edd_html
+from ..utils.settings import save_recent_reports
 
 # UI components (were classes in original file)
 from ..ui.tooltip import Tooltip
@@ -197,6 +207,7 @@ class DirectorSearch(InvestigationModuleBase):
         self._send_menu.add_command(label="UBO Tracer", command=self._send_to_ubo_tracer)
         self._send_menu.add_command(label="Bulk Entity Search", command=self._send_to_bulk_entity_search)
         self._send_menu.add_command(label="Enhanced Due Diligence", command=self._send_to_edd)
+        self._send_menu.add_command(label="Generate Person EDD", command=self._send_to_person_edd)
         self._send_menu.add_command(label="Grants Search", command=self._send_to_grants_search)
         self._send_menu_btn.configure(menu=self._send_menu)
         self._send_menu_btn.pack(side=tk.RIGHT, padx=(5, 0))
@@ -895,6 +906,151 @@ class DirectorSearch(InvestigationModuleBase):
             return
         payload = [{"type": "company", "id": c["company_number"]} for c in companies]
         self.app.show_enhanced_dd(prefill_entities=payload)
+
+    def _send_to_person_edd(self):
+        """Generate a person-centric EDD report from the user-selected rows.
+
+        Uses the existing ``_get_selected_results`` semantics — no explicit
+        selection means "all rows"; an explicit empty selection triggers a
+        warning. Multiple canonical name+DOB keys are allowed (the user may
+        deliberately merge "John Smith" with "John P Smith"), but we warn
+        first so common-name disambiguation isn't silently bypassed.
+        """
+        rows = self._get_selected_results()
+        if not rows:
+            messagebox.showinfo(
+                "Person EDD",
+                "No rows selected. Select the appointments belonging to the subject "
+                "(or clear all selection to use every row).",
+            )
+            return
+
+        subject = build_subject(rows)
+        if not subject:
+            messagebox.showerror("Person EDD", "Could not derive a subject from the selected rows.")
+            return
+
+        if len(subject.canonical_keys) > 1:
+            proceed = messagebox.askyesno(
+                "Multiple identities detected",
+                "The selected rows resolve to more than one canonical name+DOB key:\n\n"
+                + "\n".join(f"  • {k}" for k in subject.canonical_keys)
+                + "\n\nThis can happen with common names where appointments belong to "
+                "different people, or with name-spelling variants for the same person.\n\n"
+                "Continue and merge them into a single report?",
+            )
+            if not proceed:
+                return
+
+        unique_company_numbers = sorted({
+            row.get("company_number", "") for row in rows if row.get("company_number")
+        })
+        if not unique_company_numbers:
+            messagebox.showerror("Person EDD", "No company numbers found in the selected rows.")
+            return
+
+        self._disable_all_buttons()
+        self.cancel_flag.clear()
+        self.app.after(0, lambda: self.status_var.set(
+            f"Person EDD: fetching data for {len(unique_company_numbers)} companies..."
+        ))
+
+        def _worker():
+            try:
+                records = self._run_person_edd_fetch(subject, unique_company_numbers)
+                if self.cancel_flag.is_set():
+                    self.app.after(0, self._restore_button_states)
+                    return
+                report = run_person_edd(subject, records)
+                html_str = generate_person_edd_html(report)
+                safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "_", subject.display_name or "subject").strip("_") or "subject"
+                filename = os.path.join(
+                    CONFIG_DIR,
+                    f"PersonEDD_{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+                )
+                os.makedirs(CONFIG_DIR, exist_ok=True)
+                with open(filename, "w", encoding="utf-8") as f:
+                    f.write(html_str)
+
+                # Record in recent reports
+                try:
+                    self.app_state.recent_edd_reports.insert(0, {
+                        "name": f"Person EDD: {subject.display_name}",
+                        "path": os.path.realpath(filename),
+                        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    })
+                    self.app_state.recent_edd_reports = self.app_state.recent_edd_reports[:10]
+                    save_recent_reports(self.app_state.recent_edd_reports)
+                except Exception as e:
+                    log_message(f"Person EDD: failed to record recent report: {e}")
+
+                def _done():
+                    self.status_var.set(
+                        f"Person EDD report generated for {subject.display_name} "
+                        f"({len(records)} companies). Opening in browser..."
+                    )
+                    self._restore_button_states()
+                    webbrowser.open(f"file://{os.path.realpath(filename)}")
+
+                self.app.after(0, _done)
+            except Exception as e:
+                log_message(f"Person EDD failed: {e}")
+                self.app.after(0, lambda err=e: messagebox.showerror("Person EDD", f"Failed to generate report:\n{err}"))
+                self.app.after(0, self._restore_button_states)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _run_person_edd_fetch(self, subject, company_numbers):
+        """Threaded per-company fetch: profile + officers + PSCs + insolvency + grants."""
+        records = []
+        start_time = time.time()
+        total = len(company_numbers)
+
+        def _fetch_one(cnum):
+            profile, profile_err = ch_get_data(
+                self.api_key, self.ch_token_bucket, f"/company/{cnum}"
+            )
+            officers, _ = ch_get_data(
+                self.api_key, self.ch_token_bucket,
+                f"/company/{cnum}/officers?items_per_page=100",
+            )
+            pscs, _ = ch_get_data(
+                self.api_key, self.ch_token_bucket,
+                f"/company/{cnum}/persons-with-significant-control?items_per_page=100",
+            )
+            insolvency, _ = ch_get_insolvency(self.api_key, self.ch_token_bucket, cnum)
+            try:
+                grants = fetch_grants_for_company(cnum)
+            except Exception as e:
+                log_message(f"Person EDD: grants fetch failed for {cnum}: {e}")
+                grants = []
+            return cnum, profile, officers, pscs, insolvency, grants, profile_err
+
+        with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
+            future_to_cnum = {executor.submit(_fetch_one, c): c for c in company_numbers}
+            for i, future in enumerate(as_completed(future_to_cnum)):
+                if self.cancel_flag.is_set():
+                    break
+                cnum = future_to_cnum[future]
+                try:
+                    cnum, profile, officers, pscs, insolvency, grants, profile_err = future.result()
+                except Exception as e:
+                    log_message(f"Person EDD: fetch failed for {cnum}: {e}")
+                    records.append(build_company_record(
+                        subject, cnum, None, None, None, None, None, profile_error=str(e),
+                    ))
+                    continue
+
+                records.append(build_company_record(
+                    subject, cnum, profile, officers, pscs, insolvency, grants, profile_error=profile_err,
+                ))
+
+                elapsed = time.time() - start_time
+                eta = format_eta(elapsed, i + 1, total)
+                self.app.after(0, lambda c=cnum, idx=i, t=total, e=eta: self.status_var.set(
+                    f"Person EDD: fetched {c} ({idx + 1}/{t}). ETA: {e}"
+                ))
+        return records
 
     def _send_to_grants_search(self):
         """Send selected companies to Grants Search."""

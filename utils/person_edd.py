@@ -1,0 +1,628 @@
+"""Person-centric EDD synthesis: aggregate signals across all of a person's companies.
+
+Mirrors the structure of ``edd_cross_analysis`` but pivoted to a single subject
+and their footprint across multiple companies. Each rule returns a
+``CrossAnalysisResult`` so the renderer can reuse existing card styling.
+"""
+
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
+
+from .edd_cross_analysis import CrossAnalysisResult
+from .helpers import (
+    clean_address_string,
+    extract_address_string,
+    get_canonical_name_key,
+    log_message,
+)
+
+
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PersonCompanyRecord:
+    """All evidence we gather for a single company in the subject's footprint."""
+    company_number: str
+    company_name: str = ""
+    company_status: str = ""
+    incorporated_on: Optional[str] = None
+    dissolved_on: Optional[str] = None
+    has_been_liquidated: bool = False
+    sic_codes: List[str] = field(default_factory=list)
+    registered_address_raw: Optional[str] = None
+    registered_address_clean: Optional[str] = None
+    # Subject's role on this company
+    subject_appointed_on: Optional[str] = None
+    subject_resigned_on: Optional[str] = None
+    subject_role: Optional[str] = None
+    subject_is_psc: bool = False
+    subject_psc_natures: List[str] = field(default_factory=list)
+    # Other people on the company
+    co_officers: List[Dict] = field(default_factory=list)   # {name, dob, role, appointed_on, resigned_on}
+    co_pscs: List[Dict] = field(default_factory=list)       # {name, dob, natures}
+    # Other signals
+    insolvency_cases: List[Dict] = field(default_factory=list)
+    grants: List[Dict] = field(default_factory=list)
+    fetch_error: Optional[str] = None
+
+
+@dataclass
+class PersonSubject:
+    """Identification of the person under review."""
+    canonical_keys: List[str]              # all keys merged into this subject
+    display_name: str
+    dob_year: Optional[int] = None
+    dob_month: Optional[int] = None
+    source_appointments: int = 0           # number of appointment rows the user selected
+
+
+@dataclass
+class PersonEDDReport:
+    """Aggregated output for one person."""
+    subject: PersonSubject
+    companies: List[PersonCompanyRecord]
+    results: List[CrossAnalysisResult]
+    co_director_counts: Counter                       # name -> shared-company count
+    address_clusters: Dict[str, List[str]]            # clean address -> [company_number, ...]
+    grants_total_value: float = 0.0
+    grants_total_count: int = 0
+    fetch_errors: List[Tuple[str, str]] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _parse_iso_date(s: Optional[str]) -> Optional[datetime]:
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s[:10], "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return None
+
+
+def _months_between(a: datetime, b: datetime) -> float:
+    return abs((a - b).days) / 30.4375
+
+
+def build_subject(rows: List[Dict]) -> Optional[PersonSubject]:
+    """Derive the canonical subject(s) from the user-selected appointment rows.
+
+    Returns None if no rows were supplied.
+    """
+    if not rows:
+        return None
+    keys = []
+    display_counter = Counter()
+    dob_counter = Counter()
+    for row in rows:
+        name = row.get("officer_name") or ""
+        dob_str = row.get("date_of_birth") or ""
+        # dob_str format from director_search: "MM-YYYY"
+        dob_obj = None
+        if dob_str and dob_str != "N/A":
+            try:
+                month_s, year_s = dob_str.split("-", 1)
+                dob_obj = {"year": int(year_s), "month": int(month_s)}
+                dob_counter[(dob_obj["year"], dob_obj["month"])] += 1
+            except (ValueError, AttributeError):
+                pass
+        key = get_canonical_name_key(name, dob_obj)
+        if key and key not in keys:
+            keys.append(key)
+        display_counter[name] += 1
+
+    display_name = display_counter.most_common(1)[0][0] if display_counter else ""
+    dob_year = dob_month = None
+    if dob_counter:
+        (y, m), _ = dob_counter.most_common(1)[0]
+        dob_year, dob_month = y, m
+
+    return PersonSubject(
+        canonical_keys=keys,
+        display_name=display_name,
+        dob_year=dob_year,
+        dob_month=dob_month,
+        source_appointments=len(rows),
+    )
+
+
+def _subject_matches(subject: PersonSubject, name: str, dob: Optional[Dict]) -> bool:
+    """Check whether an officer/PSC entry matches the subject by canonical key."""
+    if not name:
+        return False
+    key = get_canonical_name_key(name, dob)
+    if not key:
+        return False
+    if key in subject.canonical_keys:
+        return True
+    # Allow DOB-less match when subject has DOB and entry doesn't (CH PSC entries
+    # sometimes omit DOB). Use the bare name portion.
+    if subject.dob_year and not dob:
+        bare_subject_keys = {k.split("-")[0] for k in subject.canonical_keys}
+        return key in bare_subject_keys
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Rules — each returns a CrossAnalysisResult
+# ---------------------------------------------------------------------------
+
+def rule_p1_insolvency_pattern(companies: List[PersonCompanyRecord]) -> CrossAnalysisResult:
+    liquidated = [c for c in companies if c.has_been_liquidated]
+    with_cases = [c for c in companies if c.insolvency_cases]
+    affected = {c.company_number for c in liquidated} | {c.company_number for c in with_cases}
+
+    # Cluster: ≥2 insolvency events within 24 months
+    event_dates = []
+    for c in companies:
+        for case in c.insolvency_cases:
+            for d in case.get("dates", []):
+                t = _parse_iso_date(d.get("date"))
+                if t:
+                    event_dates.append((c.company_number, t))
+    event_dates.sort(key=lambda x: x[1])
+    cluster_pairs = []
+    for i in range(len(event_dates) - 1):
+        for j in range(i + 1, len(event_dates)):
+            if _months_between(event_dates[i][1], event_dates[j][1]) <= 24:
+                cluster_pairs.append((event_dates[i], event_dates[j]))
+            else:
+                break
+
+    if not affected:
+        return CrossAnalysisResult(
+            rule_id="P1",
+            title="Insolvency footprint",
+            risk_flag="LOW",
+            confidence="AUTO",
+            narrative="No companies in the subject's footprint show insolvency or liquidation history.",
+            recommendation="",
+        )
+
+    severity = "MEDIUM" if len(affected) == 1 else "HIGH"
+    cluster_note = ""
+    if cluster_pairs:
+        cluster_note = f" {len(cluster_pairs)} pair(s) of insolvency events occurred within a 24-month window."
+    evidence_lines = [
+        f"{c.company_name or c.company_number} ({c.company_number}) — status: {c.company_status or 'unknown'}"
+        for c in companies if c.company_number in affected
+    ]
+    narrative = (
+        f"The subject is or was connected to {len(affected)} compan{'y' if len(affected) == 1 else 'ies'} "
+        f"with liquidation or insolvency events.{cluster_note}\n\n"
+        + "\n".join(f"• {line}" for line in evidence_lines)
+    )
+    return CrossAnalysisResult(
+        rule_id="P1",
+        title="Insolvency footprint",
+        risk_flag=severity,
+        confidence="AUTO",
+        narrative=narrative,
+        recommendation=(
+            "Review each insolvent company's filings and the subject's role at the time. "
+            "Multiple insolvencies, particularly clustered in time, warrant deeper scrutiny."
+        ),
+    )
+
+
+def rule_p2_phoenix_signal(
+    subject: PersonSubject, companies: List[PersonCompanyRecord]
+) -> CrossAnalysisResult:
+    """Flag a same-trade reincorporation within 12 months of a liquidation."""
+    liquidated = [c for c in companies if c.has_been_liquidated or c.insolvency_cases]
+    if not liquidated:
+        return CrossAnalysisResult(
+            rule_id="P2",
+            title="Phoenix pattern",
+            risk_flag="LOW",
+            confidence="AUTO",
+            narrative="No liquidations in the footprint; phoenix check not applicable.",
+            recommendation="",
+        )
+
+    matches = []
+    for old in liquidated:
+        resigned = _parse_iso_date(old.subject_resigned_on)
+        dissolved = _parse_iso_date(old.dissolved_on)
+        anchor = resigned or dissolved
+        if not anchor:
+            continue
+        old_sic = set(old.sic_codes or [])
+        old_addr = old.registered_address_clean
+        for new in companies:
+            if new.company_number == old.company_number:
+                continue
+            incorp = _parse_iso_date(new.incorporated_on)
+            if not incorp or incorp < anchor:
+                continue
+            if _months_between(anchor, incorp) > 12:
+                continue
+            new_sic = set(new.sic_codes or [])
+            sic_overlap = bool(old_sic & new_sic)
+            addr_match = bool(old_addr and new.registered_address_clean == old_addr)
+            if sic_overlap or addr_match:
+                matches.append((old, new, sic_overlap, addr_match))
+
+    if not matches:
+        return CrossAnalysisResult(
+            rule_id="P2",
+            title="Phoenix pattern",
+            risk_flag="LOW",
+            confidence="AUTO",
+            narrative="No same-trade or same-address reincorporation detected within 12 months of any liquidation.",
+            recommendation="",
+        )
+
+    lines = []
+    for old, new, sic_overlap, addr_match in matches:
+        markers = []
+        if sic_overlap:
+            markers.append("same SIC code")
+        if addr_match:
+            markers.append("same registered address")
+        lines.append(
+            f"{old.company_name or old.company_number} → {new.company_name or new.company_number} "
+            f"({', '.join(markers)})"
+        )
+    return CrossAnalysisResult(
+        rule_id="P2",
+        title="Phoenix pattern",
+        risk_flag="HIGH",
+        confidence="LIMITED",
+        narrative=(
+            f"Detected {len(matches)} potential phoenix link(s) — new incorporation within 12 months "
+            f"of a liquidation, sharing SIC code or address:\n\n"
+            + "\n".join(f"• {line}" for line in lines)
+        ),
+        recommendation=(
+            "Phoenix patterns can indicate avoidance of creditor obligations. Cross-check trading "
+            "names, premises and customer continuity before progressing."
+        ),
+    )
+
+
+def rule_p3_mass_resignation(
+    companies: List[PersonCompanyRecord], threshold: int = 5, window_months: int = 12
+) -> CrossAnalysisResult:
+    """Flag resignations from multiple distinct companies within a short window."""
+    resignations = []
+    for c in companies:
+        d = _parse_iso_date(c.subject_resigned_on)
+        if d:
+            resignations.append((c, d))
+    resignations.sort(key=lambda x: x[1])
+
+    if len(resignations) < threshold:
+        return CrossAnalysisResult(
+            rule_id="P3",
+            title="Resignation clusters",
+            risk_flag="LOW",
+            confidence="AUTO",
+            narrative=f"{len(resignations)} resignation(s) recorded across the footprint — no clustering test applied.",
+            recommendation="",
+        )
+
+    # Sliding window
+    worst = []
+    for i in range(len(resignations)):
+        window = [r for r in resignations[i:] if _months_between(resignations[i][1], r[1]) <= window_months]
+        if len(window) > len(worst):
+            worst = window
+
+    if len(worst) < threshold:
+        return CrossAnalysisResult(
+            rule_id="P3",
+            title="Resignation clusters",
+            risk_flag="LOW",
+            confidence="AUTO",
+            narrative=f"{len(resignations)} resignations recorded but none clustered above the {threshold} threshold within {window_months} months.",
+            recommendation="",
+        )
+
+    start = worst[0][1].strftime("%b %Y")
+    end = worst[-1][1].strftime("%b %Y")
+    lines = [f"{c.company_name or c.company_number} ({c.company_number}) — {d.strftime('%d %b %Y')}" for c, d in worst]
+    return CrossAnalysisResult(
+        rule_id="P3",
+        title="Resignation clusters",
+        risk_flag="MEDIUM",
+        confidence="AUTO",
+        narrative=(
+            f"{len(worst)} director resignations occurred between {start} and {end} "
+            f"(window ≤ {window_months} months):\n\n"
+            + "\n".join(f"• {line}" for line in lines)
+        ),
+        recommendation=(
+            "Clustered resignations can precede insolvency events or signal disengagement from "
+            "a corporate group. Check whether companies continued to file accounts after the resignations."
+        ),
+    )
+
+
+def rule_p4_address_clustering(
+    companies: List[PersonCompanyRecord], threshold: int = 3
+) -> Tuple[CrossAnalysisResult, Dict[str, List[str]]]:
+    """Flag shared registered addresses across multiple companies."""
+    by_addr: Dict[str, List[str]] = defaultdict(list)
+    for c in companies:
+        if c.registered_address_clean:
+            by_addr[c.registered_address_clean].append(c.company_number)
+
+    clusters = {addr: cnums for addr, cnums in by_addr.items() if len(cnums) >= threshold}
+
+    if not clusters:
+        return (
+            CrossAnalysisResult(
+                rule_id="P4",
+                title="Shared address signals",
+                risk_flag="LOW",
+                confidence="AUTO",
+                narrative=f"No registered address is shared by {threshold} or more of the subject's companies.",
+                recommendation="",
+            ),
+            by_addr,
+        )
+
+    lines = []
+    for addr, cnums in sorted(clusters.items(), key=lambda kv: -len(kv[1])):
+        lines.append(f"{addr} — {len(cnums)} companies ({', '.join(cnums)})")
+    return (
+        CrossAnalysisResult(
+            rule_id="P4",
+            title="Shared address signals",
+            risk_flag="MEDIUM",
+            confidence="LIMITED",
+            narrative=(
+                f"{len(clusters)} registered address(es) host ≥{threshold} of the subject's companies:\n\n"
+                + "\n".join(f"• {line}" for line in lines)
+                + "\n\nNote: shared addresses often indicate a registered agent (accountant / formation service) "
+                "rather than a true operating link. Verify before drawing conclusions."
+            ),
+            recommendation=(
+                "Distinguish agent/registered-office addresses from genuine operating premises. "
+                "Genuine address sharing across many companies may indicate a shell-network pattern."
+            ),
+        ),
+        by_addr,
+    )
+
+
+def rule_p5_codirector_density(
+    subject: PersonSubject, companies: List[PersonCompanyRecord], threshold: int = 3
+) -> Tuple[CrossAnalysisResult, Counter]:
+    """Identify co-directors who appear alongside the subject across multiple companies."""
+    co_counts: Counter = Counter()
+    for c in companies:
+        for off in c.co_officers:
+            name = off.get("name")
+            if not name:
+                continue
+            if _subject_matches(subject, name, off.get("dob")):
+                continue
+            key = get_canonical_name_key(name, off.get("dob"))
+            if key:
+                co_counts[(key, name)] += 1
+
+    # Aggregate to display name
+    display_counts: Counter = Counter()
+    for (key, name), count in co_counts.items():
+        display_counts[name] += count
+
+    repeats = {name: count for name, count in display_counts.items() if count >= threshold}
+
+    if not repeats:
+        return (
+            CrossAnalysisResult(
+                rule_id="P5",
+                title="Co-director network",
+                risk_flag="LOW",
+                confidence="AUTO",
+                narrative=f"No co-director appears alongside the subject on {threshold} or more companies.",
+                recommendation="",
+            ),
+            display_counts,
+        )
+
+    lines = [f"{name} — co-director on {count} companies" for name, count in sorted(repeats.items(), key=lambda kv: -kv[1])]
+    severity = "MEDIUM" if max(repeats.values()) < 5 else "HIGH"
+    return (
+        CrossAnalysisResult(
+            rule_id="P5",
+            title="Co-director network",
+            risk_flag=severity,
+            confidence="AUTO",
+            narrative=(
+                f"{len(repeats)} individual(s) sit on {threshold}+ boards with the subject:\n\n"
+                + "\n".join(f"• {line}" for line in lines)
+            ),
+            recommendation=(
+                "Repeated co-directorships often indicate a business partnership or corporate group. "
+                "Useful for understanding the subject's wider network when conducting due diligence."
+            ),
+        ),
+        display_counts,
+    )
+
+
+def rule_p6_grant_footprint(companies: List[PersonCompanyRecord]) -> Tuple[CrossAnalysisResult, float, int]:
+    total_value = 0.0
+    total_count = 0
+    companies_with_grants = 0
+    funders = set()
+
+    for c in companies:
+        if not c.grants:
+            continue
+        companies_with_grants += 1
+        for g in c.grants:
+            total_count += 1
+            try:
+                total_value += float(g.get("amountAwarded", 0) or 0)
+            except (ValueError, TypeError):
+                pass
+            funder = g.get("fundingOrganization", [{}])
+            if isinstance(funder, list) and funder:
+                fname = funder[0].get("name") if isinstance(funder[0], dict) else None
+                if fname:
+                    funders.add(fname)
+
+    if total_count == 0:
+        return (
+            CrossAnalysisResult(
+                rule_id="P6",
+                title="Grants footprint",
+                risk_flag="LOW",
+                confidence="AUTO",
+                narrative="No 360Giving grants found across the subject's companies.",
+                recommendation="",
+            ),
+            0.0,
+            0,
+        )
+
+    return (
+        CrossAnalysisResult(
+            rule_id="P6",
+            title="Grants footprint",
+            risk_flag="LOW",
+            confidence="AUTO",
+            narrative=(
+                f"{total_count} grants totalling £{total_value:,.2f} have been awarded across "
+                f"{companies_with_grants} of the subject's companies, from {len(funders)} unique funder(s). "
+                "See the full grants table below for detail."
+            ),
+            recommendation=(
+                "Cross-reference funders to identify any existing relationships or repeat funding."
+            ),
+        ),
+        total_value,
+        total_count,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Top-level runner
+# ---------------------------------------------------------------------------
+
+def run_person_edd(
+    subject: PersonSubject,
+    companies: List[PersonCompanyRecord],
+) -> PersonEDDReport:
+    """Run every person-EDD rule and assemble the aggregated report."""
+    if not subject:
+        raise ValueError("subject is required")
+
+    results: List[CrossAnalysisResult] = []
+    results.append(rule_p1_insolvency_pattern(companies))
+    results.append(rule_p2_phoenix_signal(subject, companies))
+    results.append(rule_p3_mass_resignation(companies))
+
+    p4_result, by_addr = rule_p4_address_clustering(companies)
+    results.append(p4_result)
+
+    p5_result, co_counts = rule_p5_codirector_density(subject, companies)
+    results.append(p5_result)
+
+    p6_result, grants_value, grants_count = rule_p6_grant_footprint(companies)
+    results.append(p6_result)
+
+    fetch_errors = [(c.company_number, c.fetch_error) for c in companies if c.fetch_error]
+    if fetch_errors:
+        log_message(f"Person EDD: {len(fetch_errors)} companies had fetch errors.")
+
+    return PersonEDDReport(
+        subject=subject,
+        companies=companies,
+        results=results,
+        co_director_counts=co_counts,
+        address_clusters={addr: cnums for addr, cnums in by_addr.items() if len(cnums) >= 2},
+        grants_total_value=grants_value,
+        grants_total_count=grants_count,
+        fetch_errors=fetch_errors,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-company fetch — assembles a PersonCompanyRecord from CH responses
+# ---------------------------------------------------------------------------
+
+def build_company_record(
+    subject: PersonSubject,
+    company_number: str,
+    profile: Optional[Dict],
+    officers: Optional[Dict],
+    pscs: Optional[Dict],
+    insolvency: Optional[Dict],
+    grants: Optional[List[Dict]],
+    profile_error: Optional[str] = None,
+) -> PersonCompanyRecord:
+    """Assemble a single PersonCompanyRecord from raw CH responses.
+
+    The director_search module already fetches profile/officers/PSCs in
+    ``_fetch_company_network_data``. Insolvency and grants are fetched
+    separately by the caller (see modules/director_search.py).
+    """
+    record = PersonCompanyRecord(company_number=company_number, fetch_error=profile_error)
+    if not profile:
+        return record
+
+    record.company_name = profile.get("company_name", "") or ""
+    record.company_status = profile.get("company_status", "") or ""
+    record.incorporated_on = profile.get("date_of_creation")
+    record.dissolved_on = profile.get("date_of_cessation")
+    record.has_been_liquidated = bool(profile.get("has_been_liquidated", False))
+    record.sic_codes = list(profile.get("sic_codes") or [])
+
+    addr_raw = extract_address_string(profile.get("registered_office_address"))
+    record.registered_address_raw = addr_raw
+    record.registered_address_clean = clean_address_string(addr_raw)
+
+    # Subject's role on this company
+    if officers and officers.get("items"):
+        for off in officers["items"]:
+            name = off.get("name")
+            dob = off.get("date_of_birth")
+            if _subject_matches(subject, name, dob):
+                # Take the most recent / longest-serving match
+                if not record.subject_appointed_on or (
+                    off.get("appointed_on", "") > (record.subject_appointed_on or "")
+                ):
+                    record.subject_appointed_on = off.get("appointed_on")
+                    record.subject_resigned_on = off.get("resigned_on")
+                    record.subject_role = off.get("officer_role")
+            else:
+                record.co_officers.append({
+                    "name": name,
+                    "dob": dob,
+                    "role": off.get("officer_role"),
+                    "appointed_on": off.get("appointed_on"),
+                    "resigned_on": off.get("resigned_on"),
+                })
+
+    # PSC freebie: did the subject also appear as a PSC on this company?
+    if pscs and pscs.get("items"):
+        for psc in pscs["items"]:
+            name = psc.get("name")
+            dob = psc.get("date_of_birth")
+            natures = psc.get("natures_of_control") or []
+            if _subject_matches(subject, name, dob):
+                record.subject_is_psc = True
+                record.subject_psc_natures = list(natures)
+            else:
+                record.co_pscs.append({"name": name, "dob": dob, "natures": natures})
+
+    # Insolvency cases
+    if insolvency and insolvency.get("cases"):
+        record.insolvency_cases = list(insolvency["cases"])
+
+    # Grants
+    if grants:
+        record.grants = list(grants)
+
+    return record
