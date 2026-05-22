@@ -26,6 +26,11 @@ from matplotlib.ticker import MaxNLocator
 from rapidfuzz.fuzz import WRatio
 
 from ..utils.financial_analyzer import FinancialAnalyzer, iXBRLParser
+from ..utils.insolvency_helpers import (
+    classify_insolvency,
+    format_insolvency_type,
+    normalise_company_name,
+)
 from ..ui.tooltip import Tooltip
 from ..api.companies_house import (
     ch_get_data, ch_get_document_metadata, ch_download_document_content,
@@ -5302,97 +5307,19 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
 
     @staticmethod
     def _format_insolvency_type(raw_type):
-        """Convert CH API insolvency type string to human-readable form.
-
-        e.g. 'creditors-voluntary-liquidation' → "Creditors' Voluntary Liquidation"
-        """
-        if not raw_type:
-            return "Unknown"
-        display = raw_type.replace('-', ' ').title()
-        # "Creditors Voluntary …" → "Creditors' Voluntary …"
-        display = display.replace('Creditors ', "Creditors' ")
-        # "Members Voluntary …" → "Members' Voluntary …"
-        display = display.replace('Members ', "Members' ")
-        return display
+        """Convert CH API insolvency type string to human-readable form."""
+        return format_insolvency_type(raw_type)
 
     def _is_benign_insolvency(self, company_number, company_status):
         """Check if a dissolved/liquidation company ended via a benign route.
 
-        Returns (is_benign, insolvency_type) where:
-        - is_benign is True if benign (MVL or voluntary strike-off), False if
-          concerning (CVL, compulsory liquidation, compulsory strike-off) or
-          if the status cannot be determined.
-        - insolvency_type is a human-readable string describing the insolvency
-          type (e.g. "Creditors' Voluntary Liquidation").
-
-        Dissolved companies also check the insolvency endpoint first, because
-        a company that went through liquidation will eventually show as
-        dissolved.  Falls back to filing history if no insolvency data.
+        Returns ``(is_benign, insolvency_type)``. Delegates to the shared
+        :func:`classify_insolvency` helper.
         """
-        status = company_status.lower()
-
-        if 'liquidation' in status or 'dissolved' in status:
-            # Try insolvency endpoint first — works for both active
-            # liquidations and dissolved companies that went through one
-            data, _err = ch_get_insolvency(
-                self.api_key, self.ch_token_bucket, company_number
-            )
-            if data and data.get('cases'):
-                for case in data['cases']:
-                    case_type = case.get('type', '').lower()
-                    raw_type = case.get('type', '')
-                    formatted = self._format_insolvency_type(raw_type)
-                    # Members' Voluntary Liquidation = benign (solvent wind-down)
-                    if 'members' in case_type and 'voluntary' in case_type:
-                        return True, formatted
-                # Cases exist but none are MVL → CVL or compulsory
-                # Use the type from the last case examined
-                return False, formatted
-
-            # For dissolved companies with no insolvency data, fall back to
-            # filing history to check for strike-off type
-            if 'dissolved' in status:
-                data, _err = ch_get_filing_history(
-                    self.api_key, self.ch_token_bucket, company_number,
-                    items_per_page=15,
-                )
-                if data and data.get('items'):
-                    # Pass 1: filing type codes — scan all filings first
-                    saw_ds01 = False
-                    saw_compulsory = False
-                    for filing in data['items']:
-                        ftype = filing.get('type', '').upper()
-                        if ftype.startswith('DS01'):
-                            saw_ds01 = True
-                        elif ftype.startswith('GAZ2') or ftype == 'DISS40':
-                            saw_compulsory = True
-                    # DS01 takes priority — company may have received a
-                    # compulsory notice (GAZ2) but eventually been
-                    # voluntarily struck off (DS01)
-                    if saw_ds01:
-                        return True, "Voluntary Strike-Off"
-                    if saw_compulsory:
-                        return False, "Compulsory Strike-Off"
-
-                    # Pass 2: description text (require "dissolved" to
-                    # confirm the strike-off actually completed, not just
-                    # a notice)
-                    for filing in data['items']:
-                        desc = filing.get('description', '').lower()
-                        if 'dissolved' in desc:
-                            if 'strike-off' in desc or 'strike off' in desc:
-                                if 'voluntary' in desc:
-                                    return True, "Voluntary Strike-Off"
-                                if 'compulsory' in desc:
-                                    return False, "Compulsory Strike-Off"
-
-                    # No definitive strike-off type found
-                    return False, "Dissolved"
-
-            return False, "Unknown"
-
-        # Other statuses (e.g. administration) are not benign
-        return False, "Administration"
+        is_benign, insolvency_type, _date = classify_insolvency(
+            self.api_key, self.ch_token_bucket, company_number, company_status,
+        )
+        return is_benign, insolvency_type
 
     def _fetch_insolvency_appointment_data(self):
         """Shared data fetch for both insolvency and phoenix checks.
@@ -5553,53 +5480,7 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
     
     def _normalise_company_name_for_comparison(self, name):
         """Strip legal suffixes, generic terms, and apply basic stemming for comparison."""
-        if not name:
-            return ""
-
-        name = name.lower().strip()
-
-        # Strip apostrophes (e.g. "Smith's" -> "Smiths")
-        name = name.replace("'", "").replace("\u2019", "")
-
-        # Legal suffixes to remove (order matters - longer first)
-        legal_suffixes = [
-            'public limited company', 'private limited company',
-            'community interest company', 'charitable incorporated organisation',
-            'limited liability partnership', 'limited partnership',
-            'limited', 'ltd', 'plc', 'llp', 'lp', 'cic', 'cio', 'inc', 'corp'
-        ]
-
-        # Generic business words that don't indicate distinctiveness
-        generic_terms = {
-            'services', 'solutions', 'group', 'holdings', 'uk', 'gb', 'international',
-            'consulting', 'consultants', 'management', 'associates', 'partners',
-            'enterprises', 'ventures', 'trading', 'company', 'co', '&', 'and', 'the'
-        }
-
-        # Remove legal suffixes
-        for suffix in legal_suffixes:
-            if name.endswith(suffix):
-                name = name[:-len(suffix)].strip()
-                break  # Only remove one suffix
-
-        # Remove generic terms
-        words = name.split()
-        distinctive_words = [w for w in words if w not in generic_terms]
-
-        # If we've stripped everything, fall back to original words minus suffix
-        if not distinctive_words:
-            distinctive_words = words
-
-        # Basic stemming to improve fuzzy match accuracy
-        stemmed = []
-        for w in distinctive_words:
-            if w.endswith('ies') and len(w) > 3:
-                w = w[:-3] + 'y'        # e.g. "industries" -> "industry"
-            elif w.endswith('s') and len(w) > 2:
-                w = w[:-1]               # e.g. "smiths" -> "smith"
-            stemmed.append(w)
-
-        return ' '.join(stemmed).strip()
+        return normalise_company_name(name)
 
     def _check_phoenix_companies(self):
         """Check for phoenix company patterns (similar names to dissolved companies).
