@@ -197,6 +197,20 @@ class DirectorSearch(InvestigationModuleBase):
             "Export selected directorship rows to CSV. If no rows are selected, all rows are exported.",
         )
 
+        # --- Director Diligence Report button ---
+        self.person_edd_btn = ttk.Button(
+            button_export_frame,
+            text="Director Diligence Report",
+            state="disabled",
+            command=self._send_to_person_edd,
+            bootstyle="primary",
+        )
+        self.person_edd_btn.pack(side=tk.RIGHT, padx=5)
+        Tooltip(
+            self.person_edd_btn,
+            "Generate a person-centric due diligence report covering the selected directorship rows.",
+        )
+
         # --- Send to… dropdown menu ---
         self._send_menu_btn = ttk.Menubutton(
             button_export_frame, text="Send to\u2026 \u25BC", bootstyle="primary-outline"
@@ -207,7 +221,6 @@ class DirectorSearch(InvestigationModuleBase):
         self._send_menu.add_command(label="UBO Tracer", command=self._send_to_ubo_tracer)
         self._send_menu.add_command(label="Bulk Entity Search", command=self._send_to_bulk_entity_search)
         self._send_menu.add_command(label="Enhanced Due Diligence", command=self._send_to_edd)
-        self._send_menu.add_command(label="Generate Person EDD", command=self._send_to_person_edd)
         self._send_menu.add_command(label="Grants Search", command=self._send_to_grants_search)
         self._send_menu_btn.configure(menu=self._send_menu)
         self._send_menu_btn.pack(side=tk.RIGHT, padx=(5, 0))
@@ -245,12 +258,14 @@ class DirectorSearch(InvestigationModuleBase):
         """Helper to disable all action buttons during processing."""
         self.search_btn.config(state="disabled")
         self.export_btn.config(state="disabled")
+        self.person_edd_btn.config(state="disabled")
 
     def _restore_button_states(self):
         """Helper to re-enable buttons after a process finishes."""
         self.search_btn.config(state="normal")
         if self.results_data:
             self.export_btn.config(state="normal")
+            self.person_edd_btn.config(state="normal")
 
     def validate_year(self, P):
         return (str.isdigit(P) or P == "") and len(P) <= 4
@@ -949,6 +964,30 @@ class DirectorSearch(InvestigationModuleBase):
             messagebox.showerror("Person EDD", "No company numbers found in the selected rows.")
             return
 
+        # Build a per-company appointment-info lookup from the selected rows so
+        # build_company_record can fall back to the appointment payload when
+        # the company's /officers list doesn't surface the subject (e.g.
+        # resigned officers paginated out, or name-spelling drift).
+        appt_info = {}
+        for r in rows:
+            cnum = r.get("company_number")
+            if not cnum:
+                continue
+            role_raw = r.get("officer_role_raw") or (r.get("role") or "").lower().replace(" ", "-")
+            roles = appt_info.setdefault(cnum, {
+                "roles": set(),
+                "appointed_on": None,
+                "resigned_on": None,
+            })
+            if role_raw:
+                roles["roles"].add(role_raw.lower())
+            appt = r.get("appointed_on")
+            if appt and (roles["appointed_on"] is None or appt > roles["appointed_on"]):
+                roles["appointed_on"] = appt
+            resd = r.get("resigned_on")
+            if resd and (roles["resigned_on"] is None or resd > roles["resigned_on"]):
+                roles["resigned_on"] = resd
+
         self._disable_all_buttons()
         self.cancel_flag.clear()
         self.app.after(0, lambda: self.status_var.set(
@@ -957,11 +996,18 @@ class DirectorSearch(InvestigationModuleBase):
 
         def _worker():
             try:
-                records = self._run_person_edd_fetch(subject, unique_company_numbers)
+                records = self._run_person_edd_fetch(
+                    subject, unique_company_numbers, appt_info,
+                )
                 if self.cancel_flag.is_set():
                     self.app.after(0, self._restore_button_states)
                     return
-                report = run_person_edd(subject, records)
+                report = run_person_edd(
+                    subject,
+                    records,
+                    api_key=self.api_key,
+                    token_bucket=self.ch_token_bucket,
+                )
                 html_str = generate_person_edd_html(report)
                 safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "_", subject.display_name or "subject").strip("_") or "subject"
                 filename = os.path.join(
@@ -1000,11 +1046,12 @@ class DirectorSearch(InvestigationModuleBase):
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _run_person_edd_fetch(self, subject, company_numbers):
+    def _run_person_edd_fetch(self, subject, company_numbers, appt_info=None):
         """Threaded per-company fetch: profile + officers + PSCs + insolvency + grants."""
         records = []
         start_time = time.time()
         total = len(company_numbers)
+        appt_info = appt_info or {}
 
         def _fetch_one(cnum):
             profile, profile_err = ch_get_data(
@@ -1037,12 +1084,16 @@ class DirectorSearch(InvestigationModuleBase):
                 except Exception as e:
                     log_message(f"Person EDD: fetch failed for {cnum}: {e}")
                     records.append(build_company_record(
-                        subject, cnum, None, None, None, None, None, profile_error=str(e),
+                        subject, cnum, None, None, None, None, None,
+                        profile_error=str(e),
+                        appt_info=appt_info.get(cnum),
                     ))
                     continue
 
                 records.append(build_company_record(
-                    subject, cnum, profile, officers, pscs, insolvency, grants, profile_error=profile_err,
+                    subject, cnum, profile, officers, pscs, insolvency, grants,
+                    profile_error=profile_err,
+                    appt_info=appt_info.get(cnum),
                 ))
 
                 elapsed = time.time() - start_time
@@ -1196,6 +1247,9 @@ class DirectorSearch(InvestigationModuleBase):
                             "role": app.get("officer_role", "Director")
                             .replace("-", " ")
                             .title(),
+                            "officer_role_raw": app.get("officer_role"),
+                            "appointed_on": app.get("appointed_on"),
+                            "resigned_on": app.get("resigned_on"),
                             "address": ", ".join(
                                 filter(None, (app.get("address") or {}).values())
                             ),

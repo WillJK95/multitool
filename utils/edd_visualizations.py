@@ -528,6 +528,12 @@ def generate_grants_report_html(grants_data: list) -> str:
 
     currency_symbol = '£' if 'GBP' in currencies or not currencies else list(currencies)[0] + ' '
 
+    # When grants are aggregated across multiple recipient companies (e.g.
+    # Person EDD), each grant is decorated with the recipient — show that
+    # in its own column. Skipped for single-company EDD reports.
+    show_recipient = any(g.get('_recipient_company_name') for g in grants_data)
+    recipient_th = '<th>Company</th>' if show_recipient else ''
+
     # Build HTML
     html_out = f'''
     <div class="section">
@@ -546,6 +552,7 @@ def generate_grants_report_html(grants_data: list) -> str:
             <thead>
                 <tr>
                     <th>Award Date</th>
+                    {recipient_th}
                     <th>Title</th>
                     <th>Funder</th>
                     <th>Amount</th>
@@ -571,10 +578,17 @@ def generate_grants_report_html(grants_data: list) -> str:
         except (ValueError, TypeError):
             amount_str = 'N/A'
         programme = html.escape(str(_get_nested_value(grant, 'grantProgramme_title') or 'N/A'))
+        recipient_td = ''
+        if show_recipient:
+            recipient_name = grant.get('_recipient_company_name') or ''
+            recipient_number = grant.get('_recipient_company_number') or ''
+            label = recipient_name or recipient_number or '—'
+            recipient_td = f'<td>{html.escape(str(label))}</td>'
 
         html_out += f'''
                 <tr>
                     <td>{html.escape(str(award_date))}</td>
+                    {recipient_td}
                     <td>{title}</td>
                     <td>{funder}</td>
                     <td>{amount_str}</td>
