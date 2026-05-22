@@ -5,6 +5,8 @@ and their footprint across multiple companies. Each rule returns a
 ``CrossAnalysisResult`` so the renderer can reuse existing card styling.
 """
 
+import re
+
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -23,6 +25,30 @@ from .insolvency_helpers import classify_insolvency, normalise_company_name
 
 
 PHOENIX_SIMILARITY_PCT = 80
+ADDRESS_SIMILARITY_PCT = 80
+
+_UK_POSTCODE_RE = re.compile(
+    r"\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_postcode(address: Optional[str]) -> Optional[str]:
+    """Return the UK postcode found in the address (uppercased, normalised
+    spacing), or None if no postcode is present."""
+    if not address:
+        return None
+    m = _UK_POSTCODE_RE.search(address)
+    if not m:
+        return None
+    return f"{m.group(1).upper()} {m.group(2).upper()}"
+
+
+def _strip_postcode(address: Optional[str]) -> str:
+    """Return the address with any postcode stripped, lowercased and trimmed."""
+    if not address:
+        return ""
+    return _UK_POSTCODE_RE.sub("", address).strip(" ,").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +338,7 @@ def rule_p2_phoenix_signal(
                 "new_company": new.company_name or new.company_number,
                 "new_number": new.company_number,
                 "new_status": new.company_status,
+                "new_incorporated_on": new.incorporated_on,
                 "similarity": round(similarity),
                 "liquidation_date": None,
                 "insolvency_type": None,
@@ -412,15 +439,67 @@ def rule_p3_mass_resignation(
     )
 
 
+def _cluster_addresses(
+    companies: List[PersonCompanyRecord],
+) -> Dict[str, List[str]]:
+    """Group company registered addresses by postcode + fuzzy remainder match.
+
+    Addresses with the same postcode are compared by their non-postcode
+    portion using RapidFuzz ``WRatio``; pairs scoring at or above
+    :data:`ADDRESS_SIMILARITY_PCT` are merged into the same cluster.
+    Addresses with no detectable UK postcode fall back to fuzzy matching
+    against each other only.
+
+    Returns a mapping ``{representative_raw_address: [company_number, ...]}``
+    where the representative is the longest raw address in the cluster.
+    """
+    # cluster_id -> {
+    #   "postcode": str|None,
+    #   "remainder": str,
+    #   "members": [(raw_address, company_number), ...],
+    # }
+    clusters: List[Dict[str, Any]] = []
+
+    for c in companies:
+        raw = c.registered_address_raw or c.registered_address_clean
+        if not raw:
+            continue
+        postcode = _extract_postcode(raw)
+        remainder = _strip_postcode(raw)
+
+        target = None
+        for cluster in clusters:
+            if cluster["postcode"] != postcode:
+                continue
+            if not cluster["remainder"] and not remainder:
+                target = cluster
+                break
+            if WRatio(cluster["remainder"], remainder) >= ADDRESS_SIMILARITY_PCT:
+                target = cluster
+                break
+        if target is None:
+            clusters.append({
+                "postcode": postcode,
+                "remainder": remainder,
+                "members": [(raw, c.company_number)],
+            })
+        else:
+            target["members"].append((raw, c.company_number))
+
+    grouped: Dict[str, List[str]] = {}
+    for cluster in clusters:
+        members = cluster["members"]
+        # Representative = longest raw address (richest detail)
+        rep = max((m[0] for m in members), key=len)
+        grouped[rep] = [m[1] for m in members]
+    return grouped
+
+
 def rule_p4_address_clustering(
     companies: List[PersonCompanyRecord], threshold: int = 3
 ) -> Tuple[CrossAnalysisResult, Dict[str, List[str]]]:
     """Flag shared registered addresses across multiple companies."""
-    by_addr: Dict[str, List[str]] = defaultdict(list)
-    for c in companies:
-        if c.registered_address_clean:
-            by_addr[c.registered_address_clean].append(c.company_number)
-
+    by_addr = _cluster_addresses(companies)
     clusters = {addr: cnums for addr, cnums in by_addr.items() if len(cnums) >= threshold}
 
     if not clusters:
@@ -448,13 +527,8 @@ def rule_p4_address_clustering(
             narrative=(
                 f"{len(clusters)} registered address(es) host ≥{threshold} of the subject's companies:\n\n"
                 + "\n".join(f"• {line}" for line in lines)
-                + "\n\nNote: shared addresses often indicate a registered agent (accountant / formation service) "
-                "rather than a true operating link. Verify before drawing conclusions."
             ),
-            recommendation=(
-                "Distinguish agent/registered-office addresses from genuine operating premises. "
-                "Genuine address sharing across many companies may indicate a shell-network pattern."
-            ),
+            recommendation="",
         ),
         by_addr,
     )

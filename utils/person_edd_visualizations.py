@@ -1,9 +1,10 @@
 """HTML report rendering for the person-based EDD module."""
 
 import html
+import re
 from datetime import datetime
 from io import BytesIO
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
@@ -98,7 +99,7 @@ def _render_directorship_timeline(report: PersonEDDReport) -> str:
         mpatches.Patch(color=_STATUS_COLOURS["dissolved"], label="Dissolved / liquidation"),
         mpatches.Patch(color=_STATUS_COLOURS["administration"], label="Administration / other"),
     ]
-    ax.legend(handles=legend_patches, loc="lower right", fontsize=8, frameon=False)
+    ax.legend(handles=legend_patches, loc="upper left", fontsize=8, frameon=False)
 
     fig.tight_layout()
     return _fig_to_svg(fig)
@@ -219,6 +220,12 @@ table.companies tr:hover td, table.insolvent tr:hover td,
 table.phoenix tr:hover td, table.report-table tr:hover td { background: #f9faff; }
 table a { color: #667eea; text-decoration: none; }
 table a:hover { text-decoration: underline; }
+table.phoenix tr.phoenix-high-risk td { background: #fff5f5; color: #b71c1c; font-weight: 500; }
+table.phoenix tr.phoenix-high-risk:hover td { background: #ffecec; }
+.phoenix-warning { background: #fff5f5; border-left: 4px solid #dc3545; padding: 12px 16px;
+                   margin: 10px 0 14px 0; border-radius: 4px; font-size: 13px; color: #b71c1c; }
+.phoenix-warning strong { display: block; margin-bottom: 4px; color: #b71c1c; }
+.phoenix-warning em { color: #b71c1c; font-style: italic; }
 .note { font-size: 12px; color: #666; margin-top: 8px; }
 .warnings { background: #fff3e0; border-left: 4px solid #fd7e14; padding: 10px 14px;
             margin: 14px 0; border-radius: 4px; font-size: 13px; }
@@ -237,6 +244,40 @@ table a:hover { text-decoration: underline; }
 .grant-detail h4 { margin: 0 0 5px 0; color: #333; }
 .grant-meta { font-size: 12px; color: #666; margin: 0 0 10px 0; }
 """
+
+
+_UK_POSTCODE_RE = re.compile(
+    r"\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b",
+    re.IGNORECASE,
+)
+
+
+def _proper_case_address(address: Optional[str]) -> str:
+    """Title-case an address while keeping any UK postcode uppercased."""
+    if not address:
+        return ""
+    titled = address.title()
+    return _UK_POSTCODE_RE.sub(
+        lambda m: f"{m.group(1).upper()} {m.group(2).upper()}",
+        titled,
+    )
+
+
+def _years_between(later: str, earlier: str) -> Optional[float]:
+    """Return ``later - earlier`` in years (float), or None if either is unparseable."""
+    a = _parse_date(later)
+    b = _parse_date(earlier)
+    if not a or not b:
+        return None
+    return (a - b).days / 365.25
+
+
+def _format_year_gap(years: Optional[float]) -> str:
+    if years is None:
+        return "—"
+    if years < 0:
+        return f"−{abs(years):.1f} yrs"
+    return f"{years:.1f} yrs"
 
 
 def _ch_company_link(company_number: Optional[str]) -> str:
@@ -339,34 +380,63 @@ def _phoenix_subsection(report: PersonEDDReport) -> str:
     if not matches:
         return ""
     rows = []
+    high_risk_count = 0
     for m in matches:
-        liq_date = format_display_date(m.get("liquidation_date") or "") or "—"
+        liq_iso = m.get("liquidation_date") or ""
+        inc_iso = m.get("new_incorporated_on") or ""
+        liq_date = format_display_date(liq_iso) or "—"
+        inc_date = format_display_date(inc_iso) or "—"
         ins_type = html.escape(m.get("insolvency_type") or "—")
+        gap_years = _years_between(inc_iso, liq_iso) if (liq_iso and inc_iso) else None
+        is_high_risk = gap_years is not None and 0 <= gap_years <= 5
+        if is_high_risk:
+            high_risk_count += 1
+        row_class = ' class="phoenix-high-risk"' if is_high_risk else ""
+        gap_text = _format_year_gap(gap_years)
         rows.append(
-            "<tr>"
+            f"<tr{row_class}>"
             f"<td>{html.escape(m.get('old_company') or '')}</td>"
             f"<td>{_ch_company_link(m.get('old_number'))}</td>"
             f"<td>{html.escape(m.get('new_company') or '')}</td>"
             f"<td>{_ch_company_link(m.get('new_number'))}</td>"
             f"<td>{m.get('similarity', '')}%</td>"
             f"<td>{liq_date}</td>"
+            f"<td>{inc_date}</td>"
+            f"<td>{gap_text}</td>"
             f"<td>{ins_type}</td>"
             "</tr>"
+        )
+
+    warning_banner = ""
+    if high_risk_count:
+        warning_banner = (
+            '<div class="phoenix-warning">'
+            f"<strong>⚠ {high_risk_count} high-risk phoenix pair"
+            f"{'s' if high_risk_count != 1 else ''} detected.</strong> "
+            "The live company was incorporated within five years of the "
+            "matching company's liquidation — a strong phoenix indicator. "
+            "Consult Companies House and "
+            "<em>Section 216 Insolvency Act 1986</em> "
+            "(restriction on re-use of company names) before progressing."
+            "</div>"
         )
     return f"""
     <div class="subsection">
       <h3>Phoenix Companies ({len(matches)})</h3>
+      {warning_banner}
       <table class="phoenix">
         <thead><tr>
           <th>Liquidated Company</th><th>Number</th>
           <th>Phoenix Match</th><th>Number</th>
           <th>Similarity</th>
           <th>Date of Liquidation</th>
+          <th>Date of Incorporation</th>
+          <th>Time Since Liquidation</th>
           <th>Type of Liquidation</th>
         </tr></thead>
         <tbody>{''.join(rows)}</tbody>
       </table>
-      <p class="note">Name-similarity match (≥80% on distinctive tokens) between a dissolved/liquidated company and a live company in the subject's footprint.</p>
+      <p class="note">Name-similarity match (≥80% on distinctive tokens) between a dissolved/liquidated company and a live company in the subject's footprint. Pairs highlighted in red were incorporated within five years of the matching company's liquidation.</p>
     </div>
     """
 
@@ -408,17 +478,17 @@ def _address_clusters_section(report: PersonEDDReport) -> str:
     rows = []
     for addr, cnums in sorted(report.address_clusters.items(), key=lambda kv: -len(kv[1])):
         rows.append(
-            f"<tr><td>{html.escape(addr)}</td><td>{len(cnums)}</td>"
+            f"<tr><td>{html.escape(_proper_case_address(addr))}</td>"
+            f"<td>{len(cnums)}</td>"
             f"<td>{html.escape(', '.join(cnums))}</td></tr>"
         )
     return f"""
     <section class="section">
       <h2>Shared registered addresses</h2>
       <table class="address-clusters">
-        <thead><tr><th>Address (cleaned)</th><th>Count</th><th>Companies</th></tr></thead>
+        <thead><tr><th>Address</th><th>Count</th><th>Companies</th></tr></thead>
         <tbody>{''.join(rows)}</tbody>
       </table>
-      <p class="note">Shared addresses are often a registered agent (accountant or formation service) rather than a genuine operating link. Use with judgement.</p>
     </section>
     """
 
