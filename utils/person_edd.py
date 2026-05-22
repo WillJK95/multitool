@@ -8,7 +8,9 @@ and their footprint across multiple companies. Each rule returns a
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+from rapidfuzz.fuzz import WRatio
 
 from .edd_cross_analysis import CrossAnalysisResult
 from .helpers import (
@@ -17,6 +19,10 @@ from .helpers import (
     get_canonical_name_key,
     log_message,
 )
+from .insolvency_helpers import classify_insolvency, normalise_company_name
+
+
+PHOENIX_SIMILARITY_PCT = 80
 
 
 # ---------------------------------------------------------------------------
@@ -71,11 +77,40 @@ class PersonEDDReport:
     grants_total_value: float = 0.0
     grants_total_count: int = 0
     fetch_errors: List[Tuple[str, str]] = field(default_factory=list)
+    # Risk-finding subsections (populated by run_person_edd when an API
+    # key is supplied; classification is empty otherwise).
+    insolvent_companies: List[Dict[str, Any]] = field(default_factory=list)
+    phoenix_matches: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _format_role_combo(roles) -> str:
+    """Render a set of raw officer-role strings as a display label.
+
+    - ``{"director"}`` → ``"Director"``
+    - ``{"secretary"}`` → ``"Secretary"``
+    - ``{"director", "secretary"}`` → ``"Director/Secretary"``
+    - anything else (corporate-director, llp-member, …) is title-cased.
+    """
+    norm = {(r or "").strip().lower() for r in roles if r}
+    norm.discard("")
+    if not norm:
+        return ""
+    is_director = any("director" in r for r in norm)
+    is_secretary = any("secretary" in r for r in norm)
+    if is_director and is_secretary:
+        return "Director/Secretary"
+    if is_director and len(norm) == 1 and "director" in norm:
+        return "Director"
+    if is_secretary and len(norm) == 1 and "secretary" in norm:
+        return "Secretary"
+    # Fallback: pretty-print whatever roles were given.
+    pretty = sorted({r.replace("-", " ").title() for r in norm})
+    return "/".join(pretty)
+
 
 def _parse_iso_date(s: Optional[str]) -> Optional[datetime]:
     if not s:
@@ -211,43 +246,76 @@ def rule_p1_insolvency_pattern(companies: List[PersonCompanyRecord]) -> CrossAna
     )
 
 
+def _is_insolvent_status(c: PersonCompanyRecord) -> bool:
+    status = (c.company_status or "").lower()
+    if any(term in status for term in ("liquidation", "dissolved", "administration")):
+        return True
+    return bool(c.has_been_liquidated or c.insolvency_cases)
+
+
+def _is_live_status(c: PersonCompanyRecord) -> bool:
+    status = (c.company_status or "").lower()
+    if not status:
+        return False
+    if any(term in status for term in ("liquidation", "dissolved", "administration", "receiver")):
+        return False
+    return True
+
+
 def rule_p2_phoenix_signal(
-    subject: PersonSubject, companies: List[PersonCompanyRecord]
+    companies: List[PersonCompanyRecord],
+    phoenix_matches: Optional[List[Dict[str, Any]]] = None,
 ) -> CrossAnalysisResult:
-    """Flag a same-trade reincorporation within 12 months of a liquidation."""
-    liquidated = [c for c in companies if c.has_been_liquidated or c.insolvency_cases]
-    if not liquidated:
+    """Flag live in-scope companies whose distinctive name closely matches a
+    dissolved/liquidated in-scope company.
+
+    Mirrors the Enhanced Due Diligence module's phoenix-name match. Pairing
+    is restricted to ``dissolved → live`` because the user has already
+    curated the cohort via Director Search; alias expansion is therefore
+    implicit. Match details are written to ``phoenix_matches`` so the
+    renderer can present them in a dedicated subsection.
+    """
+    matches = phoenix_matches if phoenix_matches is not None else []
+
+    insolvent = [c for c in companies if _is_insolvent_status(c)]
+    live = [c for c in companies if _is_live_status(c)]
+    if not insolvent or not live:
         return CrossAnalysisResult(
             rule_id="P2",
             title="Phoenix pattern",
             risk_flag="LOW",
             confidence="AUTO",
-            narrative="No liquidations in the footprint; phoenix check not applicable.",
+            narrative=(
+                "No phoenix candidates in scope — needs at least one "
+                "insolvent/dissolved company and one live company."
+            ),
             recommendation="",
         )
 
-    matches = []
-    for old in liquidated:
-        resigned = _parse_iso_date(old.subject_resigned_on)
-        dissolved = _parse_iso_date(old.dissolved_on)
-        anchor = resigned or dissolved
-        if not anchor:
+    for old in insolvent:
+        old_norm = normalise_company_name(old.company_name)
+        if not old_norm:
             continue
-        old_sic = set(old.sic_codes or [])
-        old_addr = old.registered_address_clean
-        for new in companies:
+        for new in live:
             if new.company_number == old.company_number:
                 continue
-            incorp = _parse_iso_date(new.incorporated_on)
-            if not incorp or incorp < anchor:
+            new_norm = normalise_company_name(new.company_name)
+            if not new_norm:
                 continue
-            if _months_between(anchor, incorp) > 12:
+            similarity = WRatio(old_norm, new_norm)
+            if similarity < PHOENIX_SIMILARITY_PCT:
                 continue
-            new_sic = set(new.sic_codes or [])
-            sic_overlap = bool(old_sic & new_sic)
-            addr_match = bool(old_addr and new.registered_address_clean == old_addr)
-            if sic_overlap or addr_match:
-                matches.append((old, new, sic_overlap, addr_match))
+            matches.append({
+                "old_company": old.company_name or old.company_number,
+                "old_number": old.company_number,
+                "old_status": old.company_status,
+                "new_company": new.company_name or new.company_number,
+                "new_number": new.company_number,
+                "new_status": new.company_status,
+                "similarity": round(similarity),
+                "liquidation_date": None,
+                "insolvency_type": None,
+            })
 
     if not matches:
         return CrossAnalysisResult(
@@ -255,34 +323,33 @@ def rule_p2_phoenix_signal(
             title="Phoenix pattern",
             risk_flag="LOW",
             confidence="AUTO",
-            narrative="No same-trade or same-address reincorporation detected within 12 months of any liquidation.",
+            narrative=(
+                "No live company in scope has a distinctive-name similarity "
+                f"≥{PHOENIX_SIMILARITY_PCT}% to any dissolved/liquidated company."
+            ),
             recommendation="",
         )
 
-    lines = []
-    for old, new, sic_overlap, addr_match in matches:
-        markers = []
-        if sic_overlap:
-            markers.append("same SIC code")
-        if addr_match:
-            markers.append("same registered address")
-        lines.append(
-            f"{old.company_name or old.company_number} → {new.company_name or new.company_number} "
-            f"({', '.join(markers)})"
-        )
+    lines = [
+        f"{m['old_company']} → {m['new_company']} ({m['similarity']}% name match)"
+        for m in matches[:5]
+    ]
+    extra = f"\n…and {len(matches) - 5} more." if len(matches) > 5 else ""
     return CrossAnalysisResult(
         rule_id="P2",
         title="Phoenix pattern",
         risk_flag="HIGH",
         confidence="LIMITED",
         narrative=(
-            f"Detected {len(matches)} potential phoenix link(s) — new incorporation within 12 months "
-            f"of a liquidation, sharing SIC code or address:\n\n"
+            f"Detected {len(matches)} potential phoenix link(s) — distinctive "
+            f"company name match between a dissolved/liquidated company and a "
+            f"live company in the subject's footprint:\n\n"
             + "\n".join(f"• {line}" for line in lines)
+            + extra
         ),
         recommendation=(
-            "Phoenix patterns can indicate avoidance of creditor obligations. Cross-check trading "
-            "names, premises and customer continuity before progressing."
+            "Phoenix patterns can indicate avoidance of creditor obligations. "
+            "Cross-check trading names, premises and customer continuity before progressing."
         ),
     )
 
@@ -302,7 +369,7 @@ def rule_p3_mass_resignation(
         return CrossAnalysisResult(
             rule_id="P3",
             title="Resignation clusters",
-            risk_flag="LOW",
+            risk_flag="INFO",
             confidence="AUTO",
             narrative=f"{len(resignations)} resignation(s) recorded across the footprint — no clustering test applied.",
             recommendation="",
@@ -319,7 +386,7 @@ def rule_p3_mass_resignation(
         return CrossAnalysisResult(
             rule_id="P3",
             title="Resignation clusters",
-            risk_flag="LOW",
+            risk_flag="INFO",
             confidence="AUTO",
             narrative=f"{len(resignations)} resignations recorded but none clustered above the {threshold} threshold within {window_months} months.",
             recommendation="",
@@ -331,7 +398,7 @@ def rule_p3_mass_resignation(
     return CrossAnalysisResult(
         rule_id="P3",
         title="Resignation clusters",
-        risk_flag="MEDIUM",
+        risk_flag="INFO",
         confidence="AUTO",
         narrative=(
             f"{len(worst)} director resignations occurred between {start} and {end} "
@@ -361,7 +428,7 @@ def rule_p4_address_clustering(
             CrossAnalysisResult(
                 rule_id="P4",
                 title="Shared address signals",
-                risk_flag="LOW",
+                risk_flag="INFO",
                 confidence="AUTO",
                 narrative=f"No registered address is shared by {threshold} or more of the subject's companies.",
                 recommendation="",
@@ -376,7 +443,7 @@ def rule_p4_address_clustering(
         CrossAnalysisResult(
             rule_id="P4",
             title="Shared address signals",
-            risk_flag="MEDIUM",
+            risk_flag="INFO",
             confidence="LIMITED",
             narrative=(
                 f"{len(clusters)} registered address(es) host ≥{threshold} of the subject's companies:\n\n"
@@ -416,12 +483,13 @@ def rule_p5_codirector_density(
 
     repeats = {name: count for name, count in display_counts.items() if count >= threshold}
 
+    severity = "INFO"
     if not repeats:
         return (
             CrossAnalysisResult(
                 rule_id="P5",
                 title="Co-director network",
-                risk_flag="LOW",
+                risk_flag="INFO",
                 confidence="AUTO",
                 narrative=f"No co-director appears alongside the subject on {threshold} or more companies.",
                 recommendation="",
@@ -430,7 +498,6 @@ def rule_p5_codirector_density(
         )
 
     lines = [f"{name} — co-director on {count} companies" for name, count in sorted(repeats.items(), key=lambda kv: -kv[1])]
-    severity = "MEDIUM" if max(repeats.values()) < 5 else "HIGH"
     return (
         CrossAnalysisResult(
             rule_id="P5",
@@ -490,7 +557,7 @@ def rule_p6_grant_footprint(companies: List[PersonCompanyRecord]) -> Tuple[Cross
         CrossAnalysisResult(
             rule_id="P6",
             title="Grants footprint",
-            risk_flag="LOW",
+            risk_flag="INFO",
             confidence="AUTO",
             narrative=(
                 f"{total_count} grants totalling £{total_value:,.2f} have been awarded across "
@@ -510,17 +577,88 @@ def rule_p6_grant_footprint(companies: List[PersonCompanyRecord]) -> Tuple[Cross
 # Top-level runner
 # ---------------------------------------------------------------------------
 
+def _collect_insolvent_companies(
+    companies: List[PersonCompanyRecord],
+    api_key: Optional[str],
+    token_bucket: Any,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Tuple[bool, str, Optional[str]]]]:
+    """For every dissolved/in-liquidation/in-administration company in scope,
+    classify the insolvency via the shared helper.
+
+    Returns ``(rows, cache)`` where ``cache`` maps company_number to the raw
+    classify_insolvency triple so callers (e.g. Phoenix enrichment) can reuse
+    it without re-fetching.
+    """
+    rows: List[Dict[str, Any]] = []
+    cache: Dict[str, Tuple[bool, str, Optional[str]]] = {}
+    for c in companies:
+        if not _is_insolvent_status(c):
+            continue
+        if api_key and c.company_number:
+            try:
+                triple = classify_insolvency(
+                    api_key, token_bucket, c.company_number,
+                    c.company_status or "",
+                    profile_dissolved_on=c.dissolved_on,
+                )
+            except Exception as e:
+                log_message(f"Person EDD: classify_insolvency failed for {c.company_number}: {e}")
+                triple = (False, "Unknown", c.dissolved_on)
+        else:
+            triple = (False, "Unknown", c.dissolved_on)
+        cache[c.company_number] = triple
+        is_benign, insolvency_type, liq_date = triple
+        rows.append({
+            "company_name": c.company_name or c.company_number,
+            "company_number": c.company_number,
+            "company_status": c.company_status,
+            "liquidation_date": liq_date,
+            "insolvency_type": insolvency_type,
+            "is_benign": is_benign,
+        })
+    rows.sort(key=lambda r: (r["liquidation_date"] or "", r["company_name"]), reverse=True)
+    return rows, cache
+
+
+def _enrich_phoenix_matches(
+    matches: List[Dict[str, Any]],
+    classify_cache: Dict[str, Tuple[bool, str, Optional[str]]],
+) -> None:
+    """Fill in liquidation date and type on each phoenix match in place."""
+    for m in matches:
+        cached = classify_cache.get(m["old_number"])
+        if cached:
+            _is_benign, ins_type, liq_date = cached
+            m["insolvency_type"] = ins_type
+            m["liquidation_date"] = liq_date
+
+
 def run_person_edd(
     subject: PersonSubject,
     companies: List[PersonCompanyRecord],
+    api_key: Optional[str] = None,
+    token_bucket: Any = None,
 ) -> PersonEDDReport:
-    """Run every person-EDD rule and assemble the aggregated report."""
+    """Run every person-EDD rule and assemble the aggregated report.
+
+    ``api_key`` / ``token_bucket`` are required to populate the
+    insolvent-company table and the Phoenix subsection's liquidation
+    date/type columns (they drive the shared classify_insolvency helper).
+    Without them the report still renders but those columns show as ``—``.
+    """
     if not subject:
         raise ValueError("subject is required")
 
+    insolvent_companies, classify_cache = _collect_insolvent_companies(
+        companies, api_key, token_bucket,
+    )
+
+    phoenix_matches: List[Dict[str, Any]] = []
+
     results: List[CrossAnalysisResult] = []
     results.append(rule_p1_insolvency_pattern(companies))
-    results.append(rule_p2_phoenix_signal(subject, companies))
+    results.append(rule_p2_phoenix_signal(companies, phoenix_matches=phoenix_matches))
+    _enrich_phoenix_matches(phoenix_matches, classify_cache)
     results.append(rule_p3_mass_resignation(companies))
 
     p4_result, by_addr = rule_p4_address_clustering(companies)
@@ -545,6 +683,8 @@ def run_person_edd(
         grants_total_value=grants_value,
         grants_total_count=grants_count,
         fetch_errors=fetch_errors,
+        insolvent_companies=insolvent_companies,
+        phoenix_matches=phoenix_matches,
     )
 
 
@@ -561,6 +701,7 @@ def build_company_record(
     insolvency: Optional[Dict],
     grants: Optional[List[Dict]],
     profile_error: Optional[str] = None,
+    appt_info: Optional[Dict[str, Any]] = None,
 ) -> PersonCompanyRecord:
     """Assemble a single PersonCompanyRecord from raw CH responses.
 
@@ -569,6 +710,12 @@ def build_company_record(
     separately by the caller (see modules/director_search.py).
     """
     record = PersonCompanyRecord(company_number=company_number, fetch_error=profile_error)
+    if appt_info:
+        roles = appt_info.get("roles") or set()
+        if roles:
+            record.subject_role = _format_role_combo(roles)
+        record.subject_appointed_on = appt_info.get("appointed_on")
+        record.subject_resigned_on = appt_info.get("resigned_on")
     if not profile:
         return record
 
@@ -583,19 +730,27 @@ def build_company_record(
     record.registered_address_raw = addr_raw
     record.registered_address_clean = clean_address_string(addr_raw)
 
-    # Subject's role on this company
+    # Subject's role on this company.  ``appt_info`` (when supplied by the
+    # Director Search caller) is the source of truth — those values came
+    # directly from the subject's /officers/{id}/appointments payload.  The
+    # /officers list lookup below remains as a fallback for callers that
+    # don't pass appt_info; it also still drives co-officer collection.
+    have_appt_info = bool(appt_info and appt_info.get("roles"))
     if officers and officers.get("items"):
         for off in officers["items"]:
             name = off.get("name")
             dob = off.get("date_of_birth")
             if _subject_matches(subject, name, dob):
+                if have_appt_info:
+                    # Subject identified — don't overwrite the appt-info data.
+                    continue
                 # Take the most recent / longest-serving match
                 if not record.subject_appointed_on or (
                     off.get("appointed_on", "") > (record.subject_appointed_on or "")
                 ):
                     record.subject_appointed_on = off.get("appointed_on")
                     record.subject_resigned_on = off.get("resigned_on")
-                    record.subject_role = off.get("officer_role")
+                    record.subject_role = _format_role_combo({(off.get("officer_role") or "").lower()})
             else:
                 record.co_officers.append({
                     "name": name,

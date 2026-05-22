@@ -164,63 +164,102 @@ def _render_codirector_graph(report: PersonEDDReport, top_n: int = 25) -> str:
 # ---------------------------------------------------------------------------
 
 _CSS = """
-:root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
-body { margin: 0; background: #f4f6f8; color: #222; }
-.container { max-width: 1200px; margin: 0 auto; padding: 24px; }
-header.report-header { background: #1e3a5f; color: #fff; padding: 24px; border-radius: 8px; }
-header.report-header h1 { margin: 0 0 6px 0; font-size: 26px; }
-header.report-header .meta { font-size: 13px; opacity: 0.85; }
-.section { background: #fff; border-radius: 8px; padding: 20px 24px; margin: 18px 0;
-           box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
-.section h2 { margin: 0 0 12px 0; font-size: 18px; color: #1e3a5f; border-bottom: 1px solid #eee; padding-bottom: 6px; }
-.section h3 { font-size: 14px; margin: 16px 0 6px 0; }
+body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+       max-width: 1200px; margin: 20px auto; padding: 20px;
+       background-color: #f5f5f5; color: #222; }
+.container { max-width: 1200px; margin: 0 auto; }
+header.report-header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                       color: #fff; padding: 30px; border-radius: 10px; margin-bottom: 30px; }
+header.report-header h1 { margin: 0 0 10px 0; }
+header.report-header .meta { margin: 5px 0; opacity: 0.9; font-size: 13px; }
+.section { background: #fff; padding: 25px; margin-bottom: 20px; border-radius: 8px;
+           box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+.section h2 { color: #333; border-bottom: 2px solid #667eea; padding-bottom: 10px; margin-top: 0; }
+.section h3 { font-size: 15px; margin: 18px 0 8px 0; color: #555; }
+.subsection { margin: 20px 0; }
+.subsection h3 { margin: 0 0 10px 0; color: #667eea; font-size: 16px; }
 .subject-card { display: flex; gap: 32px; flex-wrap: wrap; }
 .subject-card .field { min-width: 140px; }
-.subject-card .label { font-size: 11px; text-transform: uppercase; color: #666; letter-spacing: 0.5px; }
-.subject-card .value { font-size: 16px; color: #222; margin-top: 2px; }
+.subject-card .label { font-size: 11px; text-transform: uppercase; color: #667eea;
+                       letter-spacing: 0.5px; font-weight: 600; }
+.subject-card .value { font-size: 16px; color: #222; margin-top: 4px; }
 .findings { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; }
-.finding { border-left: 4px solid #9e9e9e; background: #fafafa; padding: 14px 16px; border-radius: 4px; }
-.finding.high { border-left-color: #c62828; }
-.finding.medium { border-left-color: #ef6c00; }
-.finding.low { border-left-color: #2e7d32; }
-.finding .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px;
-                  font-weight: 600; color: #fff; }
-.finding.high .badge { background: #c62828; }
-.finding.medium .badge { background: #ef6c00; }
-.finding.low .badge { background: #2e7d32; }
-.finding .badge.not-assessed { background: #9e9e9e; }
-.finding h4 { margin: 8px 0 4px 0; font-size: 14px; }
-.finding .narrative { white-space: pre-line; font-size: 13px; line-height: 1.45; }
-.finding .recommendation { margin-top: 10px; font-size: 12px; color: #555; font-style: italic; }
-table.companies { width: 100%; border-collapse: collapse; font-size: 13px; }
-table.companies th, table.companies td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #eee; }
-table.companies th { background: #f4f6f8; font-weight: 600; }
-table.address-clusters { width: 100%; border-collapse: collapse; font-size: 13px; }
-table.address-clusters th, table.address-clusters td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #eee; vertical-align: top; }
-table.address-clusters th { background: #f4f6f8; font-weight: 600; }
-.note { font-size: 12px; color: #666; }
-.warnings { background: #fff3e0; border-left: 4px solid #ef6c00; padding: 10px 14px; margin: 14px 0;
-            border-radius: 4px; font-size: 13px; }
-.errors { background: #ffebee; border-left: 4px solid #c62828; padding: 10px 14px; margin: 14px 0;
-          border-radius: 4px; font-size: 12px; }
-/* Reuse the grants table styling from the company EDD report. */
-.grants-summary { display: flex; gap: 14px; margin: 12px 0; flex-wrap: wrap; }
-.grants-stat { background: #f0f4f8; padding: 8px 14px; border-radius: 6px; font-size: 13px; }
-.grants-stat strong { display: block; font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+.finding { margin: 12px 0; padding: 15px; border-left: 4px solid #ccc;
+           background: #f9f9f9; border-radius: 4px; }
+.finding.high { border-left-color: #dc3545; background: #fff5f5; }
+.finding.medium { border-left-color: #fd7e14; background: #fff9f5; }
+.finding.low { border-left-color: #6c757d; background: #f9f9f9; }
+.finding.info { border-left-color: #667eea; background: #f0f4ff; }
+.finding.not-assessed { border-left-color: #9e9e9e; background: #f9f9f9; }
+.finding .badge { display: inline-block; padding: 3px 10px; border-radius: 3px;
+                  font-size: 12px; font-weight: bold; color: #fff; margin-bottom: 6px; }
+.finding.high .badge { background: #dc3545; }
+.finding.medium .badge { background: #fd7e14; }
+.finding.low .badge { background: #6c757d; }
+.finding.info .badge { background: #667eea; }
+.finding.not-assessed .badge { background: #9e9e9e; }
+.finding h4 { margin: 8px 0 6px 0; font-size: 14px; color: #333; }
+.finding .narrative { white-space: pre-line; font-size: 13px; line-height: 1.5; color: #333; }
+.finding .recommendation { margin-top: 10px; padding: 10px; background: #fff;
+                           border-left: 3px solid #667eea; font-size: 12px;
+                           color: #555; font-style: italic; }
+table.report-table, table.companies, table.address-clusters,
+table.insolvent, table.phoenix { width: 100%; border-collapse: collapse; font-size: 13px;
+                                 margin-top: 10px; }
+table.report-table th, table.report-table td,
+table.companies th, table.companies td,
+table.address-clusters th, table.address-clusters td,
+table.insolvent th, table.insolvent td,
+table.phoenix th, table.phoenix td { padding: 10px 12px; text-align: left;
+                                     border-bottom: 1px solid #eee; vertical-align: top; }
+table.report-table th, table.companies th, table.address-clusters th,
+table.insolvent th, table.phoenix th { background: #f0f4ff; color: #667eea;
+                                       font-weight: 600; }
+table.companies tr:hover td, table.insolvent tr:hover td,
+table.phoenix tr:hover td, table.report-table tr:hover td { background: #f9faff; }
+table a { color: #667eea; text-decoration: none; }
+table a:hover { text-decoration: underline; }
+.note { font-size: 12px; color: #666; margin-top: 8px; }
+.warnings { background: #fff3e0; border-left: 4px solid #fd7e14; padding: 10px 14px;
+            margin: 14px 0; border-radius: 4px; font-size: 13px; }
+.errors { background: #ffebee; border-left: 4px solid #dc3545; padding: 10px 14px;
+          margin: 14px 0; border-radius: 4px; font-size: 12px; }
+/* Grants table reuse */
+.grants-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0; }
+.grants-stat { background: #f0f4ff; padding: 10px 14px; border-radius: 6px; font-size: 13px; }
+.grants-stat strong { display: block; font-size: 11px; color: #667eea; text-transform: uppercase;
+                      letter-spacing: 0.5px; margin-bottom: 4px; }
 .grants-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.grants-table th, .grants-table td { padding: 6px 10px; border-bottom: 1px solid #eee; text-align: left; }
-.grants-table th { background: #f4f6f8; font-weight: 600; }
-.grants-table tr:hover td { background: #f5f7ff; }
+.grants-table th, .grants-table td { padding: 10px 12px; border-bottom: 1px solid #eee; text-align: left; }
+.grants-table th { background: #f0f4ff; color: #667eea; font-weight: 600; }
+.grants-table tr:hover td { background: #f9faff; }
 .grant-detail { background: #fafafa; padding: 10px 14px; margin: 8px 0; border-radius: 4px; }
 .grant-detail h4 { margin: 0 0 5px 0; color: #333; }
 .grant-meta { font-size: 12px; color: #666; margin: 0 0 10px 0; }
 """
 
 
+def _ch_company_link(company_number: Optional[str]) -> str:
+    """Render a company number as an anchor pointing at Companies House.
+
+    The URL uses an 8-character zero-padded form (Companies House requires
+    leading zeros), while the visible link text preserves the original
+    string so the user can still see whether the number was zero-padded.
+    """
+    cnum = (company_number or "").strip()
+    if not cnum:
+        return ""
+    padded = cnum.zfill(8)
+    return (
+        f'<a href="https://find-and-update.company-information.service.gov.uk/'
+        f'company/{html.escape(padded)}" target="_blank" rel="noopener">'
+        f'{html.escape(cnum)}</a>'
+    )
+
+
 def _finding_card(result) -> str:
     flag = result.risk_flag or "NOT_ASSESSED"
     cls = flag.lower().replace("_", "-")
-    badge_class = "badge not-assessed" if flag == "NOT_ASSESSED" else "badge"
     narrative = html.escape(result.narrative or "")
     rec_html = ""
     if result.recommendation:
@@ -228,7 +267,7 @@ def _finding_card(result) -> str:
     title = html.escape(result.title or result.rule_id)
     return f"""
     <div class="finding {cls}">
-      <span class="{badge_class}">{html.escape(flag)}</span>
+      <span class="badge">{html.escape(flag)}</span>
       <h4>{result.rule_id} — {title}</h4>
       <div class="narrative">{narrative}</div>
       {rec_html}
@@ -269,21 +308,21 @@ def _subject_card(report: PersonEDDReport) -> str:
 def _companies_table(report: PersonEDDReport) -> str:
     rows = []
     for c in sorted(report.companies, key=lambda c: (c.company_status or "", c.company_name or "")):
-        appt = format_display_date(c.subject_appointed_on or "")
+        appt = format_display_date(c.subject_appointed_on or "") if c.subject_appointed_on else "—"
         resd = format_display_date(c.subject_resigned_on or "") if c.subject_resigned_on else "—"
         psc = "Yes" if c.subject_is_psc else ""
         status_html = html.escape(c.company_status or "")
         rows.append(
             f"<tr><td>{html.escape(c.company_name or '')}</td>"
-            f"<td>{html.escape(c.company_number)}</td>"
+            f"<td>{_ch_company_link(c.company_number)}</td>"
             f"<td>{status_html}</td>"
-            f"<td>{html.escape(c.subject_role or '')}</td>"
+            f"<td>{html.escape(c.subject_role or '—')}</td>"
             f"<td>{appt}</td><td>{resd}</td>"
             f"<td>{psc}</td></tr>"
         )
     return f"""
     <section class="section">
-      <h2>Companies in scope ({len(report.companies)})</h2>
+      <h2>Companies in Scope ({len(report.companies)})</h2>
       <table class="companies">
         <thead><tr>
           <th>Company</th><th>Number</th><th>Status</th><th>Role</th>
@@ -292,6 +331,74 @@ def _companies_table(report: PersonEDDReport) -> str:
         <tbody>{''.join(rows)}</tbody>
       </table>
     </section>
+    """
+
+
+def _phoenix_subsection(report: PersonEDDReport) -> str:
+    matches = report.phoenix_matches or []
+    if not matches:
+        return ""
+    rows = []
+    for m in matches:
+        liq_date = format_display_date(m.get("liquidation_date") or "") or "—"
+        ins_type = html.escape(m.get("insolvency_type") or "—")
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(m.get('old_company') or '')}</td>"
+            f"<td>{_ch_company_link(m.get('old_number'))}</td>"
+            f"<td>{html.escape(m.get('new_company') or '')}</td>"
+            f"<td>{_ch_company_link(m.get('new_number'))}</td>"
+            f"<td>{m.get('similarity', '')}%</td>"
+            f"<td>{liq_date}</td>"
+            f"<td>{ins_type}</td>"
+            "</tr>"
+        )
+    return f"""
+    <div class="subsection">
+      <h3>Phoenix Companies ({len(matches)})</h3>
+      <table class="phoenix">
+        <thead><tr>
+          <th>Liquidated Company</th><th>Number</th>
+          <th>Phoenix Match</th><th>Number</th>
+          <th>Similarity</th>
+          <th>Date of Liquidation</th>
+          <th>Type of Liquidation</th>
+        </tr></thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table>
+      <p class="note">Name-similarity match (≥80% on distinctive tokens) between a dissolved/liquidated company and a live company in the subject's footprint.</p>
+    </div>
+    """
+
+
+def _insolvent_companies_subsection(report: PersonEDDReport) -> str:
+    items = report.insolvent_companies or []
+    if not items:
+        return ""
+    rows = []
+    for it in items:
+        liq_date = format_display_date(it.get("liquidation_date") or "") or "—"
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(it.get('company_name') or '')}</td>"
+            f"<td>{_ch_company_link(it.get('company_number'))}</td>"
+            f"<td>{html.escape(it.get('company_status') or '')}</td>"
+            f"<td>{liq_date}</td>"
+            f"<td>{html.escape(it.get('insolvency_type') or '—')}</td>"
+            "</tr>"
+        )
+    return f"""
+    <div class="subsection">
+      <h3>Insolvent Companies ({len(items)})</h3>
+      <table class="insolvent">
+        <thead><tr>
+          <th>Company</th><th>Number</th><th>Status</th>
+          <th>Date of Liquidation</th><th>Type of Liquidation</th>
+        </tr></thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table>
+      <p class="note">All companies in the subject's footprint with a liquidation, dissolution or administration status. Type indicates the nature of the wind-down (e.g. Members' Voluntary Liquidation is a solvent close-down).</p>
+    </div>
     """
 
 
@@ -332,12 +439,22 @@ def _aggregate_grants(report: PersonEDDReport) -> List[Dict]:
 # Top-level
 # ---------------------------------------------------------------------------
 
+_RISK_RULE_IDS = {"P1", "P2"}
+
+
 def generate_person_edd_html(report: PersonEDDReport) -> str:
     """Render the full HTML report for a person-EDD result."""
     s = report.subject
     timeline_svg = _render_directorship_timeline(report)
     codir_svg = _render_codirector_graph(report)
-    findings_html = "".join(_finding_card(r) for r in report.results)
+
+    risk_results = [r for r in report.results if r.rule_id in _RISK_RULE_IDS]
+    info_results = [r for r in report.results if r.rule_id not in _RISK_RULE_IDS]
+    risk_findings_html = "".join(_finding_card(r) for r in risk_results)
+    info_findings_html = "".join(_finding_card(r) for r in info_results)
+
+    insolvent_html = _insolvent_companies_subsection(report)
+    phoenix_html = _phoenix_subsection(report)
 
     grants_html = generate_grants_report_html(_aggregate_grants(report))
 
@@ -353,13 +470,14 @@ def generate_person_edd_html(report: PersonEDDReport) -> str:
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
-<title>Person EDD — {html.escape(s.display_name)}</title>
+<title>Director Diligence Report — {html.escape(s.display_name)}</title>
 <style>{_CSS}</style>
 </head><body>
 <div class="container">
   <header class="report-header">
-    <h1>Person-Based Enhanced Due Diligence</h1>
-    <div class="meta">{html.escape(s.display_name)} &middot; Generated {timestamp}</div>
+    <h1>Director Diligence Report</h1>
+    <p>{html.escape(s.display_name)}</p>
+    <p class="meta">Generated {timestamp}</p>
   </header>
 
   {_subject_card(report)}
@@ -367,8 +485,15 @@ def generate_person_edd_html(report: PersonEDDReport) -> str:
   {errors_html}
 
   <section class="section">
-    <h2>Risk synthesis</h2>
-    <div class="findings">{findings_html}</div>
+    <h2>Risk Findings</h2>
+    <div class="findings">{risk_findings_html}</div>
+    {insolvent_html}
+    {phoenix_html}
+  </section>
+
+  <section class="section">
+    <h2>Informational Findings</h2>
+    <div class="findings">{info_findings_html}</div>
   </section>
 
   <section class="section">
@@ -390,7 +515,7 @@ def generate_person_edd_html(report: PersonEDDReport) -> str:
   {grants_html}
 
   <footer class="note" style="text-align:center; padding:24px;">
-    Data sources: Companies House &middot; 360Giving GrantNav &middot; v1 person-EDD synthesis
+    Data sources: Companies House &middot; 360Giving GrantNav &middot; Director Diligence Report
   </footer>
 </div>
 </body></html>"""
