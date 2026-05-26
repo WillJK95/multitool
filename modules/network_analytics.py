@@ -1023,42 +1023,41 @@ class NetworkAnalytics(InvestigationModuleBase):
         )
         seed_frame.pack(fill=tk.X, pady=(0, 10))
 
-        # Batch of company numbers loaded from working set or file.
+        # Batch of (number, type) items loaded from working set or file.
         # When empty, the single-entry input is used instead.
-        self._seed_batch_cnums = []
+        self._seed_batch_items = []  # list of {"number": str, "type": "company"|"charity"}
         self._seed_batch_source = ""
+
+        # --- Entity type toggle ---
+        seed_type_row = ttk.Frame(seed_frame)
+        seed_type_row.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(seed_type_row, text="Type:").pack(side=tk.LEFT, padx=(0, 10))
+        self.seed_entity_type_var = tk.StringVar(value="company")
+        ttk.Radiobutton(
+            seed_type_row, text="Company",
+            variable=self.seed_entity_type_var, value="company",
+            command=lambda: self._on_seed_entity_type_changed(),
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Radiobutton(
+            seed_type_row, text="Charity",
+            variable=self.seed_entity_type_var, value="charity",
+            command=lambda: self._on_seed_entity_type_changed(),
+        ).pack(side=tk.LEFT, padx=(0, 10))
 
         seed_top_row = ttk.Frame(seed_frame)
         seed_top_row.pack(fill=tk.X, pady=(0, 5))
         self.seed_cnum_var = tk.StringVar()
-        ttk.Label(seed_top_row, text="Company Number:").pack(side=tk.LEFT, padx=(0, 5))
+        self.seed_entry_label = ttk.Label(seed_top_row, text="Company Number:")
+        self.seed_entry_label.pack(side=tk.LEFT, padx=(0, 5))
         seed_entry = ttk.Entry(seed_top_row, textvariable=self.seed_cnum_var, width=20)
         seed_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
         seed_entry.bind("<Return>", lambda event: self.start_seed_fetch())
         seed_btn_state = "normal" if self.api_key else "disabled"
-        self.seed_btn = ttk.Button(
-            seed_top_row,
-            text="Fetch & Add Network Data",
-            state=seed_btn_state,
-            command=self.start_seed_fetch,
-        )
-        self.seed_btn.pack(side=tk.LEFT, padx=5)
-        self.seed_cancel_btn = ttk.Button(
-            seed_top_row,
-            text="Cancel",
-            command=self._cancel_seed_fetch,
-        )
-        # not packed by default; shown while running
 
         # --- Bulk input row ---
         seed_bulk_row = ttk.Frame(seed_frame)
         seed_bulk_row.pack(fill=tk.X, pady=(0, 5))
         ttk.Label(seed_bulk_row, text="Bulk:").pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(
-            seed_bulk_row,
-            text="Load from Working Set",
-            command=self._seed_load_from_working_set,
-        ).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(
             seed_bulk_row,
             text="Upload CSV…",
@@ -1075,8 +1074,8 @@ class NetworkAnalytics(InvestigationModuleBase):
         ttk.Label(
             seed_bulk_row,
             textvariable=self.seed_batch_status_var,
-            foreground="gray",
-            font=("Segoe UI", 9, "italic"),
+            foreground="#fd7e14",
+            font=("Segoe UI", 10, "bold"),
         ).pack(side=tk.LEFT)
 
         seed_options_row = ttk.Frame(seed_frame)
@@ -1084,32 +1083,49 @@ class NetworkAnalytics(InvestigationModuleBase):
         ttk.Label(seed_options_row, text="Include:").pack(side=tk.LEFT, padx=(0, 10))
 
         self.seed_fetch_pscs_var = tk.BooleanVar(value=False)
-        seed_pscs_cb = ttk.Checkbutton(
+        self.seed_pscs_cb = ttk.Checkbutton(
             seed_options_row,
             text="Fetch PSCs",
             variable=self.seed_fetch_pscs_var,
         )
-        seed_pscs_cb.pack(side=tk.LEFT, padx=(0, 15))
+        self.seed_pscs_cb.pack(side=tk.LEFT, padx=(0, 15))
+        Tooltip(
+            self.seed_pscs_cb,
+            "Fetch all Persons with Significant Control and their addresses",
+        )
 
         self.seed_fetch_associated_var = tk.BooleanVar(value=False)
-        seed_associated_cb = ttk.Checkbutton(
+        self.seed_associated_cb = ttk.Checkbutton(
             seed_options_row,
             text="Fetch all associated companies",
             variable=self.seed_fetch_associated_var,
         )
-        seed_associated_cb.pack(side=tk.LEFT, padx=(0, 5))
+        self.seed_associated_cb.pack(side=tk.LEFT, padx=(0, 5))
+        Tooltip(
+            self.seed_associated_cb,
+            "Fetch all companies linked to all directors of the target company",
+        )
 
         self.seed_fetch_vertical_var = tk.BooleanVar(value=False)
-        seed_vertical_cb = ttk.Checkbutton(
+        self.seed_vertical_cb = ttk.Checkbutton(
             seed_options_row,
             text="Trace corporate ownership (vertical)",
             variable=self.seed_fetch_vertical_var,
         )
-        seed_vertical_cb.pack(side=tk.LEFT, padx=(0, 5))
+        self.seed_vertical_cb.pack(side=tk.LEFT, padx=(0, 5))
+        Tooltip(
+            self.seed_vertical_cb,
+            "Fetch all companies in the target company's ownership structure",
+        )
 
         self.seed_warning_label = ttk.Label(
             seed_options_row,
             text="⚠️ May result in many API calls",
+            foreground="orange",
+        )
+        self.seed_charity_warning_label = ttk.Label(
+            seed_options_row,
+            text="⚠️ Options apply to companies only",
             foreground="orange",
         )
 
@@ -1123,9 +1139,56 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.seed_fetch_associated_var.trace_add("write", toggle_warning)
         self.seed_fetch_vertical_var.trace_add("write", toggle_warning)
 
-        # Status bar for seeding (moved here from bottom)
+        self._update_seed_charity_warning()
+
+        # --- Guidance label pointing at the primary action ---
+        ttk.Label(
+            seed_frame,
+            text="↓ Choose your options above, then click below to fetch",
+            foreground="#fd7e14",
+            font=("Segoe UI", 9, "italic"),
+        ).pack(anchor="w", pady=(10, 2))
+
+        # --- Primary action row (Fetch & Add Network Data) ---
+        seed_action_row = ttk.Frame(seed_frame)
+        seed_action_row.pack(fill=tk.X, pady=(0, 4))
+
+        # Custom style: prominent green button with larger bold text and padding.
+        _seed_btn_style = ttk.Style()
+        _seed_btn_style.configure(
+            "SeedFetch.TButton",
+            font=("Segoe UI", 11, "bold"),
+            padding=(20, 10),
+            foreground="white",
+            background="#28a745",
+        )
+        _seed_btn_style.map(
+            "SeedFetch.TButton",
+            background=[
+                ("active", "#218838"),
+                ("disabled", "#6c757d"),
+            ],
+            foreground=[("disabled", "#e0e0e0")],
+        )
+
+        self.seed_btn = ttk.Button(
+            seed_action_row,
+            text="▶  Fetch & Add Network Data",
+            state=seed_btn_state,
+            command=self.start_seed_fetch,
+            style="SeedFetch.TButton",
+        )
+        self.seed_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.seed_cancel_btn = ttk.Button(
+            seed_action_row,
+            text="Cancel",
+            command=self._cancel_seed_fetch,
+        )
+        # not packed by default; shown while running
+
+        # Status bar for seeding (below the primary action)
         status_frame = ttk.Frame(seed_frame)
-        status_frame.pack(fill=tk.X, pady=(10, 0))
+        status_frame.pack(fill=tk.X, pady=(4, 0))
         self.seed_progress_bar = ttk.Progressbar(
             status_frame, orient="horizontal", length=200, mode="indeterminate"
         )
@@ -1142,19 +1205,16 @@ class NetworkAnalytics(InvestigationModuleBase):
             foreground="gray",
         ).pack(side=tk.LEFT, padx=(210, 0))
         
-        # --- Import Network Files ---
+        # --- Network Data Sources ---
         import_frame = ttk.LabelFrame(
             container,
-            text="Import Graph Data Files",
+            text="Network Data Sources",
             padding=10,
         )
         import_frame.pack(fill=tk.X, pady=(0, 10))
-        
+
         buttons_frame = ttk.Frame(import_frame)
         buttons_frame.pack(fill=tk.X, pady=(0, 5))
-        ttk.Button(buttons_frame, text="Add File(s)...", command=self.add_files).pack(
-            side=tk.LEFT, padx=(0, 10)
-        )
         ttk.Button(buttons_frame, text="Clear All", command=self.clear_files).pack(
             side=tk.LEFT
         )
@@ -4534,24 +4594,6 @@ class NetworkAnalytics(InvestigationModuleBase):
             self.app.after(0, lambda: messagebox.showerror("Write Error", f"Could not save file: {e}"))
 
 
-    def add_files(self):
-        """Modified: Tracks file changes for rebuild prompt."""
-        filepaths = filedialog.askopenfilenames(
-            title="Select exported graph CSV files", filetypes=[("CSV files", "*.csv")]
-        )
-        if not filepaths:
-            return
-
-        for path in filepaths:
-            if path not in self.source_files:
-                self.source_files.append(path)
-                self.file_listbox.insert(tk.END, f"FILE: {os.path.basename(path)}")
-
-        if self.source_files:
-            # Enable Build & Refine section
-            self.refine_section.set_enabled(True)
-            self._mark_files_changed()
-
     def clear_files(self):
         """Modified: Resets all state and disables sections."""
         for f in self.source_files:
@@ -5786,42 +5828,50 @@ class NetworkAnalytics(InvestigationModuleBase):
 
     # --- Bulk seed input loaders ----------------------------------------
 
-    def _seed_load_from_working_set(self):
-        """Pull company numbers from the shared working set."""
-        entities = []
-        ws = getattr(self.app_state, "network_working_set", None)
-        if ws and isinstance(ws, dict):
-            nodes = ws.get("nodes", [])
-            if isinstance(nodes, list):
-                entities.extend(nodes)
-        elif ws and isinstance(ws, list):
-            entities.extend(ws)
-        if not entities and getattr(self.app_state, "ubo_working_set", None):
-            entities = list(self.app_state.ubo_working_set)
+    def load_seed_batch_from_entities(self, entities, source="working set"):
+        """Populate the seed batch from a list of entity dicts.
 
-        cnums = []
-        for ent in entities:
+        Accepts mixed company and charity entities. Person entities are
+        skipped. Returns the number of items loaded. Shows a messagebox
+        and returns 0 if nothing usable was found.
+        """
+        items = []
+        seen = set()
+        for ent in entities or []:
             if not isinstance(ent, dict):
                 continue
+            etype = ent.get("entity_type", "company")
+            if etype not in ("company", "charity"):
+                continue
             raw = ent.get("company_number") or ent.get("number") or ""
-            cnum = clean_company_number(str(raw))
-            if cnum:
-                cnums.append(cnum)
-        cnums = list(dict.fromkeys(cnums))  # dedupe, preserve order
-        if not cnums:
+            if etype == "company":
+                num = clean_company_number(str(raw))
+            else:
+                num = str(raw).strip() or None
+            if not num:
+                continue
+            key = (num, etype)
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append({"number": num, "type": etype})
+        if not items:
             messagebox.showinfo(
-                "Working Set",
-                "No company numbers found in the current working set.",
+                "Seed Batch",
+                "No company or charity numbers found in the selected entities.",
             )
-            return
-        self._seed_batch_cnums = cnums
-        self._seed_batch_source = "working set"
+            return 0
+        self._seed_batch_items = items
+        self._seed_batch_source = source
         self._seed_update_batch_status()
+        return len(items)
 
     def _seed_load_from_file(self):
-        """Load a CSV of company numbers and prompt for the column."""
+        """Load a CSV of company/charity numbers using the current type toggle."""
+        etype = self.seed_entity_type_var.get()
+        kind_label = "charity" if etype == "charity" else "company"
         path = filedialog.askopenfilename(
-            title="Select CSV of company numbers",
+            title=f"Select CSV of {kind_label} numbers",
             filetypes=[("CSV files", "*.csv")],
         )
         if not path:
@@ -5834,12 +5884,18 @@ class NetworkAnalytics(InvestigationModuleBase):
             messagebox.showerror("File Error", "CSV had no header row.")
             return
 
-        # Auto-detect a company-number column
-        keywords = [
-            "company_number", "company number", "companynumber",
-            "company_no", "company no", "comp_no", "crn",
-            "registration_number", "registration number", "number",
-        ]
+        if etype == "charity":
+            keywords = [
+                "charity_number", "charity number", "charity_no", "charity no",
+                "registered_charity_number", "registration_number",
+                "registration number", "number",
+            ]
+        else:
+            keywords = [
+                "company_number", "company number", "companynumber",
+                "company_no", "company no", "comp_no", "crn",
+                "registration_number", "registration number", "number",
+            ]
         default_col = headers[0]
         lowered = [h.lower() for h in headers]
         for kw in keywords:
@@ -5852,38 +5908,43 @@ class NetworkAnalytics(InvestigationModuleBase):
                 default_col = match
                 break
 
-        chosen = self._prompt_column_selection(headers, default_col)
+        chosen = self._prompt_column_selection(headers, default_col, kind_label)
         if chosen is None:
             return
 
-        cnums = []
+        items = []
+        seen = set()
         for row in rows:
             raw = row.get(chosen, "")
-            cnum = clean_company_number(str(raw or ""))
-            if cnum:
-                cnums.append(cnum)
-        cnums = list(dict.fromkeys(cnums))
-        if not cnums:
+            if etype == "company":
+                num = clean_company_number(str(raw or ""))
+            else:
+                num = str(raw or "").strip() or None
+            if not num or num in seen:
+                continue
+            seen.add(num)
+            items.append({"number": num, "type": etype})
+        if not items:
             messagebox.showinfo(
                 "File",
-                f"No valid company numbers found in column '{chosen}'.",
+                f"No valid {kind_label} numbers found in column '{chosen}'.",
             )
             return
-        self._seed_batch_cnums = cnums
+        self._seed_batch_items = items
         self._seed_batch_source = os.path.basename(path)
         self._seed_update_batch_status()
 
-    def _prompt_column_selection(self, headers, default_col):
-        """Modal dialog: pick the company-number column. Returns header or None."""
+    def _prompt_column_selection(self, headers, default_col, kind_label="company"):
+        """Modal dialog: pick the number column. Returns header or None."""
         dlg = tk.Toplevel(self)
-        dlg.title("Select Company Number Column")
+        dlg.title(f"Select {kind_label.capitalize()} Number Column")
         dlg.transient(self.winfo_toplevel())
         dlg.grab_set()
         dlg.resizable(False, False)
 
         ttk.Label(
             dlg,
-            text="Which column contains the company numbers?",
+            text=f"Which column contains the {kind_label} numbers?",
             padding=10,
         ).pack(anchor="w")
 
@@ -5913,50 +5974,129 @@ class NetworkAnalytics(InvestigationModuleBase):
         return result["value"]
 
     def _seed_clear_batch(self):
-        self._seed_batch_cnums = []
+        self._seed_batch_items = []
         self._seed_batch_source = ""
         self._seed_update_batch_status()
 
     def _seed_update_batch_status(self):
-        n = len(self._seed_batch_cnums)
+        items = self._seed_batch_items
+        n = len(items)
         if n:
+            n_co = sum(1 for it in items if it.get("type") == "company")
+            n_ch = n - n_co
+            if n_co and n_ch:
+                label = f"{n_co} companies + {n_ch} charities loaded"
+            elif n_ch:
+                label = f"{n_ch} {'charity' if n_ch == 1 else 'charities'} loaded"
+            else:
+                label = f"{n_co} {'company' if n_co == 1 else 'companies'} loaded"
             src = f" ({self._seed_batch_source})" if self._seed_batch_source else ""
-            self.seed_batch_status_var.set(f"{n} companies loaded{src}")
+            self.seed_batch_status_var.set(label + src)
             self.seed_clear_batch_btn.config(state="normal")
         else:
             self.seed_batch_status_var.set("")
             self.seed_clear_batch_btn.config(state="disabled")
+        self._update_seed_charity_warning()
+        self._update_seed_options_state()
+
+    def _batch_has_charities(self):
+        return any(
+            it.get("type") == "charity" for it in (self._seed_batch_items or [])
+        )
+
+    def _update_seed_charity_warning(self):
+        """Show 'Options apply to companies only' when charities are involved."""
+        if not hasattr(self, "seed_charity_warning_label"):
+            return
+        show = self._batch_has_charities() or (
+            not self._seed_batch_items
+            and self.seed_entity_type_var.get() == "charity"
+        )
+        if show:
+            if not self.seed_charity_warning_label.winfo_manager():
+                self.seed_charity_warning_label.pack(side=tk.LEFT, padx=5)
+        else:
+            self.seed_charity_warning_label.pack_forget()
+
+    def _on_seed_entity_type_changed(self):
+        """Handle Company/Charity radio change: update label + checkbox state."""
+        etype = self.seed_entity_type_var.get()
+        if etype == "charity":
+            self.seed_entry_label.config(text="Charity Number:")
+        else:
+            self.seed_entry_label.config(text="Company Number:")
+        self._update_seed_options_state()
+        self._update_seed_charity_warning()
+
+    def _update_seed_options_state(self):
+        """Enable Include checkboxes only when the fetch will touch companies."""
+        if not hasattr(self, "seed_pscs_cb"):
+            return
+        items = self._seed_batch_items or []
+        has_company_in_batch = any(it.get("type") == "company" for it in items)
+        toggle_company = (
+            not items and self.seed_entity_type_var.get() == "company"
+        )
+        cb_state = "normal" if (has_company_in_batch or toggle_company) else "disabled"
+        for cb in (self.seed_pscs_cb, self.seed_associated_cb, self.seed_vertical_cb):
+            cb.config(state=cb_state)
 
     # --- Seed orchestration ---------------------------------------------
 
     def start_seed_fetch(self):
-        """Begin a (potentially bulk) seed fetch."""
-        if self._seed_batch_cnums:
-            batch = list(self._seed_batch_cnums)
+        """Begin a (potentially bulk, possibly mixed-type) seed fetch."""
+        toggle_type = self.seed_entity_type_var.get()
+        if self._seed_batch_items:
+            batch = [dict(it) for it in self._seed_batch_items]
+            seen = {(it["number"], it["type"]) for it in batch}
             entry_raw = self.seed_cnum_var.get().strip()
             if entry_raw:
-                # If the user has typed something AND has a bulk batch,
-                # include the typed value too (de-duped).
-                extra = clean_company_number(entry_raw)
-                if extra and extra not in batch:
-                    batch.append(extra)
+                if toggle_type == "company":
+                    extra = clean_company_number(entry_raw)
+                else:
+                    extra = entry_raw or None
+                if extra and (extra, toggle_type) not in seen:
+                    batch.append({"number": extra, "type": toggle_type})
         else:
             entry_raw = self.seed_cnum_var.get().strip()
-            single = clean_company_number(entry_raw)
+            if toggle_type == "company":
+                single = clean_company_number(entry_raw)
+            else:
+                single = entry_raw or None
             if not single:
+                kind = "charity" if toggle_type == "charity" else "company"
                 messagebox.showerror(
                     "Input Error",
-                    "Enter a company number or load a bulk batch.",
+                    f"Enter a {kind} number or load a bulk batch.",
                 )
                 return
-            batch = [single]
+            batch = [{"number": single, "type": toggle_type}]
+
+        # Validate charities have an API key available.
+        if any(it["type"] == "charity" for it in batch):
+            if not getattr(self.app, "charity_api_key", ""):
+                messagebox.showerror(
+                    "Charity Commission Key Missing",
+                    "A Charity Commission API key is required to seed charities. "
+                    "Add one from the API Keys menu and try again.",
+                )
+                return
 
         self.seed_btn.config(state="disabled")
         self.seed_cancel_btn.pack(side=tk.LEFT, padx=5)
+        n_co = sum(1 for it in batch if it["type"] == "company")
+        n_ch = len(batch) - n_co
         if len(batch) == 1:
-            self.seed_status_var.set(f"Seeding network with {batch[0]}...")
+            self.seed_status_var.set(f"Seeding network with {batch[0]['number']}...")
+        elif n_co and n_ch:
+            self.seed_status_var.set(
+                f"Seeding network with {n_co} companies and {n_ch} charities..."
+            )
+        elif n_ch:
+            kind = "charity" if n_ch == 1 else "charities"
+            self.seed_status_var.set(f"Seeding network with {n_ch} {kind}...")
         else:
-            self.seed_status_var.set(f"Seeding network with {len(batch)} companies...")
+            self.seed_status_var.set(f"Seeding network with {n_co} companies...")
         self.seed_status_entity_var.set("")
         self.seed_progress_bar.start(10)
         self.cancel_flag.clear()
@@ -6062,15 +6202,26 @@ class NetworkAnalytics(InvestigationModuleBase):
             return None
 
         try:
-            for batch_idx, seed_cnum in enumerate(batch):
+            for batch_idx, seed_item in enumerate(batch):
                 if self.cancel_flag.is_set():
                     break
+                seed_cnum = seed_item["number"]
+                seed_type = seed_item["type"]
                 stage = (
                     f"Seed {batch_idx + 1} of {len(batch)}: {seed_cnum}"
                     if len(batch) > 1
                     else f"Seed: {seed_cnum}"
                 )
                 self.app.after(0, lambda s=stage: self.seed_status_entity_var.set(s))
+
+                # Charity items take a separate path; Include options do not apply.
+                if seed_type == "charity":
+                    self._process_charity_seed(
+                        seed_cnum, temp_graph, failed_companies,
+                        processed_units, total_units, found_count,
+                        _update_eta,
+                    )
+                    continue
 
                 # --- Horizontal expansion ---
                 unique_company_numbers = {seed_cnum}
@@ -6183,7 +6334,7 @@ class NetworkAnalytics(InvestigationModuleBase):
                 )
 
             label = (
-                batch[0]
+                batch[0]["number"]
                 if len(batch) == 1
                 else f"BULK-{len(batch)}"
             )
@@ -6398,7 +6549,81 @@ class NetworkAnalytics(InvestigationModuleBase):
                     if psc_addr_clean:
                         G.add_edge(key, psc_addr_clean, label="correspondence_at")
 
+    def _process_charity_seed(
+        self, charity_number, temp_graph, failed_companies,
+        processed_units, total_units, found_count, update_eta,
+    ):
+        """Fetch a charity's details + trustees and merge into the shared graph."""
+        from ..api.charity_commission import cc_get_data
+        charity_key = getattr(self.app, "charity_api_key", "") or ""
+        if not charity_key:
+            failed_companies.append((charity_number, "No Charity Commission API key"))
+            return
 
+        total_units[0] += 1
+        self.app.after(0, update_eta)
+        self.app.after(
+            0,
+            lambda n=charity_number: self.seed_status_var.set(
+                f"Fetching charity {n}..."
+            ),
+        )
+
+        details, det_err = cc_get_data(
+            charity_key, f"/charitydetails/{charity_number}/0"
+        )
+        if details is None:
+            failed_companies.append((charity_number, det_err or "No charity details"))
+            processed_units[0] += 1
+            self.app.after(0, update_eta)
+            return
+
+        trustees, _trust_err = cc_get_data(
+            charity_key, f"/charitytrusteenamesV2/{charity_number}/0"
+        )
+        self._add_charity_to_graph(temp_graph, charity_number, details, trustees)
+        processed_units[0] += 1
+        found_count[0] = temp_graph.number_of_nodes()
+        self.app.after(0, update_eta)
+
+    def _add_charity_to_graph(self, G, charity_number, details, trustees):
+        """Merge charity details (+ trustees & addresses) into the shared graph."""
+        node_id = f"CC-{charity_number}"
+        charity_name = (details or {}).get("charity_name") or charity_number
+        G.add_node(node_id, label=charity_name, type="charity")
+
+        contact_addr = (details or {}).get("charity_contact_address")
+        addr_clean = clean_address_string(contact_addr) if contact_addr else None
+        if addr_clean:
+            if not G.has_node(addr_clean):
+                G.add_node(
+                    addr_clean,
+                    label=format_address_label(contact_addr),
+                    type="address",
+                )
+            G.add_edge(node_id, addr_clean, label="registered_at")
+
+        if trustees and isinstance(trustees, list):
+            for trustee in trustees:
+                if not isinstance(trustee, dict):
+                    continue
+                tname = trustee.get("trustee_name")
+                if not tname:
+                    continue
+                key = get_canonical_name_key(tname, None)
+                if not G.has_node(key):
+                    G.add_node(key, label=tname, type="person")
+                G.add_edge(node_id, key, label="trustee")
+                taddr_raw = trustee.get("trustee_address")
+                taddr_clean = clean_address_string(taddr_raw) if taddr_raw else None
+                if taddr_clean:
+                    if not G.has_node(taddr_clean):
+                        G.add_node(
+                            taddr_clean,
+                            label=format_address_label(taddr_raw),
+                            type="address",
+                        )
+                    G.add_edge(key, taddr_clean, label="correspondence_at")
 
     def _save_graph_to_temp_csv(self, G, seed_cnum):
         if G.number_of_edges() == 0:
