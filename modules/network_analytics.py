@@ -1057,8 +1057,8 @@ class NetworkAnalytics(InvestigationModuleBase):
         ttk.Label(
             seed_bulk_row,
             textvariable=self.seed_batch_status_var,
-            foreground="gray",
-            font=("Segoe UI", 9, "italic"),
+            foreground="#fd7e14",
+            font=("Segoe UI", 10, "bold"),
         ).pack(side=tk.LEFT)
 
         seed_options_row = ttk.Frame(seed_frame)
@@ -1117,17 +1117,44 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.seed_fetch_associated_var.trace_add("write", toggle_warning)
         self.seed_fetch_vertical_var.trace_add("write", toggle_warning)
 
+        # --- Guidance label pointing at the primary action ---
+        ttk.Label(
+            seed_frame,
+            text="↓ Choose your options above, then click below to fetch",
+            foreground="#fd7e14",
+            font=("Segoe UI", 9, "italic"),
+        ).pack(anchor="w", pady=(10, 2))
+
         # --- Primary action row (Fetch & Add Network Data) ---
         seed_action_row = ttk.Frame(seed_frame)
-        seed_action_row.pack(fill=tk.X, pady=(8, 4))
+        seed_action_row.pack(fill=tk.X, pady=(0, 4))
+
+        # Custom style: prominent green button with larger bold text and padding.
+        _seed_btn_style = ttk.Style()
+        _seed_btn_style.configure(
+            "SeedFetch.TButton",
+            font=("Segoe UI", 11, "bold"),
+            padding=(20, 10),
+            foreground="white",
+            background="#28a745",
+        )
+        _seed_btn_style.map(
+            "SeedFetch.TButton",
+            background=[
+                ("active", "#218838"),
+                ("disabled", "#6c757d"),
+            ],
+            foreground=[("disabled", "#e0e0e0")],
+        )
+
         self.seed_btn = ttk.Button(
             seed_action_row,
-            text="Fetch & Add Network Data",
+            text="▶  Fetch & Add Network Data",
             state=seed_btn_state,
             command=self.start_seed_fetch,
-            bootstyle="primary",
+            style="SeedFetch.TButton",
         )
-        self.seed_btn.pack(side=tk.LEFT, padx=(0, 5))
+        self.seed_btn.pack(side=tk.LEFT, padx=(0, 8))
         self.seed_cancel_btn = ttk.Button(
             seed_action_row,
             text="Cancel",
