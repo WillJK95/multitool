@@ -1036,29 +1036,11 @@ class NetworkAnalytics(InvestigationModuleBase):
         seed_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
         seed_entry.bind("<Return>", lambda event: self.start_seed_fetch())
         seed_btn_state = "normal" if self.api_key else "disabled"
-        self.seed_btn = ttk.Button(
-            seed_top_row,
-            text="Fetch & Add Network Data",
-            state=seed_btn_state,
-            command=self.start_seed_fetch,
-        )
-        self.seed_btn.pack(side=tk.LEFT, padx=5)
-        self.seed_cancel_btn = ttk.Button(
-            seed_top_row,
-            text="Cancel",
-            command=self._cancel_seed_fetch,
-        )
-        # not packed by default; shown while running
 
         # --- Bulk input row ---
         seed_bulk_row = ttk.Frame(seed_frame)
         seed_bulk_row.pack(fill=tk.X, pady=(0, 5))
         ttk.Label(seed_bulk_row, text="Bulk:").pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(
-            seed_bulk_row,
-            text="Load from Working Set",
-            command=self._seed_load_from_working_set,
-        ).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(
             seed_bulk_row,
             text="Upload CSV…",
@@ -1090,6 +1072,10 @@ class NetworkAnalytics(InvestigationModuleBase):
             variable=self.seed_fetch_pscs_var,
         )
         seed_pscs_cb.pack(side=tk.LEFT, padx=(0, 15))
+        Tooltip(
+            seed_pscs_cb,
+            "Fetch all Persons with Significant Control and their addresses",
+        )
 
         self.seed_fetch_associated_var = tk.BooleanVar(value=False)
         seed_associated_cb = ttk.Checkbutton(
@@ -1098,6 +1084,10 @@ class NetworkAnalytics(InvestigationModuleBase):
             variable=self.seed_fetch_associated_var,
         )
         seed_associated_cb.pack(side=tk.LEFT, padx=(0, 5))
+        Tooltip(
+            seed_associated_cb,
+            "Fetch all companies linked to all directors of the target company",
+        )
 
         self.seed_fetch_vertical_var = tk.BooleanVar(value=False)
         seed_vertical_cb = ttk.Checkbutton(
@@ -1106,6 +1096,10 @@ class NetworkAnalytics(InvestigationModuleBase):
             variable=self.seed_fetch_vertical_var,
         )
         seed_vertical_cb.pack(side=tk.LEFT, padx=(0, 5))
+        Tooltip(
+            seed_vertical_cb,
+            "Fetch all companies in the target company's ownership structure",
+        )
 
         self.seed_warning_label = ttk.Label(
             seed_options_row,
@@ -1123,9 +1117,27 @@ class NetworkAnalytics(InvestigationModuleBase):
         self.seed_fetch_associated_var.trace_add("write", toggle_warning)
         self.seed_fetch_vertical_var.trace_add("write", toggle_warning)
 
-        # Status bar for seeding (moved here from bottom)
+        # --- Primary action row (Fetch & Add Network Data) ---
+        seed_action_row = ttk.Frame(seed_frame)
+        seed_action_row.pack(fill=tk.X, pady=(8, 4))
+        self.seed_btn = ttk.Button(
+            seed_action_row,
+            text="Fetch & Add Network Data",
+            state=seed_btn_state,
+            command=self.start_seed_fetch,
+            bootstyle="primary",
+        )
+        self.seed_btn.pack(side=tk.LEFT, padx=(0, 5))
+        self.seed_cancel_btn = ttk.Button(
+            seed_action_row,
+            text="Cancel",
+            command=self._cancel_seed_fetch,
+        )
+        # not packed by default; shown while running
+
+        # Status bar for seeding (below the primary action)
         status_frame = ttk.Frame(seed_frame)
-        status_frame.pack(fill=tk.X, pady=(10, 0))
+        status_frame.pack(fill=tk.X, pady=(4, 0))
         self.seed_progress_bar = ttk.Progressbar(
             status_frame, orient="horizontal", length=200, mode="indeterminate"
         )
@@ -1142,19 +1154,16 @@ class NetworkAnalytics(InvestigationModuleBase):
             foreground="gray",
         ).pack(side=tk.LEFT, padx=(210, 0))
         
-        # --- Import Network Files ---
+        # --- Network Data Sources ---
         import_frame = ttk.LabelFrame(
             container,
-            text="Import Graph Data Files",
+            text="Network Data Sources",
             padding=10,
         )
         import_frame.pack(fill=tk.X, pady=(0, 10))
-        
+
         buttons_frame = ttk.Frame(import_frame)
         buttons_frame.pack(fill=tk.X, pady=(0, 5))
-        ttk.Button(buttons_frame, text="Add File(s)...", command=self.add_files).pack(
-            side=tk.LEFT, padx=(0, 10)
-        )
         ttk.Button(buttons_frame, text="Clear All", command=self.clear_files).pack(
             side=tk.LEFT
         )
@@ -4534,24 +4543,6 @@ class NetworkAnalytics(InvestigationModuleBase):
             self.app.after(0, lambda: messagebox.showerror("Write Error", f"Could not save file: {e}"))
 
 
-    def add_files(self):
-        """Modified: Tracks file changes for rebuild prompt."""
-        filepaths = filedialog.askopenfilenames(
-            title="Select exported graph CSV files", filetypes=[("CSV files", "*.csv")]
-        )
-        if not filepaths:
-            return
-
-        for path in filepaths:
-            if path not in self.source_files:
-                self.source_files.append(path)
-                self.file_listbox.insert(tk.END, f"FILE: {os.path.basename(path)}")
-
-        if self.source_files:
-            # Enable Build & Refine section
-            self.refine_section.set_enabled(True)
-            self._mark_files_changed()
-
     def clear_files(self):
         """Modified: Resets all state and disables sections."""
         for f in self.source_files:
@@ -5786,21 +5777,14 @@ class NetworkAnalytics(InvestigationModuleBase):
 
     # --- Bulk seed input loaders ----------------------------------------
 
-    def _seed_load_from_working_set(self):
-        """Pull company numbers from the shared working set."""
-        entities = []
-        ws = getattr(self.app_state, "network_working_set", None)
-        if ws and isinstance(ws, dict):
-            nodes = ws.get("nodes", [])
-            if isinstance(nodes, list):
-                entities.extend(nodes)
-        elif ws and isinstance(ws, list):
-            entities.extend(ws)
-        if not entities and getattr(self.app_state, "ubo_working_set", None):
-            entities = list(self.app_state.ubo_working_set)
+    def load_seed_batch_from_entities(self, entities, source="working set"):
+        """Populate the seed batch from a list of entity dicts.
 
+        Returns the number of company numbers loaded. Shows a messagebox
+        and returns 0 if no valid company numbers were found.
+        """
         cnums = []
-        for ent in entities:
+        for ent in entities or []:
             if not isinstance(ent, dict):
                 continue
             raw = ent.get("company_number") or ent.get("number") or ""
@@ -5810,13 +5794,14 @@ class NetworkAnalytics(InvestigationModuleBase):
         cnums = list(dict.fromkeys(cnums))  # dedupe, preserve order
         if not cnums:
             messagebox.showinfo(
-                "Working Set",
-                "No company numbers found in the current working set.",
+                "Seed Batch",
+                "No company numbers found in the selected entities.",
             )
-            return
+            return 0
         self._seed_batch_cnums = cnums
-        self._seed_batch_source = "working set"
+        self._seed_batch_source = source
         self._seed_update_batch_status()
+        return len(cnums)
 
     def _seed_load_from_file(self):
         """Load a CSV of company numbers and prompt for the column."""

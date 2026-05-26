@@ -2170,14 +2170,15 @@ class App(tk.Tk):
     # ── Working Set → Network Analytics ─────────────────────────────
 
     def _send_working_set_to_network(self, tree=None) -> None:
-        """Build graph data from working set entities and load into Network Analytics.
+        """Send working set entities to Network Analytics as a seed batch.
 
-        Replicates the Bulk Entity Search → Export Graph Data flow:
-        fetches officers/PSCs/trustees for each entity, writes a 7-column CSV,
-        then navigates to Network Analytics with the file pre-loaded.
+        Selected (or all, if no selection) company entities are loaded into
+        the seed batch in Network Analytics. The user then chooses Include
+        options (PSCs, associated companies, vertical ownership) and clicks
+        "Fetch & Add Network Data" to populate the graph.
 
-        If *tree* is provided and has a selection, only the selected entities
-        are sent. Otherwise all entities in the working set are used.
+        Non-company entities (persons, charities) are filtered out since the
+        seed flow operates on company numbers only.
         """
         entities = self._collect_working_set_entities()
         if not entities:
@@ -2196,54 +2197,43 @@ class App(tk.Tk):
             except tk.TclError:
                 pass
 
-        # Filter out inactive charities
-        inactive = [e for e in entities if not e.get("active", True)]
-        active_entities = [e for e in entities if e.get("active", True)]
-        if inactive and not active_entities:
+        companies = [
+            e for e in entities
+            if e.get("entity_type", "company") == "company"
+            and (e.get("company_number") or e.get("number"))
+        ]
+        skipped = len(entities) - len(companies)
+        if not companies:
             messagebox.showwarning(
                 "Working Set",
-                "All entities in the working set are inactive charities "
-                "and cannot be sent to Network Analytics."
+                "No company entities to send. Network Analytics seeding "
+                "requires company numbers (persons and charities are skipped)."
             )
             return
-        if inactive:
-            names = ", ".join(e.get("name", "?") for e in inactive)
+        if skipped:
             messagebox.showinfo(
                 "Working Set",
-                f"Skipping inactive charities: {names}"
+                f"Skipping {skipped} non-company entit"
+                f"{'y' if skipped == 1 else 'ies'} "
+                "(persons/charities are not supported by the seed flow)."
             )
-        entities = active_entities
 
-        # Show a simple progress dialog
-        progress_win = tk.Toplevel(self)
-        progress_win.title("Building Network Data")
-        progress_win.transient(self)
-        progress_win.geometry("360x100")
-        progress_win.resizable(False, False)
-        progress_lbl = ttk.Label(
-            progress_win, text="Fetching entity data...",
-            font=("Segoe UI", 10), padding=20
+        self._navigate_network_with_seed_batch(companies, "Working Set")
+
+    def _navigate_network_with_seed_batch(self, entities, source_label) -> None:
+        """Navigate to Network Analytics with the seed batch pre-populated."""
+        self.clear_container()
+        from .modules.network_analytics import NetworkAnalytics
+        module = NetworkAnalytics(
+            self,
+            self.show_main_menu,
+            self.ch_token_bucket,
+            api_key=self.api_key,
+            help_key="network_creator"
         )
-        progress_lbl.pack(fill=tk.BOTH, expand=True)
-
-        def _build():
-            try:
-                csv_path = self._build_ws_graph_csv(entities, progress_lbl)
-            except Exception as e:
-                log_message(f"Network preload failed: {e}")
-                csv_path = None
-
-            def _navigate():
-                try:
-                    progress_win.destroy()
-                except tk.TclError:
-                    pass
-                if csv_path:
-                    self._navigate_network_with_csv(csv_path)
-
-            self.after(0, _navigate)
-
-        threading.Thread(target=_build, daemon=True).start()
+        self._update_sidebar_active("network_workbench")
+        self._refresh_working_set_indicator()
+        module.load_seed_batch_from_entities(entities, source=source_label)
 
     def _build_ws_graph_csv(self, entities, progress_lbl) -> str:
         """Build a graph CSV from working set entities (runs in background thread).
