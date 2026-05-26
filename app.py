@@ -2172,13 +2172,13 @@ class App(tk.Tk):
     def _send_working_set_to_network(self, tree=None) -> None:
         """Send working set entities to Network Analytics as a seed batch.
 
-        Selected (or all, if no selection) company entities are loaded into
-        the seed batch in Network Analytics. The user then chooses Include
-        options (PSCs, associated companies, vertical ownership) and clicks
-        "Fetch & Add Network Data" to populate the graph.
+        Selected (or all, if no selection) company and charity entities are
+        loaded into the seed batch. The user then chooses Include options
+        (PSCs, associated companies, vertical ownership — companies only)
+        and clicks "Fetch & Add Network Data" to populate the graph.
 
-        Non-company entities (persons, charities) are filtered out since the
-        seed flow operates on company numbers only.
+        Person entities are skipped since the seed flow operates on
+        organisation numbers.
         """
         entities = self._collect_working_set_entities()
         if not entities:
@@ -2197,28 +2197,28 @@ class App(tk.Tk):
             except tk.TclError:
                 pass
 
-        companies = [
+        orgs = [
             e for e in entities
-            if e.get("entity_type", "company") == "company"
+            if e.get("entity_type", "company") in ("company", "charity")
             and (e.get("company_number") or e.get("number"))
         ]
-        skipped = len(entities) - len(companies)
-        if not companies:
+        skipped = len(entities) - len(orgs)
+        if not orgs:
             messagebox.showwarning(
                 "Working Set",
-                "No company entities to send. Network Analytics seeding "
-                "requires company numbers (persons and charities are skipped)."
+                "No company or charity entities to send. The seed flow "
+                "requires organisation numbers (persons are skipped)."
             )
             return
         if skipped:
             messagebox.showinfo(
                 "Working Set",
-                f"Skipping {skipped} non-company entit"
+                f"Skipping {skipped} person entit"
                 f"{'y' if skipped == 1 else 'ies'} "
-                "(persons/charities are not supported by the seed flow)."
+                "(only companies and charities are supported by the seed flow)."
             )
 
-        self._navigate_network_with_seed_batch(companies, "Working Set")
+        self._navigate_network_with_seed_batch(orgs, "Working Set")
 
     def _navigate_network_with_seed_batch(self, entities, source_label) -> None:
         """Navigate to Network Analytics with the seed batch pre-populated."""
