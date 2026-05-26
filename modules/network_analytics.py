@@ -5908,7 +5908,7 @@ class NetworkAnalytics(InvestigationModuleBase):
                 default_col = match
                 break
 
-        chosen = self._prompt_column_selection(headers, default_col)
+        chosen = self._prompt_column_selection(headers, default_col, kind_label)
         if chosen is None:
             return
 
@@ -5934,17 +5934,17 @@ class NetworkAnalytics(InvestigationModuleBase):
         self._seed_batch_source = os.path.basename(path)
         self._seed_update_batch_status()
 
-    def _prompt_column_selection(self, headers, default_col):
-        """Modal dialog: pick the company-number column. Returns header or None."""
+    def _prompt_column_selection(self, headers, default_col, kind_label="company"):
+        """Modal dialog: pick the number column. Returns header or None."""
         dlg = tk.Toplevel(self)
-        dlg.title("Select Company Number Column")
+        dlg.title(f"Select {kind_label.capitalize()} Number Column")
         dlg.transient(self.winfo_toplevel())
         dlg.grab_set()
         dlg.resizable(False, False)
 
         ttk.Label(
             dlg,
-            text="Which column contains the company numbers?",
+            text=f"Which column contains the {kind_label} numbers?",
             padding=10,
         ).pack(anchor="w")
 
