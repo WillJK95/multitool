@@ -6565,7 +6565,7 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         if include_financial_cross_analysis:
             report = getattr(self, '_cross_analysis_report', None)
             if report:
-                financial_rule_ids = {'F1', 'F2', 'F3', 'F4', 'ROE', 'ATR', 'PMG', 'SCB'}
+                financial_rule_ids = {'F1', 'F2', 'F3', 'F4', 'ROE', 'ATR', 'PMG', 'SCB', 'DPL', 'WDC'}
                 financial_ca_results = [r for r in report.results if r.rule_id in financial_rule_ids]
                 ca_cards_html = self._render_cross_analysis_cards(financial_ca_results)
 
