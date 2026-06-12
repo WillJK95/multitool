@@ -6752,36 +6752,53 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         try:
             df = self.financial_analyzer.data.sort_values('Year')
         
+            # Unified view (auto-parsed + manual supplementary data) feeds the
+            # revenue/profitability and derived P&L charts.
+            unified = UnifiedFinancialData(
+                auto_analyzer=self.financial_analyzer,
+                manual_data=getattr(self, '_manual_data', None),
+            )
+            rev_series = unified.get_metric_series('Revenue')
+            pl_series = unified.get_metric_series('ProfitLoss')
+
             # Revenue & Profit chart
-            if 'Revenue' in df.columns or 'ProfitLoss' in df.columns:
+            if rev_series or pl_series:
                 html_output += '''
                 <h3>Revenue & Profitability</h3>
-                <p>This chart shows the company's revenue and profit/loss trends over time. Consistent growth in revenue 
-                with positive profitability indicates a healthy, expanding business. Declining revenue or sustained losses 
+                <p>This chart shows the company's revenue and profit/loss trends over time. Bars show each year's net
+                profit (green) or loss (red); the line shows revenue. Consistent growth in revenue
+                with positive profitability indicates a healthy, expanding business. Declining revenue or sustained losses
                 may signal operational difficulties or market challenges.</p>
                 '''
                 fig, ax = plt.subplots(figsize=(10, 5))
-                
-                if 'Revenue' in df.columns:
-                    revenue_data = df[['Year', 'Revenue']].dropna()
-                    ax.plot(revenue_data['Year'], revenue_data['Revenue'], 
-                           marker='o', label='Revenue', linewidth=2)
-                
-                if 'ProfitLoss' in df.columns:
-                    profit_data = df[['Year', 'ProfitLoss']].dropna()
-                    ax.plot(profit_data['Year'], profit_data['ProfitLoss'], 
-                           marker='s', label='Profit/Loss', linewidth=2)
-                
+                legend_handles = []
+
+                if pl_series:
+                    pl_years = sorted(pl_series)
+                    pl_values = [pl_series[y] for y in pl_years]
+                    bar_colors = ['#28a745' if v >= 0 else '#dc3545' for v in pl_values]
+                    ax.bar(pl_years, pl_values, color=bar_colors, width=0.6)
+                    ax.axhline(y=0, color='grey', linestyle='-', alpha=0.7)
+                    from matplotlib.patches import Patch
+                    legend_handles.append(Patch(color='#28a745', label='Net Profit'))
+                    legend_handles.append(Patch(color='#dc3545', label='Net Loss'))
+
+                if rev_series:
+                    rev_years = sorted(rev_series)
+                    line, = ax.plot(rev_years, [rev_series[y] for y in rev_years],
+                                    marker='o', label='Revenue', linewidth=2, color='#667eea')
+                    legend_handles.insert(0, line)
+
                 ax.set_xlabel('Year')
                 ax.set_ylabel('£')
                 ax.set_title('Revenue & Profitability Trend')
-                ax.legend()
+                ax.legend(handles=legend_handles)
                 ax.grid(True, alpha=0.3)
 
                 from matplotlib.ticker import MaxNLocator
                 ax.xaxis.set_major_locator(MaxNLocator(integer=True))
                 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'£{x:,.0f}'))
-                
+
                 # Convert to base64
                 buffer = BytesIO()
                 plt.tight_layout()
@@ -6789,14 +6806,12 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                 buffer.seek(0)
                 image_base64 = base64.b64encode(buffer.getvalue()).decode()
                 plt.close()
-                
+
                 html_output += f'<div class="chart-container"><img src="data:image/png;base64,{image_base64}" alt="Revenue and Profit Chart"></div>'
 
-            # Derived P&L for abridged accounts (reserves delta)
-            derived = derive_pnl_series(UnifiedFinancialData(
-                auto_analyzer=self.financial_analyzer,
-                manual_data=getattr(self, '_manual_data', None),
-            ))
+            # Derived P&L for abridged accounts (reserves delta) — only renders
+            # when no real P&L figure supersedes it (see derive_pnl_series).
+            derived = derive_pnl_series(unified)
             if derived:
                 html_output += f'''
                 <h3>Derived Net Profit/(Loss) — Estimated via Reserves Delta</h3>

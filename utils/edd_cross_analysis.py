@@ -1506,17 +1506,20 @@ def derive_pnl_series(unified: UnifiedFinancialData) -> Optional[Dict]:
     reserves on a UK small-company balance sheet), so fall back to that,
     stripping out share capital where it is disclosed.
 
-    Returns None when the P&L is actually disclosed or fewer than two years
-    of reserves data exist; otherwise a dict with:
+    A real profit/loss figure — parsed from accounts or entered manually —
+    always supersedes the derived estimate: no estimate is produced for any
+    year with a disclosed figure, and None is returned when the most recent
+    year's P&L is disclosed or fewer than two years of reserves data exist.
+    Otherwise returns a dict with:
         'series'        — {year: derived net profit/(loss)}
         'reserves'      — {year: reserves value used}
         'source_label'  — description of the balance-sheet source used
         'equity_proxy'  — True if a combined equity total was used
         'multi_year_gaps' — True if consecutive filings are >1 year apart
     """
-    # Only relevant for an abridged/abbreviated filing profile — Revenue or
-    # ProfitLoss missing/zero for the most recent year.
-    if unified.get_metric('Revenue') and unified.get_metric('ProfitLoss'):
+    # Only relevant for an abridged/abbreviated filing profile — no real
+    # profit/loss figure for the most recent year.
+    if unified.get_metric('ProfitLoss'):
         return None
 
     reserves_series = unified.get_metric_series('RetainedEarnings')
@@ -1542,12 +1545,19 @@ def derive_pnl_series(unified: UnifiedFinancialData) -> Optional[Dict]:
         return None
 
     years_sorted = sorted(reserves_series)
+    pl_series = unified.get_metric_series('ProfitLoss')
     derived_series: Dict[int, float] = {}
     multi_year_gaps = False
     for prev_yr, cur_yr in zip(years_sorted, years_sorted[1:]):
+        # Per-year supersede: skip years where a real P&L figure exists.
+        if pl_series.get(cur_yr):
+            continue
         derived_series[cur_yr] = reserves_series[cur_yr] - reserves_series[prev_yr]
         if cur_yr - prev_yr > 1:
             multi_year_gaps = True
+
+    if not derived_series:
+        return None
 
     return {
         'series': derived_series,
