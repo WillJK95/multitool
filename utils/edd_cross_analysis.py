@@ -98,6 +98,11 @@ class CrossAnalysisThresholds:
     # Staff Cost Burden
     staff_cost_ratio_max: float = 0.75
     staff_cost_ratio_critical: float = 0.90
+    # Window Dressing / Creditor Squeeze
+    wdc_creditor_growth_pct: float = 30.0       # Creditor growth above this AND
+    wdc_growth_gap_pts: float = 25.0            # gap vs turnover growth above this = squeeze
+    wdc_creditor_days_jump_ratio: float = 1.5   # Creditor days >= this x prior year AND
+    wdc_creditor_days_min_increase: float = 15.0  # at least this many extra days = cash hoard
     # Composite warning
     composite_high_count: int = 3
 
@@ -1490,6 +1495,259 @@ def rule_staff_cost_burden(unified: UnifiedFinancialData, thresholds: CrossAnaly
     )
 
 
+def derive_pnl_series(unified: UnifiedFinancialData) -> Optional[Dict]:
+    """Derive estimated net P&L per year for abridged/abbreviated filings.
+
+    When a company uses small-company filing exemptions to omit its P&L,
+    each year's net profit/loss can be estimated from the year-on-year
+    movement in the Retained Earnings (Profit and Loss Account) reserve.
+    Many small-company filings only tag a combined "Capital and Reserves" /
+    equity total (or just net assets, which equals total capital and
+    reserves on a UK small-company balance sheet), so fall back to that,
+    stripping out share capital where it is disclosed.
+
+    A real profit/loss figure — parsed from accounts or entered manually —
+    always supersedes the derived estimate: no estimate is produced for any
+    year with a disclosed figure, and None is returned when the most recent
+    year's P&L is disclosed or fewer than two years of reserves data exist.
+    Otherwise returns a dict with:
+        'series'        — {year: derived net profit/(loss)}
+        'reserves'      — {year: reserves value used}
+        'source_label'  — description of the balance-sheet source used
+        'equity_proxy'  — True if a combined equity total was used
+        'multi_year_gaps' — True if consecutive filings are >1 year apart
+    """
+    # Only relevant for an abridged/abbreviated filing profile — no real
+    # profit/loss figure for the most recent year.
+    if unified.get_metric('ProfitLoss'):
+        return None
+
+    reserves_series = unified.get_metric_series('RetainedEarnings')
+    source_label = "Retained Earnings (Profit and Loss Account) reserve"
+    equity_proxy = False
+    if len(reserves_series) < 2:
+        for metric, label in (
+            ('Equity', "total Capital and Reserves"),
+            ('NetAssets', "net assets (equal to total Capital and Reserves)"),
+        ):
+            total_series = unified.get_metric_series(metric)
+            if len(total_series) >= 2:
+                share_cap = unified.get_metric_series('ShareCapital')
+                reserves_series = {
+                    yr: val - share_cap.get(yr, 0.0)
+                    for yr, val in total_series.items()
+                }
+                source_label = label + (" less share capital" if share_cap else "")
+                equity_proxy = True
+                break
+
+    if len(reserves_series) < 2:
+        return None
+
+    years_sorted = sorted(reserves_series)
+    pl_series = unified.get_metric_series('ProfitLoss')
+    derived_series: Dict[int, float] = {}
+    multi_year_gaps = False
+    for prev_yr, cur_yr in zip(years_sorted, years_sorted[1:]):
+        # Per-year supersede: skip years where a real P&L figure exists.
+        if pl_series.get(cur_yr):
+            continue
+        derived_series[cur_yr] = reserves_series[cur_yr] - reserves_series[prev_yr]
+        if cur_yr - prev_yr > 1:
+            multi_year_gaps = True
+
+    if not derived_series:
+        return None
+
+    return {
+        'series': derived_series,
+        'reserves': dict(reserves_series),
+        'source_label': source_label,
+        'equity_proxy': equity_proxy,
+        'multi_year_gaps': multi_year_gaps,
+    }
+
+
+def rule_window_dressing(unified: UnifiedFinancialData, thresholds: CrossAnalysisThresholds = None) -> CrossAnalysisResult:
+    """WDC: Window Dressing & Creditor Squeeze detection.
+
+    Detects companies that flatter their year-end snapshot by hoarding cash
+    and stalling supplier payments: trade creditors growing far faster than
+    turnover, combined with a sharp spike in creditor days.
+    """
+    title = "Window Dressing & Creditor Squeeze"
+    if thresholds is None:
+        thresholds = CrossAnalysisThresholds()
+
+    trade_creditors = unified.get_metric_series('TradeCreditors')
+    current_liabilities = unified.get_metric_series('CurrentLiabilities')
+    cash_series = unified.get_metric_series('CashBankInHand')
+    turnover_series = unified.get_metric_series('Revenue')
+    cos_series = unified.get_metric_series('CostOfSales')
+
+    # Build the creditors series, falling back to total creditors due within
+    # one year where a specific trade creditors figure is not disclosed.
+    creditors_series: Dict[int, float] = {}
+    proxy_years: List[int] = []
+    for yr in set(trade_creditors) | set(current_liabilities):
+        if yr in trade_creditors:
+            creditors_series[yr] = trade_creditors[yr]
+        elif yr in current_liabilities:
+            creditors_series[yr] = current_liabilities[yr]
+            proxy_years.append(yr)
+
+    # Years usable for the comparison: creditors plus an operational figure.
+    usable_years = sorted(
+        yr for yr in creditors_series
+        if yr in turnover_series or yr in cos_series
+    )
+    if len(usable_years) < 2 or not cash_series:
+        # LIMITED (card shown with guidance) only when at least one year of
+        # creditor-vs-operations data exists; SKIPPED hides the card entirely.
+        return CrossAnalysisResult(
+            rule_id="WDC", title=title,
+            risk_flag="NOT_ASSESSED",
+            confidence="LIMITED" if usable_years else "SKIPPED",
+            narrative=(
+                "Window dressing analysis requires at least two consecutive years with trade "
+                "creditors (or total creditors due within one year), cash at bank, and either "
+                "turnover or cost of sales. Insufficient data was available."
+            ),
+            recommendation=(
+                "Enter trade creditors, cash at bank and turnover or cost of sales for the "
+                "last two years in the Supplementary Accounts section to enable this analysis."
+            ),
+        )
+
+    cur_yr = usable_years[-1]
+    prev_yr = usable_years[-2]
+    cur_creditors = creditors_series[cur_yr]
+    prev_creditors = creditors_series[prev_yr]
+
+    if prev_creditors <= 0:
+        return CrossAnalysisResult(
+            rule_id="WDC", title=title,
+            risk_flag="NOT_ASSESSED", confidence="LIMITED",
+            narrative=(
+                f"Prior-year creditors were £{prev_creditors:,.0f}, so a meaningful "
+                "creditor growth rate cannot be calculated."
+            ),
+            recommendation="Review the creditors figures in the filed accounts manually.",
+        )
+
+    # Step A: creditor expansion rate
+    creditor_growth_pct = ((cur_creditors - prev_creditors) / prev_creditors) * 100
+
+    # Step B: operational growth rate (turnover preferred, cost of sales as proxy)
+    op_growth_pct = None
+    op_growth_label = 'turnover'
+    if cur_yr in turnover_series and prev_yr in turnover_series and turnover_series[prev_yr] > 0:
+        op_growth_pct = ((turnover_series[cur_yr] - turnover_series[prev_yr]) / turnover_series[prev_yr]) * 100
+    elif cur_yr in cos_series and prev_yr in cos_series and cos_series[prev_yr] > 0:
+        op_growth_pct = ((cos_series[cur_yr] - cos_series[prev_yr]) / cos_series[prev_yr]) * 100
+        op_growth_label = 'cost of sales'
+
+    # Step C: creditor days (cost of sales preferred, turnover as approximation)
+    def _creditor_days(yr: int) -> Optional[float]:
+        denom = cos_series.get(yr)
+        if not denom:
+            denom = turnover_series.get(yr)
+        if not denom or denom <= 0:
+            return None
+        return (creditors_series[yr] / denom) * 365
+
+    days_cur = _creditor_days(cur_yr)
+    days_prev = _creditor_days(prev_yr)
+    days_via_turnover = cur_yr not in cos_series or prev_yr not in cos_series
+
+    if op_growth_pct is None or days_cur is None or days_prev is None:
+        return CrossAnalysisResult(
+            rule_id="WDC", title=title,
+            risk_flag="NOT_ASSESSED", confidence="LIMITED",
+            narrative=(
+                "Turnover or cost of sales figures were not available for both years, so "
+                "creditor growth could not be compared against operational growth."
+            ),
+            recommendation=(
+                "Enter turnover or cost of sales for the last two years in the "
+                "Supplementary Accounts section to enable this analysis."
+            ),
+        )
+
+    # The comparative risk rule: both conditions must be breached.
+    squeeze_condition = (
+        creditor_growth_pct > thresholds.wdc_creditor_growth_pct
+        and (creditor_growth_pct - op_growth_pct) > thresholds.wdc_growth_gap_pts
+    )
+    hoard_condition = (
+        days_prev > 0
+        and days_cur >= days_prev * thresholds.wdc_creditor_days_jump_ratio
+        and (days_cur - days_prev) >= thresholds.wdc_creditor_days_min_increase
+    )
+
+    confidence = (
+        'ENRICHED'
+        if any(unified.has_manual(f) for f in ('TradeCreditors', 'CostOfSales', 'Turnover', 'CashAtBank'))
+        else 'AUTO'
+    )
+    trend_data = _build_trend_data({yr: creditors_series[yr] for yr in usable_years})
+
+    caveats = []
+    if proxy_years:
+        caveats.append(
+            "A specific trade creditors figure was not disclosed for "
+            f"{', '.join(str(y) for y in sorted(set(proxy_years) & {cur_yr, prev_yr})) or 'some years'}; "
+            "total creditors due within one year (which includes tax and accruals) was used as a proxy."
+        )
+    if days_via_turnover:
+        caveats.append(
+            "Cost of sales was not available, so creditor days were estimated against "
+            "turnover and will understate the true payment delay."
+        )
+
+    if squeeze_condition and hoard_condition:
+        risk_flag = "HIGH" if op_growth_pct <= 0 else "MEDIUM"
+        cash_note = ""
+        cash_cur = cash_series.get(cur_yr)
+        if cash_cur is not None:
+            cash_note = f" The year-end cash balance stood at £{cash_cur:,.0f}."
+        narrative = (
+            "Potential Window Dressing / Supplier Squeeze Pattern Identified. "
+            f"The company's outstanding debts to suppliers have increased by {creditor_growth_pct:.0f}% "
+            f"over the last year (£{prev_creditors:,.0f} to £{cur_creditors:,.0f}), despite "
+            f"{op_growth_label} moving by only {op_growth_pct:.0f}%. Estimated creditor days have "
+            f"jumped from {days_prev:.0f} to {days_cur:.0f} days. This indicates the company may be "
+            "artificially inflating its year-end cash balance by intentionally delaying payments to "
+            "its trade creditors. These funds will likely exit the business immediately after the "
+            f"balance sheet date to settle overdue accounts.{cash_note}"
+        )
+        recommendation = (
+            "Request an aged creditor report or current management accounts from the last 60 days "
+            "to verify whether the year-end cash balance was maintained or immediately depleted."
+        )
+    else:
+        risk_flag = "LOW"
+        narrative = (
+            f"Creditors moved by {creditor_growth_pct:+.0f}% year-on-year against {op_growth_label} "
+            f"movement of {op_growth_pct:+.0f}%, with estimated creditor days of {days_prev:.0f} "
+            f"({prev_yr}) and {days_cur:.0f} ({cur_yr}). No window dressing or supplier squeeze "
+            "pattern was detected."
+        )
+        recommendation = "Creditor behaviour does not raise window-dressing concerns."
+
+    if caveats:
+        narrative += " " + " ".join(caveats)
+
+    return CrossAnalysisResult(
+        rule_id="WDC", title=title,
+        risk_flag=risk_flag, confidence=confidence,
+        narrative=narrative,
+        recommendation=recommendation,
+        trend_data=trend_data,
+        value_format='currency',
+    )
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -1537,6 +1795,9 @@ def run_cross_analysis(
     if entity_type != "charity":
         results.insert(3, rule_f2_intangible_asset_bloat(unified, thresholds))
         results.insert(5, rule_f4_leverage_creep(unified, thresholds))
+        # WDC relies on company balance-sheet line items (trade creditors)
+        # that are unavailable in Charity Commission datasets.
+        results.append(rule_window_dressing(unified, thresholds))
 
     # Composite warning
     high_count = sum(1 for r in results if r.risk_flag == "HIGH")

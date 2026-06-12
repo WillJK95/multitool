@@ -78,6 +78,7 @@ from ..utils.edd_cross_analysis import (
     UnifiedFinancialData,
     CrossAnalysisThresholds,
     run_cross_analysis,
+    derive_pnl_series,
 )
 from ..utils.edd_charity_checks import (
     check_charity_status,
@@ -204,6 +205,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Cross-analysis: Staff Cost Burden
             'staff_cost_ratio_max': 0.75,
             'staff_cost_ratio_critical': 0.90,
+            # Cross-analysis: Window Dressing & Creditor Squeeze
+            'wdc_creditor_growth_pct': 30.0,
+            'wdc_growth_gap_pts': 25.0,
+            'wdc_creditor_days_jump_ratio': 1.5,
+            'wdc_creditor_days_min_increase': 15.0,
             # Composite warning
             'composite_high_count': 3,
         }
@@ -1740,6 +1746,20 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                  0.30, 0.99, 0.05, note="e.g. 0.75 = staff costs > 75% of revenue")
             trow(s, "Staff costs as proportion of revenue — HIGH (critical)", 'staff_cost_ratio_critical',
                  0.50, 1.0, 0.05)
+
+            s = rule_section(co_tab1, "Window Dressing & Creditor Squeeze",
+                "Detects companies flattering their year-end snapshot by stalling supplier "
+                "payments: creditors growing far faster than turnover combined with a sharp "
+                "spike in estimated creditor days (creditors ÷ cost of sales × 365). Both the "
+                "growth-gap and creditor-days conditions must be breached to raise a flag.")
+            trow(s, "Creditor year-on-year growth to flag (%)", 'wdc_creditor_growth_pct',
+                 5, 200, 5, note="Condition 1: creditor growth above this %")
+            trow(s, "Creditor vs turnover growth gap (percentage points)", 'wdc_growth_gap_pts',
+                 5, 100, 5, note="…and exceeding turnover growth by this many points")
+            trow(s, "Creditor days jump multiple (× prior year)", 'wdc_creditor_days_jump_ratio',
+                 1.1, 5.0, 0.1, note="Condition 2: e.g. 1.5 = days rose 50%+")
+            trow(s, "Creditor days minimum absolute increase (days)", 'wdc_creditor_days_min_increase',
+                 5, 90, 5)
 
             s = rule_section(co_tab1, "Predictive Financial Outlook",
                 "Uses linear extrapolation of filed accounts to project key metrics one year "
@@ -6565,7 +6585,7 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         if include_financial_cross_analysis:
             report = getattr(self, '_cross_analysis_report', None)
             if report:
-                financial_rule_ids = {'F1', 'F2', 'F3', 'F4', 'ROE', 'ATR', 'PMG', 'SCB'}
+                financial_rule_ids = {'F1', 'F2', 'F3', 'F4', 'ROE', 'ATR', 'PMG', 'SCB', 'WDC'}
                 financial_ca_results = [r for r in report.results if r.rule_id in financial_rule_ids]
                 ca_cards_html = self._render_cross_analysis_cards(financial_ca_results)
 
@@ -6732,36 +6752,53 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         try:
             df = self.financial_analyzer.data.sort_values('Year')
         
+            # Unified view (auto-parsed + manual supplementary data) feeds the
+            # revenue/profitability and derived P&L charts.
+            unified = UnifiedFinancialData(
+                auto_analyzer=self.financial_analyzer,
+                manual_data=getattr(self, '_manual_data', None),
+            )
+            rev_series = unified.get_metric_series('Revenue')
+            pl_series = unified.get_metric_series('ProfitLoss')
+
             # Revenue & Profit chart
-            if 'Revenue' in df.columns or 'ProfitLoss' in df.columns:
+            if rev_series or pl_series:
                 html_output += '''
                 <h3>Revenue & Profitability</h3>
-                <p>This chart shows the company's revenue and profit/loss trends over time. Consistent growth in revenue 
-                with positive profitability indicates a healthy, expanding business. Declining revenue or sustained losses 
+                <p>This chart shows the company's revenue and profit/loss trends over time. Bars show each year's net
+                profit (green) or loss (red); the line shows revenue. Consistent growth in revenue
+                with positive profitability indicates a healthy, expanding business. Declining revenue or sustained losses
                 may signal operational difficulties or market challenges.</p>
                 '''
                 fig, ax = plt.subplots(figsize=(10, 5))
-                
-                if 'Revenue' in df.columns:
-                    revenue_data = df[['Year', 'Revenue']].dropna()
-                    ax.plot(revenue_data['Year'], revenue_data['Revenue'], 
-                           marker='o', label='Revenue', linewidth=2)
-                
-                if 'ProfitLoss' in df.columns:
-                    profit_data = df[['Year', 'ProfitLoss']].dropna()
-                    ax.plot(profit_data['Year'], profit_data['ProfitLoss'], 
-                           marker='s', label='Profit/Loss', linewidth=2)
-                
+                legend_handles = []
+
+                if pl_series:
+                    pl_years = sorted(pl_series)
+                    pl_values = [pl_series[y] for y in pl_years]
+                    bar_colors = ['#28a745' if v >= 0 else '#dc3545' for v in pl_values]
+                    ax.bar(pl_years, pl_values, color=bar_colors, width=0.6)
+                    ax.axhline(y=0, color='grey', linestyle='-', alpha=0.7)
+                    from matplotlib.patches import Patch
+                    legend_handles.append(Patch(color='#28a745', label='Net Profit'))
+                    legend_handles.append(Patch(color='#dc3545', label='Net Loss'))
+
+                if rev_series:
+                    rev_years = sorted(rev_series)
+                    line, = ax.plot(rev_years, [rev_series[y] for y in rev_years],
+                                    marker='o', label='Revenue', linewidth=2, color='#667eea')
+                    legend_handles.insert(0, line)
+
                 ax.set_xlabel('Year')
                 ax.set_ylabel('£')
                 ax.set_title('Revenue & Profitability Trend')
-                ax.legend()
+                ax.legend(handles=legend_handles)
                 ax.grid(True, alpha=0.3)
 
                 from matplotlib.ticker import MaxNLocator
                 ax.xaxis.set_major_locator(MaxNLocator(integer=True))
                 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'£{x:,.0f}'))
-                
+
                 # Convert to base64
                 buffer = BytesIO()
                 plt.tight_layout()
@@ -6769,9 +6806,53 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                 buffer.seek(0)
                 image_base64 = base64.b64encode(buffer.getvalue()).decode()
                 plt.close()
-                
+
                 html_output += f'<div class="chart-container"><img src="data:image/png;base64,{image_base64}" alt="Revenue and Profit Chart"></div>'
-            
+
+            # Derived P&L for abridged accounts (reserves delta) — only renders
+            # when no real P&L figure supersedes it (see derive_pnl_series).
+            derived = derive_pnl_series(unified)
+            if derived:
+                html_output += f'''
+                <h3>Derived Net Profit/(Loss) — Estimated via Reserves Delta</h3>
+                <p><strong>What it measures:</strong> An estimate of each year's net profit or loss, derived from the
+                year-on-year movement in the {html.escape(derived['source_label'])}. Shown because the filed accounts
+                are abridged and do not disclose a profit and loss account.</p>
+                <p><strong>Why it matters:</strong> It reveals the trading performance the filings omit. The figure is
+                the net result after any dividends or director drawings, so actual trading profit may be higher; share
+                issues or prior-year adjustments can also distort it.</p>
+                '''
+                if derived['multi_year_gaps']:
+                    html_output += '''
+                <p>Note: where consecutive filings are more than one year apart, the derived figure spans the whole
+                gap period rather than a single year.</p>
+                '''
+                series = derived['series']
+                years = sorted(series)
+                values = [series[y] for y in years]
+
+                fig, ax = plt.subplots(figsize=(10, 5))
+                colors = ['#28a745' if v >= 0 else '#dc3545' for v in values]
+                ax.bar(years, values, color=colors, width=0.6)
+                ax.axhline(y=0, color='grey', linestyle='-', alpha=0.7)
+                ax.set_xlabel('Year')
+                ax.set_ylabel('£')
+                ax.set_title('Derived Net Profit/(Loss) per Year')
+                ax.grid(True, alpha=0.3, axis='y')
+
+                from matplotlib.ticker import MaxNLocator
+                ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'£{x:,.0f}'))
+
+                buffer = BytesIO()
+                plt.tight_layout()
+                plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
+                buffer.seek(0)
+                image_base64 = base64.b64encode(buffer.getvalue()).decode()
+                plt.close()
+
+                html_output += f'<div class="chart-container"><img src="data:image/png;base64,{image_base64}" alt="Derived Net Profit/Loss Chart"></div>'
+
             # Liquidity ratios chart
             df_ratios = self.financial_analyzer.calculate_ratios()
             if not df_ratios.empty and 'CurrentRatio' in df_ratios.columns:

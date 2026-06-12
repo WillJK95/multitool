@@ -154,7 +154,13 @@ TAXONOMY_MAP = {
         'ShareCapital'
     ],
     'RetainedEarnings': [
-        'RetainedEarningsAccumulatedLosses'
+        'RetainedEarningsAccumulatedLosses',
+        'ProfitLossAccountReserve'
+    ],
+    'Equity': [
+        'Equity',
+        'CapitalReserves',
+        'TotalCapitalReserves'
     ],
     'IntangibleAssets': [
         'IntangibleAssets'
@@ -165,6 +171,12 @@ TAXONOMY_MAP = {
     ],
     'CreditorsAfterOneYear': [
         'CreditorsAmountsFallingDueAfterOneYear'
+    ],
+    'TradeCreditors': [
+        'TradeCreditorsTradePayables'
+    ],
+    'CostOfSales': [
+        'CostSales'
     ],
     'NetCurrentAssets': [
         'NetCurrentAssetsLiabilities'
@@ -210,6 +222,7 @@ BALANCE_SHEET_FIELDS = [
     # Creditors due within one year
     (None, None, 'Current Liabilities'),
     ('CurrentLiabilities', 'CurrentLiabilities', 'Creditors: due within one year'),
+    ('TradeCreditors', 'TradeCreditors', 'Trade Creditors'),
     ('DeferredIncome', None, 'Deferred Income'),
     # Net current assets
     (None, None, ''),
@@ -233,6 +246,7 @@ BALANCE_SHEET_FIELDS = [
 
 INCOME_STATEMENT_FIELDS = [
     ('Turnover', 'Revenue', 'Turnover'),
+    ('CostOfSales', 'CostOfSales', 'Cost of Sales'),
     ('OtherIncome', None, 'Other Income'),
     ('CostOfMaterials', None, 'Cost of Materials'),
     ('StaffCosts', None, 'Staff Costs'),
