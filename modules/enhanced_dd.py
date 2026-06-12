@@ -78,6 +78,7 @@ from ..utils.edd_cross_analysis import (
     UnifiedFinancialData,
     CrossAnalysisThresholds,
     run_cross_analysis,
+    derive_pnl_series,
 )
 from ..utils.edd_charity_checks import (
     check_charity_status,
@@ -1745,13 +1746,6 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                  0.30, 0.99, 0.05, note="e.g. 0.75 = staff costs > 75% of revenue")
             trow(s, "Staff costs as proportion of revenue — HIGH (critical)", 'staff_cost_ratio_critical',
                  0.50, 1.0, 0.05)
-
-            s = rule_section(co_tab1, "Derived Net Financial Performance (Reserves Delta)",
-                "When abridged/abbreviated accounts omit the profit and loss account, estimates "
-                "the year's net profit or loss from the year-on-year movement in the Retained "
-                "Earnings reserve (falling back to total Capital and Reserves less share capital). "
-                "Informational; a derived loss is flagged at Moderate severity. No configurable "
-                "thresholds — triggered automatically when turnover and profit/loss are not disclosed.")
 
             s = rule_section(co_tab1, "Window Dressing & Creditor Squeeze",
                 "Detects companies flattering their year-end snapshot by stalling supplier "
@@ -6591,7 +6585,7 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         if include_financial_cross_analysis:
             report = getattr(self, '_cross_analysis_report', None)
             if report:
-                financial_rule_ids = {'F1', 'F2', 'F3', 'F4', 'ROE', 'ATR', 'PMG', 'SCB', 'DPL', 'WDC'}
+                financial_rule_ids = {'F1', 'F2', 'F3', 'F4', 'ROE', 'ATR', 'PMG', 'SCB', 'WDC'}
                 financial_ca_results = [r for r in report.results if r.rule_id in financial_rule_ids]
                 ca_cards_html = self._render_cross_analysis_cards(financial_ca_results)
 
@@ -6797,7 +6791,53 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                 plt.close()
                 
                 html_output += f'<div class="chart-container"><img src="data:image/png;base64,{image_base64}" alt="Revenue and Profit Chart"></div>'
-            
+
+            # Derived P&L for abridged accounts (reserves delta)
+            derived = derive_pnl_series(UnifiedFinancialData(
+                auto_analyzer=self.financial_analyzer,
+                manual_data=getattr(self, '_manual_data', None),
+            ))
+            if derived:
+                html_output += f'''
+                <h3>Derived Net Profit/(Loss) — Estimated via Reserves Delta</h3>
+                <p><strong>What it measures:</strong> An estimate of each year's net profit or loss, derived from the
+                year-on-year movement in the {html.escape(derived['source_label'])}. Shown because the filed accounts
+                are abridged and do not disclose a profit and loss account.</p>
+                <p><strong>Why it matters:</strong> It reveals the trading performance the filings omit. The figure is
+                the net result after any dividends or director drawings, so actual trading profit may be higher; share
+                issues or prior-year adjustments can also distort it.</p>
+                '''
+                if derived['multi_year_gaps']:
+                    html_output += '''
+                <p>Note: where consecutive filings are more than one year apart, the derived figure spans the whole
+                gap period rather than a single year.</p>
+                '''
+                series = derived['series']
+                years = sorted(series)
+                values = [series[y] for y in years]
+
+                fig, ax = plt.subplots(figsize=(10, 5))
+                colors = ['#28a745' if v >= 0 else '#dc3545' for v in values]
+                ax.bar(years, values, color=colors, width=0.6)
+                ax.axhline(y=0, color='grey', linestyle='-', alpha=0.7)
+                ax.set_xlabel('Year')
+                ax.set_ylabel('£')
+                ax.set_title('Derived Net Profit/(Loss) per Year')
+                ax.grid(True, alpha=0.3, axis='y')
+
+                from matplotlib.ticker import MaxNLocator
+                ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'£{x:,.0f}'))
+
+                buffer = BytesIO()
+                plt.tight_layout()
+                plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
+                buffer.seek(0)
+                image_base64 = base64.b64encode(buffer.getvalue()).decode()
+                plt.close()
+
+                html_output += f'<div class="chart-container"><img src="data:image/png;base64,{image_base64}" alt="Derived Net Profit/Loss Chart"></div>'
+
             # Liquidity ratios chart
             df_ratios = self.financial_analyzer.calculate_ratios()
             if not df_ratios.empty and 'CurrentRatio' in df_ratios.columns:
