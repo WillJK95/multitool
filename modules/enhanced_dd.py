@@ -204,6 +204,11 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             # Cross-analysis: Staff Cost Burden
             'staff_cost_ratio_max': 0.75,
             'staff_cost_ratio_critical': 0.90,
+            # Cross-analysis: Window Dressing & Creditor Squeeze
+            'wdc_creditor_growth_pct': 30.0,
+            'wdc_growth_gap_pts': 25.0,
+            'wdc_creditor_days_jump_ratio': 1.5,
+            'wdc_creditor_days_min_increase': 15.0,
             # Composite warning
             'composite_high_count': 3,
         }
@@ -1740,6 +1745,27 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                  0.30, 0.99, 0.05, note="e.g. 0.75 = staff costs > 75% of revenue")
             trow(s, "Staff costs as proportion of revenue — HIGH (critical)", 'staff_cost_ratio_critical',
                  0.50, 1.0, 0.05)
+
+            s = rule_section(co_tab1, "Derived Net Financial Performance (Reserves Delta)",
+                "When abridged/abbreviated accounts omit the profit and loss account, estimates "
+                "the year's net profit or loss from the year-on-year movement in the Retained "
+                "Earnings reserve (falling back to total Capital and Reserves less share capital). "
+                "Informational; a derived loss is flagged at Moderate severity. No configurable "
+                "thresholds — triggered automatically when turnover and profit/loss are not disclosed.")
+
+            s = rule_section(co_tab1, "Window Dressing & Creditor Squeeze",
+                "Detects companies flattering their year-end snapshot by stalling supplier "
+                "payments: creditors growing far faster than turnover combined with a sharp "
+                "spike in estimated creditor days (creditors ÷ cost of sales × 365). Both the "
+                "growth-gap and creditor-days conditions must be breached to raise a flag.")
+            trow(s, "Creditor year-on-year growth to flag (%)", 'wdc_creditor_growth_pct',
+                 5, 200, 5, note="Condition 1: creditor growth above this %")
+            trow(s, "Creditor vs turnover growth gap (percentage points)", 'wdc_growth_gap_pts',
+                 5, 100, 5, note="…and exceeding turnover growth by this many points")
+            trow(s, "Creditor days jump multiple (× prior year)", 'wdc_creditor_days_jump_ratio',
+                 1.1, 5.0, 0.1, note="Condition 2: e.g. 1.5 = days rose 50%+")
+            trow(s, "Creditor days minimum absolute increase (days)", 'wdc_creditor_days_min_increase',
+                 5, 90, 5)
 
             s = rule_section(co_tab1, "Predictive Financial Outlook",
                 "Uses linear extrapolation of filed accounts to project key metrics one year "

@@ -1521,7 +1521,30 @@ def rule_derived_pnl(unified: UnifiedFinancialData, thresholds: CrossAnalysisThr
             recommendation="Refer to the reported profit/loss figures and the profit margin analysis.",
         )
 
+    # Preferred source: a separately tagged P&L reserve. Many small-company
+    # filings only tag a combined "Capital and Reserves" / equity total (or
+    # just net assets, which equals total capital and reserves on a UK
+    # small-company balance sheet), so fall back to that, stripping out share
+    # capital where it is disclosed so the delta reflects the P&L reserve.
     reserves_series = unified.get_metric_series('RetainedEarnings')
+    source_label = "Retained Earnings (Profit and Loss Account) reserve"
+    equity_proxy = False
+    if len(reserves_series) < 2:
+        for metric, label in (
+            ('Equity', "total Capital and Reserves"),
+            ('NetAssets', "net assets (equal to total Capital and Reserves)"),
+        ):
+            total_series = unified.get_metric_series(metric)
+            if len(total_series) >= 2:
+                share_cap = unified.get_metric_series('ShareCapital')
+                reserves_series = {
+                    yr: val - share_cap.get(yr, 0.0)
+                    for yr, val in total_series.items()
+                }
+                source_label = label + (" less share capital" if share_cap else "")
+                equity_proxy = True
+                break
+
     if len(reserves_series) < 2:
         return CrossAnalysisResult(
             rule_id="DPL", title=title,
@@ -1529,8 +1552,9 @@ def rule_derived_pnl(unified: UnifiedFinancialData, thresholds: CrossAnalysisThr
             confidence="LIMITED" if reserves_series else "SKIPPED",
             narrative=(
                 "The filed accounts omit the profit and loss account (abridged/abbreviated "
-                "filing profile), and retained earnings figures are not available for at "
-                "least two years, so net performance cannot be derived from the reserves movement."
+                "filing profile), and neither retained earnings nor total capital and "
+                "reserves figures are available for at least two years, so net performance "
+                "cannot be derived from the reserves movement."
             ),
             recommendation=(
                 "Enter the Retained Earnings (Profit and Loss Account reserve) for the current "
@@ -1552,7 +1576,8 @@ def rule_derived_pnl(unified: UnifiedFinancialData, thresholds: CrossAnalysisThr
     latest_year = max(derived_series)
     latest_derived = derived_series[latest_year]
     prior_year = max(y for y in years_sorted if y < latest_year)
-    confidence = 'ENRICHED' if unified.has_manual('RetainedEarnings') else 'AUTO'
+    manual_fields = ('RetainedEarnings', 'NetAssets', 'ShareCapital')
+    confidence = 'ENRICHED' if any(unified.has_manual(f) for f in manual_fields) else 'AUTO'
 
     if latest_derived >= 0:
         risk_flag = "LOW"
@@ -1565,8 +1590,8 @@ def rule_derived_pnl(unified: UnifiedFinancialData, thresholds: CrossAnalysisThr
         "This company has filed abridged/abbreviated accounts that omit the profit and "
         "loss account, so its trading performance is not directly disclosed. The figure "
         "below has been programmatically derived from the year-on-year movement in the "
-        "Retained Earnings (Profit and Loss Account) reserve on the balance sheet.",
-        f"Based on retained earnings moving from £{reserves_series[prior_year]:,.0f} ({prior_year}) "
+        f"{source_label} on the balance sheet.",
+        f"Based on the {source_label} moving from £{reserves_series[prior_year]:,.0f} ({prior_year}) "
         f"to £{reserves_series[latest_year]:,.0f} ({latest_year}), the company recorded "
         f"{performance_str} over the period ending {latest_year}.",
         "Caveat: this is the net result AFTER any dividends or director drawings have "
@@ -1574,6 +1599,12 @@ def rule_derived_pnl(unified: UnifiedFinancialData, thresholds: CrossAnalysisThr
         "contributions or prior-year adjustments. Actual trading profit may be higher "
         "than the derived figure.",
     ]
+    if equity_proxy:
+        narrative_parts.append(
+            "A separately tagged profit and loss reserve was not disclosed, so the "
+            "movement was measured on the combined equity total instead; any share "
+            "issues or other reserve movements during the year would distort the estimate."
+        )
     if multi_year_gaps:
         narrative_parts.append(
             "Note: where consecutive filings are more than one year apart, the derived "
@@ -1631,11 +1662,12 @@ def rule_window_dressing(unified: UnifiedFinancialData, thresholds: CrossAnalysi
         if yr in turnover_series or yr in cos_series
     )
     if len(usable_years) < 2 or not cash_series:
-        any_data = bool(creditors_series) or bool(cash_series)
+        # LIMITED (card shown with guidance) only when at least one year of
+        # creditor-vs-operations data exists; SKIPPED hides the card entirely.
         return CrossAnalysisResult(
             rule_id="WDC", title=title,
             risk_flag="NOT_ASSESSED",
-            confidence="LIMITED" if any_data else "SKIPPED",
+            confidence="LIMITED" if usable_years else "SKIPPED",
             narrative=(
                 "Window dressing analysis requires at least two consecutive years with trade "
                 "creditors (or total creditors due within one year), cash at bank, and either "

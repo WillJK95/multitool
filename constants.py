@@ -154,7 +154,13 @@ TAXONOMY_MAP = {
         'ShareCapital'
     ],
     'RetainedEarnings': [
-        'RetainedEarningsAccumulatedLosses'
+        'RetainedEarningsAccumulatedLosses',
+        'ProfitLossAccountReserve'
+    ],
+    'Equity': [
+        'Equity',
+        'CapitalReserves',
+        'TotalCapitalReserves'
     ],
     'IntangibleAssets': [
         'IntangibleAssets'
