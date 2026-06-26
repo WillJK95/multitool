@@ -2041,6 +2041,45 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     pass
                 return False
 
+        # --- live thousands-separator formatting ---
+        # Tracks vars currently being reformatted so the write-trace we trigger
+        # by re-setting the var doesn't recurse.
+        _formatting_in_progress = set()
+
+        def _format_currency_live(var, entry_widget):
+            """Insert commas as the user types, preserving cursor position."""
+            if var in _formatting_in_progress:
+                return
+            raw = var.get()
+            # Strip grouping/symbols but keep sign, digits and a decimal point.
+            cleaned = raw.replace(',', '').replace('£', '').strip()
+            sign = '-' if cleaned.startswith('-') else ''
+            body = cleaned[1:] if sign else cleaned
+            # Only reformat clean numeric input; leave anything else untouched so
+            # _validate_currency can flag it.
+            if body and not re.fullmatch(r'\d*\.?\d*', body):
+                return
+            int_part, dot, dec_part = body.partition('.')
+            grouped_int = f"{int(int_part):,}" if int_part else ''
+            formatted = sign + grouped_int + dot + dec_part
+            if formatted == raw:
+                return
+            # Reposition the cursor: keep it the same number of digits from the
+            # left, accounting for the change in comma count to its left.
+            try:
+                old_pos = entry_widget.index(tk.INSERT)
+            except Exception:
+                old_pos = len(raw)
+            old_commas_left = raw[:old_pos].count(',')
+            new_commas_left = formatted[:old_pos].count(',')
+            new_pos = max(0, min(len(formatted), old_pos + (new_commas_left - old_commas_left)))
+            _formatting_in_progress.add(var)
+            try:
+                var.set(formatted)
+                entry_widget.icursor(new_pos)
+            finally:
+                _formatting_in_progress.discard(var)
+
         # --- notebook ---
         notebook = ttk.Notebook(win)
         notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 0))
@@ -2119,6 +2158,10 @@ class EnhancedDueDiligence(InvestigationModuleBase):
 
                 n_years = len(year_columns)
 
+                # Entries per year column, in top-to-bottom row order. Used to
+                # bind Enter for downward (column) navigation.
+                column_entries = [[] for _ in range(n_years)]
+
                 # Header row
                 ttk.Label(grid, text="Period End (YYYY-MM-DD)", foreground='grey',
                           font=('TkDefaultFont', 8)).grid(
@@ -2127,6 +2170,7 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                     pe_entry = ttk.Entry(grid, textvariable=ycol['period_end'],
                                          width=14, justify='center')
                     pe_entry.grid(row=0, column=ci + 1, padx=3, pady=2)
+                    column_entries[ci].append(pe_entry)
 
                 grid_row = 1
                 for field_key, auto_col, label in fields:
@@ -2154,13 +2198,28 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                         var = ycol['vars'].setdefault(field_key, tk.StringVar())
                         entry = ttk.Entry(grid, textvariable=var, width=14, justify='right')
                         entry.grid(row=grid_row, column=ci + 1, padx=3, pady=1)
+                        column_entries[ci].append(entry)
                         if is_currency:
                             validation_entries.append((entry, var, label))
                             var.trace_add(
                                 'write',
                                 lambda *_a, v=var, e=entry: _validate_currency(v, e),
                             )
+                            var.trace_add(
+                                'write',
+                                lambda *_a, v=var, e=entry: _format_currency_live(v, e),
+                            )
                     grid_row += 1
+
+                # Enter moves focus down the column to the next entry; at the
+                # bottom of a column it stays put. (Tab still moves across rows.)
+                for col in column_entries:
+                    for pos, entry in enumerate(col):
+                        if pos + 1 < len(col):
+                            entry.bind(
+                                '<Return>',
+                                lambda _e, nxt=col[pos + 1]: (nxt.focus_set(), 'break')[1],
+                            )
 
         def _add_year_column():
             if len(year_columns) >= 5:
@@ -6743,27 +6802,50 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         return html_output
     
     def _generate_chart_html(self):
-        """Generate embedded charts from financial data."""
+        """Generate embedded charts from financial data.
+
+        Each chart is rendered inside its own try/except and skips years with
+        missing data, so a single sparse or failing metric never blanks the
+        whole section.
+        """
         if not self.financial_analyzer or self.financial_analyzer.data.empty:
             return ""
-        
+
+        from matplotlib.ticker import MaxNLocator
+        from matplotlib.patches import Patch
+
         html_output = '<div class="section"><h2>Financial Analysis Charts</h2>'
+
+        def _fig_to_html(fig, alt):
+            """Render a figure to an embedded <img>, then close it."""
+            buffer = BytesIO()
+            fig.tight_layout()
+            fig.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
+            buffer.seek(0)
+            image_base64 = base64.b64encode(buffer.getvalue()).decode()
+            plt.close(fig)
+            return (f'<div class="chart-container"><img '
+                    f'src="data:image/png;base64,{image_base64}" alt="{alt}"></div>')
 
         try:
             df = self.financial_analyzer.data.sort_values('Year')
-        
             # Unified view (auto-parsed + manual supplementary data) feeds the
             # revenue/profitability and derived P&L charts.
             unified = UnifiedFinancialData(
                 auto_analyzer=self.financial_analyzer,
                 manual_data=getattr(self, '_manual_data', None),
             )
+        except Exception as e:
+            log_message(f"Error preparing financial chart data: {e}")
+            return (html_output + '<p>Unable to generate financial charts. '
+                    'Please check the uploaded accounts files.</p></div>')
+
+        # Revenue & Profit chart
+        try:
             rev_series = unified.get_metric_series('Revenue')
             pl_series = unified.get_metric_series('ProfitLoss')
-
-            # Revenue & Profit chart
             if rev_series or pl_series:
-                html_output += '''
+                chart_html = '''
                 <h3>Revenue & Profitability</h3>
                 <p>This chart shows the company's revenue and profit/loss trends over time. Bars show each year's net
                 profit (green) or loss (red); the line shows revenue. Consistent growth in revenue
@@ -6779,7 +6861,6 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                     bar_colors = ['#28a745' if v >= 0 else '#dc3545' for v in pl_values]
                     ax.bar(pl_years, pl_values, color=bar_colors, width=0.6)
                     ax.axhline(y=0, color='grey', linestyle='-', alpha=0.7)
-                    from matplotlib.patches import Patch
                     legend_handles.append(Patch(color='#28a745', label='Net Profit'))
                     legend_handles.append(Patch(color='#dc3545', label='Net Loss'))
 
@@ -6794,26 +6875,20 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                 ax.set_title('Revenue & Profitability Trend')
                 ax.legend(handles=legend_handles)
                 ax.grid(True, alpha=0.3)
-
-                from matplotlib.ticker import MaxNLocator
                 ax.xaxis.set_major_locator(MaxNLocator(integer=True))
                 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'£{x:,.0f}'))
 
-                # Convert to base64
-                buffer = BytesIO()
-                plt.tight_layout()
-                plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
-                buffer.seek(0)
-                image_base64 = base64.b64encode(buffer.getvalue()).decode()
-                plt.close()
+                html_output += chart_html + _fig_to_html(fig, "Revenue and Profit Chart")
+        except Exception as e:
+            log_message(f"Error generating Revenue & Profitability chart: {e}")
+            plt.close('all')
 
-                html_output += f'<div class="chart-container"><img src="data:image/png;base64,{image_base64}" alt="Revenue and Profit Chart"></div>'
-
-            # Derived P&L for abridged accounts (reserves delta) — only renders
-            # when no real P&L figure supersedes it (see derive_pnl_series).
+        # Derived P&L for abridged accounts (reserves delta) — only renders
+        # when no real P&L figure supersedes it (see derive_pnl_series).
+        try:
             derived = derive_pnl_series(unified)
             if derived:
-                html_output += f'''
+                chart_html = f'''
                 <h3>Derived Net Profit/(Loss) — Estimated via Reserves Delta</h3>
                 <p><strong>What it measures:</strong> An estimate of each year's net profit or loss, derived from the
                 year-on-year movement in the {html.escape(derived['source_label'])}. Shown because the filed accounts
@@ -6823,7 +6898,7 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                 issues or prior-year adjustments can also distort it.</p>
                 '''
                 if derived['multi_year_gaps']:
-                    html_output += '''
+                    chart_html += '''
                 <p>Note: where consecutive filings are more than one year apart, the derived figure spans the whole
                 gap period rather than a single year.</p>
                 '''
@@ -6839,36 +6914,30 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                 ax.set_ylabel('£')
                 ax.set_title('Derived Net Profit/(Loss) per Year')
                 ax.grid(True, alpha=0.3, axis='y')
-
-                from matplotlib.ticker import MaxNLocator
                 ax.xaxis.set_major_locator(MaxNLocator(integer=True))
                 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'£{x:,.0f}'))
 
-                buffer = BytesIO()
-                plt.tight_layout()
-                plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
-                buffer.seek(0)
-                image_base64 = base64.b64encode(buffer.getvalue()).decode()
-                plt.close()
+                html_output += chart_html + _fig_to_html(fig, "Derived Net Profit/Loss Chart")
+        except Exception as e:
+            log_message(f"Error generating Derived P&L chart: {e}")
+            plt.close('all')
 
-                html_output += f'<div class="chart-container"><img src="data:image/png;base64,{image_base64}" alt="Derived Net Profit/Loss Chart"></div>'
-
-            # Liquidity ratios chart
+        # Liquidity ratios chart
+        try:
             df_ratios = self.financial_analyzer.calculate_ratios()
             if not df_ratios.empty and 'CurrentRatio' in df_ratios.columns:
-                html_output += '''
-                <h3>Current Ratio (Liquidity)</h3>
-                <p><strong>What it measures:</strong> The current ratio shows the company's ability to pay short-term obligations. 
-                It is calculated as current assets ÷ current liabilities.</p>
-                <p><strong>Why it matters:</strong> A ratio below 1.0 (the red line) indicates the company may struggle to pay 
-                its debts as they fall due. A ratio above 1.5 suggests healthy liquidity. Declining trends are concerning even 
-                if the absolute ratio remains acceptable.</p>
-                '''
-                fig, ax = plt.subplots(figsize=(10, 5))
-                
                 ratio_data = df_ratios[['Year', 'CurrentRatio']].dropna()
                 if not ratio_data.empty:
-                    ax.plot(ratio_data['Year'], ratio_data['CurrentRatio'], 
+                    chart_html = '''
+                <h3>Current Ratio (Liquidity)</h3>
+                <p><strong>What it measures:</strong> The current ratio shows the company's ability to pay short-term obligations.
+                It is calculated as current assets ÷ current liabilities.</p>
+                <p><strong>Why it matters:</strong> A ratio below 1.0 (the red line) indicates the company may struggle to pay
+                its debts as they fall due. A ratio above 1.5 suggests healthy liquidity. Declining trends are concerning even
+                if the absolute ratio remains acceptable.</p>
+                '''
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    ax.plot(ratio_data['Year'], ratio_data['CurrentRatio'],
                            marker='o', label='Current Ratio', linewidth=2, color='#667eea')
                     ax.axhline(y=1.0, color='red', linestyle='--', alpha=0.5, label='Critical Threshold (1.0)')
                     ax.set_xlabel('Year')
@@ -6876,32 +6945,26 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                     ax.set_title('Current Ratio Trend')
                     ax.legend()
                     ax.grid(True, alpha=0.3)
-                    from matplotlib.ticker import MaxNLocator
                     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-                    buffer = BytesIO()
-                    plt.tight_layout()
-                    plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
-                    buffer.seek(0)
-                    image_base64 = base64.b64encode(buffer.getvalue()).decode()
-                    plt.close()
-                    
-                    html_output += f'<div class="chart-container"><img src="data:image/png;base64,{image_base64}" alt="Current Ratio Chart"></div>'
+                    html_output += chart_html + _fig_to_html(fig, "Current Ratio Chart")
+        except Exception as e:
+            log_message(f"Error generating Current Ratio chart: {e}")
+            plt.close('all')
 
-            # Net Assets Trend
+        # Net Assets Trend
+        try:
             if 'NetAssets' in df.columns:
-                html_output += '''
+                net_assets_data = df[['Year', 'NetAssets']].dropna()
+                if not net_assets_data.empty:
+                    chart_html = '''
                 <h3>Net Assets</h3>
-                <p><strong>What it measures:</strong> Net assets (also called shareholder equity) represent the company's total 
+                <p><strong>What it measures:</strong> Net assets (also called shareholder equity) represent the company's total
                 assets minus total liabilities - essentially what the company "owns" after all debts are paid.</p>
-                <p><strong>Why it matters:</strong> Positive and growing net assets indicate financial stability and value creation. 
+                <p><strong>Why it matters:</strong> Positive and growing net assets indicate financial stability and value creation.
                 Negative net assets (technical insolvency) or declining trends suggest the company is eroding shareholder value.</p>
                 '''
-                
-                fig, ax = plt.subplots(figsize=(10, 5))
-                net_assets_data = df[['Year', 'NetAssets']].dropna()
-                
-                if not net_assets_data.empty:
-                    ax.plot(net_assets_data['Year'], net_assets_data['NetAssets'], 
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    ax.plot(net_assets_data['Year'], net_assets_data['NetAssets'],
                            marker='o', linewidth=2, color='#28a745')
                     ax.axhline(y=0, color='red', linestyle='--', alpha=0.5, label='Break-even (0)')
                     ax.set_xlabel('Year')
@@ -6909,94 +6972,78 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                     ax.set_title('Net Assets Trend')
                     ax.legend()
                     ax.grid(True, alpha=0.3)
-                    from matplotlib.ticker import MaxNLocator
                     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
                     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'£{x:,.0f}'))
-                    
-                    buffer = BytesIO()
-                    plt.tight_layout()
-                    plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
-                    buffer.seek(0)
-                    image_base64 = base64.b64encode(buffer.getvalue()).decode()
-                    plt.close()
-                    
-                    html_output += f'<div class="chart-container"><img src="data:image/png;base64,{image_base64}" alt="Net Assets Chart"></div>'
-            
-            # Asset vs Liability Composition
+                    html_output += chart_html + _fig_to_html(fig, "Net Assets Chart")
+        except Exception as e:
+            log_message(f"Error generating Net Assets chart: {e}")
+            plt.close('all')
+
+        # Asset vs Liability Composition
+        try:
             if 'CurrentAssets' in df.columns and 'CurrentLiabilities' in df.columns:
-                html_output += '''
-                <h3>Current Assets vs Current Liabilities</h3>
-                <p><strong>What it measures:</strong> This chart compares the company's short-term assets (cash, debtors, inventory) 
-                against short-term liabilities (creditors, loans due within a year).</p>
-                <p><strong>Why it matters:</strong> The gap between these lines indicates working capital health. When liabilities 
-                exceed assets (lines cross), the company faces a potential cash crisis.</p>
-                '''
-                
-                fig, ax = plt.subplots(figsize=(10, 5))
-                
                 assets_data = df[['Year', 'CurrentAssets']].dropna()
                 liabilities_data = df[['Year', 'CurrentLiabilities']].dropna()
-                
-                if not assets_data.empty and not liabilities_data.empty:
-                    ax.plot(assets_data['Year'], assets_data['CurrentAssets'], 
-                           marker='o', label='Current Assets', linewidth=2, color='#28a745')
-                    ax.plot(liabilities_data['Year'], liabilities_data['CurrentLiabilities'], 
-                           marker='s', label='Current Liabilities', linewidth=2, color='#dc3545')
-                    ax.fill_between(assets_data['Year'], assets_data['CurrentAssets'], 
-                                   liabilities_data['CurrentLiabilities'], alpha=0.2)
+                # Render if either series has data; each line plots its own
+                # available years, and the shaded band only spans years present
+                # in both (so a year missing from one series can't crash it).
+                if not assets_data.empty or not liabilities_data.empty:
+                    chart_html = '''
+                <h3>Current Assets vs Current Liabilities</h3>
+                <p><strong>What it measures:</strong> This chart compares the company's short-term assets (cash, debtors, inventory)
+                against short-term liabilities (creditors, loans due within a year).</p>
+                <p><strong>Why it matters:</strong> The gap between these lines indicates working capital health. When liabilities
+                exceed assets (lines cross), the company faces a potential cash crisis.</p>
+                '''
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    if not assets_data.empty:
+                        ax.plot(assets_data['Year'], assets_data['CurrentAssets'],
+                               marker='o', label='Current Assets', linewidth=2, color='#28a745')
+                    if not liabilities_data.empty:
+                        ax.plot(liabilities_data['Year'], liabilities_data['CurrentLiabilities'],
+                               marker='s', label='Current Liabilities', linewidth=2, color='#dc3545')
+                    merged = pd.merge(assets_data, liabilities_data, on='Year', how='inner')
+                    if not merged.empty:
+                        ax.fill_between(merged['Year'], merged['CurrentAssets'],
+                                       merged['CurrentLiabilities'], alpha=0.2)
                     ax.set_xlabel('Year')
                     ax.set_ylabel('£')
                     ax.set_title('Current Assets vs Current Liabilities')
                     ax.legend()
                     ax.grid(True, alpha=0.3)
-                    from matplotlib.ticker import MaxNLocator
                     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
                     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'£{x:,.0f}'))
-                    
-                    buffer = BytesIO()
-                    plt.tight_layout()
-                    plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
-                    buffer.seek(0)
-                    image_base64 = base64.b64encode(buffer.getvalue()).decode()
-                    plt.close()
-                    
-                    html_output += f'<div class="chart-container"><img src="data:image/png;base64,{image_base64}" alt="Assets vs Liabilities Chart"></div>'
-            
-            # Cash Position
+                    html_output += chart_html + _fig_to_html(fig, "Assets vs Liabilities Chart")
+        except Exception as e:
+            log_message(f"Error generating Assets vs Liabilities chart: {e}")
+            plt.close('all')
+
+        # Cash Position
+        try:
             if 'CashBankInHand' in df.columns:
-                html_output += '''
+                cash_data = df[['Year', 'CashBankInHand']].dropna()
+                if not cash_data.empty:
+                    chart_html = '''
                 <h3>Cash Holdings</h3>
                 <p><strong>What it measures:</strong> The company's cash and bank balances over time.</p>
-                <p><strong>Why it matters:</strong> Cash is the lifeblood of a business. Declining cash reserves, especially 
-                when combined with high liabilities, can indicate imminent financial distress. Growing cash suggests strong 
+                <p><strong>Why it matters:</strong> Cash is the lifeblood of a business. Declining cash reserves, especially
+                when combined with high liabilities, can indicate imminent financial distress. Growing cash suggests strong
                 operational performance and financial discipline.</p>
                 '''
-                
-                fig, ax = plt.subplots(figsize=(10, 5))
-                cash_data = df[['Year', 'CashBankInHand']].dropna()
-                
-                if not cash_data.empty:
-                    ax.plot(cash_data['Year'], cash_data['CashBankInHand'], 
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    ax.plot(cash_data['Year'], cash_data['CashBankInHand'],
                            marker='o', linewidth=2, color='#ffc107')
                     ax.set_xlabel('Year')
                     ax.set_ylabel('£')
                     ax.set_title('Cash Holdings Trend')
                     ax.grid(True, alpha=0.3)
-                    from matplotlib.ticker import MaxNLocator
                     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
                     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'£{x:,.0f}'))
-                    
-                    buffer = BytesIO()
-                    plt.tight_layout()
-                    plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
-                    buffer.seek(0)
-                    image_base64 = base64.b64encode(buffer.getvalue()).decode()
-                    plt.close()
-                    
-                    html_output += f'<div class="chart-container"><img src="data:image/png;base64,{image_base64}" alt="Cash Holdings Chart"></div>'
+                    html_output += chart_html + _fig_to_html(fig, "Cash Holdings Chart")
         except Exception as e:
-            log_message(f"Error generating financial charts: {e}")
-            html_output += '<p>Unable to generate financial charts. Please check the uploaded accounts files.</p>'
+            log_message(f"Error generating Cash Holdings chart: {e}")
+            plt.close('all')
+
         html_output += '</div>'
         return html_output
     
