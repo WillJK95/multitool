@@ -142,7 +142,8 @@ TAXONOMY_MAP = {
         'Debtors'
     ],
     'CashBankInHand': [
-        'CashBankInHand'
+        'CashBankInHand',
+        'CashBankOnHand'
     ],
     'Employees': [
         'AverageNumberEmployeesDuringPeriod'
