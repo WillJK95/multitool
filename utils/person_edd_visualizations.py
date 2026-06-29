@@ -223,14 +223,9 @@ table.insolvent th, table.phoenix th { background: #f0f4ff; color: #667eea;
                                        font-weight: 600; }
 table.companies tr:hover td, table.insolvent tr:hover td,
 table.phoenix tr:hover td, table.report-table tr:hover td { background: #f9faff; }
+table.companies tr.resigned td { opacity: 0.6; }
 table a { color: #667eea; text-decoration: none; }
 table a:hover { text-decoration: underline; }
-table.phoenix tr.phoenix-high-risk td { background: #fff5f5; color: #b71c1c; font-weight: 500; }
-table.phoenix tr.phoenix-high-risk:hover td { background: #ffecec; }
-.phoenix-warning { background: #fff5f5; border-left: 4px solid #dc3545; padding: 12px 16px;
-                   margin: 10px 0 14px 0; border-radius: 4px; font-size: 13px; color: #b71c1c; }
-.phoenix-warning strong { display: block; margin-bottom: 4px; color: #b71c1c; }
-.phoenix-warning em { color: #b71c1c; font-style: italic; }
 .note { font-size: 12px; color: #666; margin-top: 8px; }
 .warnings { background: #fff3e0; border-left: 4px solid #fd7e14; padding: 10px 14px;
             margin: 14px 0; border-radius: 4px; font-size: 13px; }
@@ -303,6 +298,19 @@ def _ch_company_link(company_number: Optional[str]) -> str:
     )
 
 
+def _ch_charges_link(company_number: Optional[str]) -> str:
+    """Like :func:`_ch_company_link` but points at the company's charges page."""
+    cnum = (company_number or "").strip()
+    if not cnum:
+        return ""
+    padded = cnum.zfill(8)
+    return (
+        f'<a href="https://find-and-update.company-information.service.gov.uk/'
+        f'company/{html.escape(padded)}/charges" target="_blank" rel="noopener">'
+        f'{html.escape(cnum)}</a>'
+    )
+
+
 def _finding_card(result) -> str:
     flag = result.risk_flag or "NOT_ASSESSED"
     cls = flag.lower().replace("_", "-")
@@ -367,13 +375,21 @@ def _overdue_cell(overdue: bool, status: Optional[str]) -> str:
 
 def _companies_table(report: PersonEDDReport) -> str:
     rows = []
-    for c in sorted(report.companies, key=lambda c: (c.company_status or "", c.company_name or "")):
+    # Current directorships first (subject not resigned), then A–Z by name.
+    ordered = sorted(
+        report.companies,
+        key=lambda c: (bool(c.subject_resigned_on), (c.company_name or "").lower()),
+    )
+    for c in ordered:
         appt = format_display_date(c.subject_appointed_on or "") if c.subject_appointed_on else "—"
         resd = format_display_date(c.subject_resigned_on or "") if c.subject_resigned_on else "—"
         psc = "Yes" if c.subject_is_psc else ""
         status_html = html.escape(c.company_status or "")
+        # Slightly fade rows where the subject is no longer a director so live
+        # directorships stand out.
+        row_class = ' class="resigned"' if c.subject_resigned_on else ""
         rows.append(
-            f"<tr><td>{html.escape(c.company_name or '')}</td>"
+            f"<tr{row_class}><td>{html.escape(c.company_name or '')}</td>"
             f"<td>{_ch_company_link(c.company_number)}</td>"
             f"<td>{status_html}</td>"
             f"<td>{html.escape(c.subject_role or '—')}</td>"
@@ -413,50 +429,30 @@ def _phoenix_subsection(report: PersonEDDReport) -> str:
     if not matches:
         return ""
     rows = []
-    high_risk_count = 0
     for m in matches:
-        liq_iso = m.get("liquidation_date") or ""
+        anchor_iso = m.get("anchor_date") or ""
         inc_iso = m.get("new_incorporated_on") or ""
-        liq_date = format_display_date(liq_iso) or "—"
+        anchor_date = format_display_date(anchor_iso) or "—"
         inc_date = format_display_date(inc_iso) or "—"
         ins_type = html.escape(m.get("insolvency_type") or "—")
-        gap_years = _years_between(inc_iso, liq_iso) if (liq_iso and inc_iso) else None
-        is_high_risk = gap_years is not None and 0 <= gap_years <= 5
-        if is_high_risk:
-            high_risk_count += 1
-        row_class = ' class="phoenix-high-risk"' if is_high_risk else ""
-        gap_text = _format_year_gap(gap_years)
+        gap_text = _format_year_gap(m.get("gap_years"))
         rows.append(
-            f"<tr{row_class}>"
+            "<tr>"
             f"<td>{html.escape(m.get('old_company') or '')}</td>"
             f"<td>{_ch_company_link(m.get('old_number'))}</td>"
             f"<td>{html.escape(m.get('new_company') or '')}</td>"
             f"<td>{_ch_company_link(m.get('new_number'))}</td>"
             f"<td>{m.get('similarity', '')}%</td>"
-            f"<td>{liq_date}</td>"
+            f"<td>{anchor_date}</td>"
             f"<td>{inc_date}</td>"
             f"<td>{gap_text}</td>"
             f"<td>{ins_type}</td>"
             "</tr>"
         )
 
-    warning_banner = ""
-    if high_risk_count:
-        warning_banner = (
-            '<div class="phoenix-warning">'
-            f"<strong>⚠ {high_risk_count} high-risk phoenix pair"
-            f"{'s' if high_risk_count != 1 else ''} detected.</strong> "
-            "The live company was incorporated within five years of the "
-            "matching company's liquidation — a strong phoenix indicator. "
-            "Consult Companies House and "
-            "<em>Section 216 Insolvency Act 1986</em> "
-            "(restriction on re-use of company names) before progressing."
-            "</div>"
-        )
     return f"""
     <div class="subsection">
       <h3>Phoenix Companies ({len(matches)})</h3>
-      {warning_banner}
       <table class="phoenix">
         <thead><tr>
           <th>Liquidated Company</th><th>Number</th>
@@ -469,7 +465,7 @@ def _phoenix_subsection(report: PersonEDDReport) -> str:
         </tr></thead>
         <tbody>{''.join(rows)}</tbody>
       </table>
-      <p class="note">Name-similarity match (≥80% on distinctive tokens) between a dissolved/liquidated company and a live company in the subject's footprint. Pairs highlighted in red were incorporated within five years of the matching company's liquidation.</p>
+      <p class="note">Distinctive-name match (≥80%) between a dissolved/liquidated company and a live company in the subject's footprint that was incorporated within the phoenix window — from one year before to five years after the older company's dissolution/liquidation. A negative "Time Since Liquidation" means the live company was incorporated before that date. Re-use of a failed company's name is restricted by <em>Section 216 Insolvency Act 1986</em>.</p>
     </div>
     """
 
@@ -526,11 +522,15 @@ def _address_clusters_section(report: PersonEDDReport) -> str:
     """
 
 
-def _company_links_list(companies: List[Tuple[str, str]]) -> str:
-    """Render a list of (name, number) tuples as escaped names with CH links."""
+def _company_links_list(companies: List[Tuple[str, str]], link_fn=_ch_company_link) -> str:
+    """Render a list of (name, number) tuples as escaped names with CH links.
+
+    ``link_fn`` selects which Companies House page each number links to
+    (defaults to the company profile; pass ``_ch_charges_link`` for charges).
+    """
     parts = []
     for name, number in companies:
-        link = _ch_company_link(number)
+        link = link_fn(number)
         nm = html.escape(name or number or "")
         parts.append(f"{nm} ({link})" if link else nm)
     return ", ".join(parts)
@@ -556,7 +556,7 @@ def _charges_section(report: PersonEDDReport) -> str:
             f"<td>{html.escape(lender['lender'])}</td>"
             f"<td>{lender['charge_count']}</td>"
             f"<td>{lender['outstanding_count']}</td>"
-            f"<td>{_company_links_list(lender['companies'])}</td>"
+            f"<td>{_company_links_list(lender['companies'], link_fn=_ch_charges_link)}</td>"
             "</tr>"
         )
     return f"""

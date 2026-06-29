@@ -27,6 +27,13 @@ from .insolvency_helpers import classify_insolvency, normalise_company_name
 PHOENIX_SIMILARITY_PCT = 80
 ADDRESS_SIMILARITY_PCT = 80
 
+# Phoenix incorporation window: a live company is only treated as a phoenix
+# candidate if it was incorporated between PHOENIX_WINDOW_YEARS_BEFORE years
+# before and PHOENIX_WINDOW_YEARS_AFTER years after the older company's
+# dissolution/liquidation.
+PHOENIX_WINDOW_YEARS_BEFORE = 1
+PHOENIX_WINDOW_YEARS_AFTER = 5
+
 # Common low-transparency / tax-haven jurisdictions. Mirrors the list used by
 # the Enhanced Due Diligence module (enhanced_dd._check_offshore_pscs) so the
 # two modules flag the same places.
@@ -229,27 +236,31 @@ def _subject_matches(subject: PersonSubject, name: str, dob: Optional[Dict]) -> 
 # Rules — each returns a CrossAnalysisResult
 # ---------------------------------------------------------------------------
 
-def rule_p1_insolvency_pattern(companies: List[PersonCompanyRecord]) -> CrossAnalysisResult:
-    liquidated = [c for c in companies if c.has_been_liquidated]
-    with_cases = [c for c in companies if c.insolvency_cases]
-    affected = {c.company_number for c in liquidated} | {c.company_number for c in with_cases}
+def rule_p1_insolvency_pattern(
+    companies: List[PersonCompanyRecord],
+    classify_cache: Optional[Dict[str, Tuple[bool, str, Optional[str]]]] = None,
+) -> CrossAnalysisResult:
+    """Flag genuine (non-benign) insolvency in the subject's footprint.
 
-    # Cluster: ≥2 insolvency events within 24 months
-    event_dates = []
-    for c in companies:
-        for case in c.insolvency_cases:
-            for d in case.get("dates", []):
-                t = _parse_iso_date(d.get("date"))
-                if t:
-                    event_dates.append((c.company_number, t))
-    event_dates.sort(key=lambda x: x[1])
-    cluster_pairs = []
-    for i in range(len(event_dates) - 1):
-        for j in range(i + 1, len(event_dates)):
-            if _months_between(event_dates[i][1], event_dates[j][1]) <= 24:
-                cluster_pairs.append((event_dates[i], event_dates[j]))
-            else:
-                break
+    Benign/solvent wind-downs (e.g. Members' Voluntary Liquidation) are
+    excluded from the headline count here — they are still shown, with their
+    type, in the Insolvent Companies table below. ``classify_cache`` is the
+    ``{company_number: (is_benign, insolvency_type, liq_date)}`` map produced
+    by :func:`_collect_insolvent_companies`; when it is absent every insolvent
+    company is treated as non-benign (we cannot prove otherwise without it).
+    """
+    classify_cache = classify_cache or {}
+
+    def _is_nonbenign(cnum: str) -> bool:
+        cached = classify_cache.get(cnum)
+        # No cache entry → treat as non-benign (cannot prove benignness).
+        return not (cached[0] if cached else False)
+
+    candidates = [
+        c for c in companies
+        if (c.has_been_liquidated or c.insolvency_cases) and c.company_number
+    ]
+    affected = [c for c in candidates if _is_nonbenign(c.company_number)]
 
     if not affected:
         return CrossAnalysisResult(
@@ -257,21 +268,30 @@ def rule_p1_insolvency_pattern(companies: List[PersonCompanyRecord]) -> CrossAna
             title="Insolvency footprint",
             risk_flag="LOW",
             confidence="AUTO",
-            narrative="No companies in the subject's footprint show insolvency or liquidation history.",
+            narrative=(
+                "No companies in the subject's footprint show a genuine (non-benign) "
+                "insolvency or liquidation. Any solvent wind-downs are listed in the "
+                "Insolvent Companies table below."
+            ),
             recommendation="",
         )
 
     severity = "MEDIUM" if len(affected) == 1 else "HIGH"
-    cluster_note = ""
-    if cluster_pairs:
-        cluster_note = f" {len(cluster_pairs)} pair(s) of insolvency events occurred within a 24-month window."
-    evidence_lines = [
-        f"{c.company_name or c.company_number} ({c.company_number}) — status: {c.company_status or 'unknown'}"
-        for c in companies if c.company_number in affected
-    ]
+    evidence_lines = []
+    for c in affected:
+        cached = classify_cache.get(c.company_number)
+        ins_type = cached[1] if cached and cached[1] else None
+        suffix = f" — {ins_type}" if ins_type and ins_type.lower() != "unknown" else ""
+        evidence_lines.append(
+            f"{c.company_name or c.company_number} ({c.company_number}) — "
+            f"status: {c.company_status or 'unknown'}{suffix}"
+        )
     narrative = (
-        f"The subject is or was connected to {len(affected)} compan{'y' if len(affected) == 1 else 'ies'} "
-        f"with liquidation or insolvency events.{cluster_note}\n\n"
+        f"The subject is or was connected to {len(affected)} compan"
+        f"{'y' if len(affected) == 1 else 'ies'} with a genuine (non-benign) "
+        "insolvency or liquidation. Benign, solvent wind-downs (e.g. Members' "
+        "Voluntary Liquidation) are excluded from this count and listed separately "
+        "in the Insolvent Companies table below.\n\n"
         + "\n".join(f"• {line}" for line in evidence_lines)
     )
     return CrossAnalysisResult(
@@ -282,7 +302,7 @@ def rule_p1_insolvency_pattern(companies: List[PersonCompanyRecord]) -> CrossAna
         narrative=narrative,
         recommendation=(
             "Review each insolvent company's filings and the subject's role at the time. "
-            "Multiple insolvencies, particularly clustered in time, warrant deeper scrutiny."
+            "Multiple genuine insolvencies warrant deeper scrutiny."
         ),
     )
 
@@ -355,8 +375,11 @@ def rule_p2_phoenix_signal(
                 "new_status": new.company_status,
                 "new_incorporated_on": new.incorporated_on,
                 "similarity": round(similarity),
+                "old_dissolved_on": old.dissolved_on,
                 "liquidation_date": None,
                 "insolvency_type": None,
+                "anchor_date": None,
+                "gap_years": None,
             })
 
     if not matches:
@@ -810,9 +833,10 @@ def aggregate_co_directors(companies: List[PersonCompanyRecord]) -> List[Dict[st
     """Aggregate co-officers across the footprint, one row per distinct person.
 
     Returns a list of dicts ``{name, count, nationality, occupation, country,
-    companies: [(name, number), ...]}`` sorted alphabetically by name. ``count``
-    is the number of distinct companies the person shares with the subject;
-    attributes are taken as the most common non-empty value seen.
+    companies: [(name, number), ...]}`` sorted by shared-company count
+    (descending) then name. ``count`` is the number of distinct companies the
+    person shares with the subject; attributes are taken as the most common
+    non-empty value seen.
     """
     agg: Dict[str, Dict[str, Any]] = {}
     attr_counters: Dict[str, Dict[str, Counter]] = {}
@@ -854,7 +878,7 @@ def aggregate_co_directors(companies: List[PersonCompanyRecord]) -> List[Dict[st
             if counter:
                 entry[attr] = counter.most_common(1)[0][0]
 
-    return sorted(agg.values(), key=lambda e: e["name"].lower())
+    return sorted(agg.values(), key=lambda e: (-e["count"], e["name"].lower()))
 
 
 # ---------------------------------------------------------------------------
@@ -917,6 +941,73 @@ def _enrich_phoenix_matches(
             m["liquidation_date"] = liq_date
 
 
+def _filter_phoenix_window(matches: List[Dict[str, Any]]) -> None:
+    """Keep only matches whose live company was incorporated within the phoenix
+    window of the older company's dissolution/liquidation, in place.
+
+    The window runs from ``PHOENIX_WINDOW_YEARS_BEFORE`` years before to
+    ``PHOENIX_WINDOW_YEARS_AFTER`` years after the anchor date (the enriched
+    liquidation date, falling back to the profile dissolution date). Matches
+    without a datable anchor or incorporation date are dropped — they cannot be
+    confirmed as phoenixes. Each kept match is annotated with ``anchor_date``
+    and ``gap_years`` so the renderer stays consistent with this filter.
+    """
+    kept = []
+    for m in matches:
+        anchor = m.get("liquidation_date") or m.get("old_dissolved_on")
+        inc = _parse_iso_date(m.get("new_incorporated_on"))
+        anchor_dt = _parse_iso_date(anchor)
+        if not inc or not anchor_dt:
+            continue
+        gap = (inc - anchor_dt).days / 365.25
+        if -PHOENIX_WINDOW_YEARS_BEFORE <= gap <= PHOENIX_WINDOW_YEARS_AFTER:
+            m["anchor_date"] = anchor
+            m["gap_years"] = gap
+            kept.append(m)
+    matches[:] = kept
+
+
+def _build_phoenix_result(matches: List[Dict[str, Any]]) -> CrossAnalysisResult:
+    """Build the P2 finding from the window-filtered phoenix matches."""
+    if not matches:
+        return CrossAnalysisResult(
+            rule_id="P2",
+            title="Phoenix pattern",
+            risk_flag="LOW",
+            confidence="AUTO",
+            narrative=(
+                "No live company in scope was incorporated within the phoenix window "
+                f"({PHOENIX_WINDOW_YEARS_BEFORE} year before to {PHOENIX_WINDOW_YEARS_AFTER} "
+                "years after) of a dissolved/liquidated company with a closely matching name."
+            ),
+            recommendation="",
+        )
+    lines = [
+        f"{m['old_company']} → {m['new_company']} ({m['similarity']}% name match)"
+        for m in matches[:5]
+    ]
+    extra = f"\n…and {len(matches) - 5} more." if len(matches) > 5 else ""
+    return CrossAnalysisResult(
+        rule_id="P2",
+        title="Phoenix pattern",
+        risk_flag="HIGH",
+        confidence="LIMITED",
+        narrative=(
+            f"Detected {len(matches)} potential phoenix link(s) — a live company "
+            "incorporated within the phoenix window "
+            f"({PHOENIX_WINDOW_YEARS_BEFORE} year before to {PHOENIX_WINDOW_YEARS_AFTER} "
+            "years after) of a dissolved/liquidated company in the subject's footprint, "
+            "with a closely matching distinctive name:\n\n"
+            + "\n".join(f"• {line}" for line in lines)
+            + extra
+        ),
+        recommendation=(
+            "Phoenix patterns can indicate avoidance of creditor obligations. "
+            "Cross-check trading names, premises and customer continuity before progressing."
+        ),
+    )
+
+
 def run_person_edd(
     subject: PersonSubject,
     companies: List[PersonCompanyRecord],
@@ -940,9 +1031,14 @@ def run_person_edd(
     phoenix_matches: List[Dict[str, Any]] = []
 
     results: List[CrossAnalysisResult] = []
-    results.append(rule_p1_insolvency_pattern(companies))
-    results.append(rule_p2_phoenix_signal(companies, phoenix_matches=phoenix_matches))
+    results.append(rule_p1_insolvency_pattern(companies, classify_cache))
+    # Phoenix: collect name-similar candidates, enrich with liquidation dates,
+    # then keep only those inside the incorporation window before building the
+    # finding from the filtered set.
+    rule_p2_phoenix_signal(companies, phoenix_matches=phoenix_matches)
     _enrich_phoenix_matches(phoenix_matches, classify_cache)
+    _filter_phoenix_window(phoenix_matches)
+    results.append(_build_phoenix_result(phoenix_matches))
     results.append(rule_p3_mass_resignation(companies))
 
     p4_result, by_addr = rule_p4_address_clustering(companies)
