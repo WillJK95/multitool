@@ -219,8 +219,15 @@ def generate_company_timeline(
                 'description': filing.get('description', ''),
             })
         elif category in ('Confirmation Statement',):
+            # Late if filed more than 14 days after the review-period end
+            # (action_date) — mirrors the 'Late Confirmation Statements
+            # Detected' risk card in enhanced_dd._check_filing_patterns.
+            is_late = False
+            if f_action_date and f_date:
+                cs_deadline = f_action_date + timedelta(days=14)
+                is_late = f_date > cs_deadline
             filing_events['Confirmation Statement'].append({
-                'date': f_date, 'type': f_type,
+                'date': f_date, 'type': f_type, 'late': is_late,
             })
         elif category in ('First Gazette (Strike-off)', 'Second Gazette (Strike-off)',
                           'Liquidation', 'Administration', 'Change of Name',
@@ -324,8 +331,9 @@ def generate_company_timeline(
                            linewidths=0.5)
         elif cat_name == 'Confirmation Statement':
             for evt in events:
+                color = '#DC3545' if evt.get('late') else '#667EEA'
                 ax.scatter(mdates.date2num(evt['date']), row_idx,
-                           c='#667EEA', marker='D', s=25, zorder=5, edgecolors='black',
+                           c=color, marker='D', s=25, zorder=5, edgecolors='black',
                            linewidths=0.5)
         elif cat_name == 'Notices & Events':
             color_map = {
@@ -413,6 +421,12 @@ def generate_company_timeline(
                            markerfacecolor='#333333', markersize=6, label='Accounts Filed'))
         legend_items.append(plt.Line2D([0], [0], marker='o', color='w',
                            markerfacecolor='#DC3545', markersize=6, label='Accounts Filed (Late)'))
+    if filing_events['Confirmation Statement']:
+        legend_items.append(plt.Line2D([0], [0], marker='D', color='w',
+                           markerfacecolor='#667EEA', markersize=6, label='Confirmation Statement'))
+        if any(evt.get('late') for evt in filing_events['Confirmation Statement']):
+            legend_items.append(plt.Line2D([0], [0], marker='D', color='w',
+                               markerfacecolor='#DC3545', markersize=6, label='Confirmation Statement (Late)'))
     if filing_events['Notices & Events']:
         legend_items.append(plt.Line2D([0], [0], marker='^', color='w',
                            markerfacecolor='#DC3545', markersize=8, label='Notices & Events'))

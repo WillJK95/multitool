@@ -335,6 +335,66 @@ def ch_get_pscs(
     return {"items": all_items, "total_results": len(all_items)}, None
 
 
+def ch_get_charges(
+    api_key: str,
+    token_bucket,
+    company_number: str,
+    items_per_page: int = 100
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Get all registered charges (mortgages/debentures) for a company,
+    automatically paginating beyond 100 results.
+
+    Each page is fetched via ch_get_data and benefits from the response
+    cache. The merged result mirrors a single-page response: an ``items``
+    list plus the summary counts the API returns at the top level
+    (``total_count``, ``satisfied_count``, ``part_satisfied_count``).
+
+    Note: the API returns 404 (surfaced here as a "Client Error: 404"
+    string) when a company has no charges on the register. Callers should
+    treat that as "no charges" rather than a hard failure.
+
+    Args:
+        api_key: Companies House API key
+        token_bucket: TokenBucket instance for rate limiting
+        company_number: Company registration number
+        items_per_page: Results per page (max 100 per API limits)
+
+    Returns:
+        Tuple of (charges dict with all items, or None, error message or None)
+    """
+    all_items = []
+    start_index = 0
+    last_data = None
+
+    while True:
+        path = (
+            f"/company/{company_number}/charges"
+            f"?items_per_page={items_per_page}&start_index={start_index}"
+        )
+        data, error = ch_get_data(api_key, token_bucket, path)
+        if error or not data:
+            if not all_items:
+                return None, error
+            break
+
+        last_data = data
+        page_items = data.get("items", [])
+        all_items.extend(page_items)
+
+        # Charges use "total_count"; fall back to "total_results" defensively.
+        total_results = data.get("total_count", data.get("total_results", 0))
+        start_index += len(page_items)
+        if not page_items or start_index >= total_results:
+            break
+
+    if last_data is not None:
+        merged = dict(last_data)
+        merged["items"] = all_items
+        return merged, None
+    return {"items": all_items, "total_count": len(all_items)}, None
+
+
 def ch_get_filing_history(
     api_key: str,
     token_bucket,

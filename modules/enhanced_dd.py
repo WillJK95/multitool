@@ -35,6 +35,7 @@ from ..ui.tooltip import Tooltip
 from ..api.companies_house import (
     ch_get_data, ch_get_document_metadata, ch_download_document_content,
     ch_get_filing_history, ch_get_insolvency, ch_search_officers,
+    ch_get_charges,
 )
 from ..api.charity_commission import (
     cc_get_charity_details_v2,
@@ -3076,11 +3077,17 @@ class EnhancedDueDiligence(InvestigationModuleBase):
                 self.api_key, self.ch_token_bucket, f"/company/{cnum}/filing-history?items_per_page=100"
             )
 
+            # Fetch registered charges (mortgages/debentures). A 404 here
+            # simply means the company has no charges on the register, so the
+            # error is intentionally ignored and treated as "no charges".
+            charges, _ = ch_get_charges(self.api_key, self.ch_token_bucket, cnum)
+
             company_data = {
                 'profile': profile,
                 'officers': officers,
                 'pscs': pscs,
                 'filing_history': filing_history,
+                'charges': charges,
             }
 
             # Keep flat state for backward compat
@@ -4558,9 +4565,18 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
     def _check_filing_patterns(self):
         """Analyze filing history for concerning patterns."""
         findings = []
-        filing_history = self.company_data.get('filing_history', {})
+        filing_history = self.company_data.get('filing_history') or {}
         items = filing_history.get('items', [])
         if not items:
+            # No filing history (or the fetch failed). Charges are fetched
+            # independently of filing history, so still surface any
+            # charges-based findings before returning.
+            charges_data = self.company_data.get('charges') or {}
+            charge_items = (
+                charges_data.get('items', []) if isinstance(charges_data, dict) else []
+            )
+            if charge_items:
+                findings.extend(self._build_charges_findings(charge_items))
             return findings
 
         # Parse incorporation date for first-year accounts deadline calculation
@@ -4695,8 +4711,17 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                     'recommendation': 'Request clarification on any periods where accounts were not filed.',
                 })
 
-        # Charge registrations
-        if charge_filings:
+        # Secured charges — prefer the dedicated Charges API (status-aware,
+        # with lender and fixed/floating/negative-pledge detail). Fall back to
+        # the MR01 filing count only if the charges endpoint returned nothing
+        # (e.g. the request failed or this data set predates the change).
+        charges_data = self.company_data.get('charges') or {}
+        charge_items = (
+            charges_data.get('items', []) if isinstance(charges_data, dict) else []
+        )
+        if charge_items:
+            findings.extend(self._build_charges_findings(charge_items))
+        elif charge_filings:
             findings.append({
                 'category': 'Financial',
                 'severity': 'Moderate',
@@ -4704,6 +4729,128 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                 'narrative': f"The company has {len(charge_filings)} charge registration(s) in its filing history, indicating secured borrowing. Charges grant creditors priority over company assets.",
                 'recommendation': 'Review the nature and extent of secured borrowing and assess whether existing charges might affect the company\'s ability to meet new obligations.',
             })
+
+        return findings
+
+    def _build_charges_findings(self, charge_items):
+        """Build EDD finding(s) from the Companies House charges register.
+
+        Produces a status-aware secured-borrowing finding (outstanding vs
+        satisfied), surfacing the secured creditors (persons entitled) and any
+        higher-risk structural features: a qualifying floating charge over all
+        of the company's assets, and negative-pledge clauses.
+
+        Args:
+            charge_items: The ``items`` list from the charges API response,
+                each a charge resource dict.
+
+        Returns:
+            A list of finding dicts (may be empty).
+        """
+        findings = []
+        if not charge_items:
+            return findings
+
+        # 'part-satisfied' still leaves live security in place.
+        outstanding_statuses = {'outstanding', 'part-satisfied'}
+
+        outstanding = [
+            ch for ch in charge_items
+            if str(ch.get('status', '')).lower() in outstanding_statuses
+        ]
+        total = len(charge_items)
+        n_out = len(outstanding)
+
+        # Collect distinct secured creditors from outstanding charges,
+        # preserving first-seen order.
+        lenders = []
+        seen = set()
+        for ch in outstanding:
+            for pe in (ch.get('persons_entitled') or []):
+                name = (pe.get('name') or '').strip()
+                if name and name.lower() not in seen:
+                    seen.add(name.lower())
+                    lenders.append(name)
+
+        # Structural risk features across the outstanding charges.
+        floating_all = any(
+            (ch.get('particulars') or {}).get('floating_charge_covers_all')
+            for ch in outstanding
+        )
+        negative_pledge = any(
+            (ch.get('particulars') or {}).get('contains_negative_pledge')
+            for ch in outstanding
+        )
+
+        # Most recent charge creation date (ISO strings sort chronologically).
+        created_dates = [ch.get('created_on') for ch in charge_items if ch.get('created_on')]
+        latest_created = max(created_dates) if created_dates else None
+
+        if n_out == 0:
+            findings.append({
+                'category': 'Financial',
+                'severity': 'Low',
+                'title': f'Secured Charges — All Satisfied ({total})',
+                'narrative': (
+                    f"The company has {total} charge(s) on the register, all of which "
+                    f"are recorded as satisfied. This indicates historical secured "
+                    f"borrowing that has since been discharged; no creditor currently "
+                    f"holds security over the company's assets via these charges."
+                ),
+                'recommendation': (
+                    'No outstanding security identified from the charges register. '
+                    'Verify against the latest accounts for any borrowings secured '
+                    'after the most recent charge filing.'
+                ),
+            })
+            return findings
+
+        # At least one outstanding charge.
+        lender_txt = ''
+        if lenders:
+            shown = '; '.join(lenders[:5])
+            more = f" (and {len(lenders) - 5} other(s))" if len(lenders) > 5 else ''
+            lender_txt = f" Secured creditor(s): {shown}{more}."
+
+        feature_notes = []
+        if floating_all:
+            feature_notes.append(
+                "at least one charge is a floating charge over all of the company's "
+                "property and undertaking (a qualifying floating charge typically "
+                "entitles the holder to appoint an administrator)"
+            )
+        if negative_pledge:
+            feature_notes.append(
+                "at least one charge contains a negative pledge, restricting the "
+                "company's ability to grant further security without the chargee's consent"
+            )
+        feature_txt = (' Notable features: ' + '; '.join(feature_notes) + '.') if feature_notes else ''
+
+        created_txt = ''
+        if latest_created:
+            created_txt = f" The most recent charge was created on {format_display_date(latest_created)}."
+
+        # Outstanding security is at least Moderate; escalate to Elevated for a
+        # whole-business floating charge, a negative pledge, or several live charges.
+        severity = 'Elevated' if (floating_all or negative_pledge or n_out >= 3) else 'Moderate'
+
+        findings.append({
+            'category': 'Financial',
+            'severity': severity,
+            'title': f'Outstanding Secured Charges ({n_out} of {total})',
+            'narrative': (
+                f"The company has {n_out} outstanding charge(s) out of {total} on the "
+                f"register, indicating live secured borrowing. Charge holders rank "
+                f"ahead of unsecured creditors over the assets they hold security "
+                f"over.{lender_txt}{feature_txt}{created_txt}"
+            ),
+            'recommendation': (
+                'Review the extent of secured borrowing and the identity of the secured '
+                'creditors. Where a charge holder is a related party or an unfamiliar '
+                'private lender, investigate the underlying funding arrangement. Assess '
+                "whether existing security affects the company's ability to meet new obligations."
+            ),
+        })
 
         return findings
 
@@ -6896,6 +7043,30 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                 <p><strong>Why it matters:</strong> It reveals the trading performance the filings omit. The figure is
                 the net result after any dividends or director drawings, so actual trading profit may be higher; share
                 issues or prior-year adjustments can also distort it.</p>
+                '''
+                # Investment-property caveat: for property-investment entities the
+                # reserves/net-asset movement can be dominated by unrealised fair-value
+                # revaluations rather than trading. Flag it so the figure is read
+                # correctly; if the carrying value was held flat, say so affirmatively.
+                inv_series = unified.get_metric_series('InvestmentProperty')
+                if inv_series and any(v for v in inv_series.values()):
+                    inv_vals = [inv_series[y] for y in sorted(inv_series)]
+                    inv_delta = (inv_vals[-1] - inv_vals[0]) if len(inv_vals) >= 2 else 0.0
+                    if abs(inv_delta) >= 1.0:
+                        chart_html += f'''
+                <p><strong>Investment property caveat:</strong> This entity holds investment property
+                (latest carrying value £{inv_vals[-1]:,.0f}), and its carrying value moved by
+                £{inv_delta:,.0f} over the period shown. Under FRS 102, fair-value changes on investment
+                property are recognised in profit or loss, so this estimate may be driven substantially by an
+                <em>unrealised, non-cash</em> revaluation rather than trading. Read it as a change in net worth,
+                not operating performance.</p>
+                '''
+                    else:
+                        chart_html += f'''
+                <p><strong>Investment property note:</strong> This entity holds investment property
+                (carrying value £{inv_vals[-1]:,.0f}), held at a flat valuation across the period shown. The
+                derived figure is therefore <em>not</em> distorted by a revaluation and reflects genuine
+                movement in the company's other net assets.</p>
                 '''
                 if derived['multi_year_gaps']:
                     chart_html += '''

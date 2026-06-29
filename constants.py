@@ -135,8 +135,10 @@ TAXONOMY_MAP = {
         'ProfitLoss'
     ],
     'FixedAssets': [
-        'FixedAssets',
-        'PropertyPlantEquipment'
+        'FixedAssets'
+    ],
+    'InvestmentProperty': [
+        'InvestmentProperty'
     ],
     'Debtors': [
         'Debtors'
@@ -213,6 +215,7 @@ BALANCE_SHEET_FIELDS = [
     (None, None, 'Fixed Assets'),
     ('IntangibleAssets', 'IntangibleAssets', 'Intangible Assets'),
     ('TangibleAssets', 'TangibleAssets', 'Tangible Assets'),
+    ('InvestmentProperty', 'InvestmentProperty', 'Investment Property'),
     ('FixedAssets', 'FixedAssets', 'Total Fixed Assets'),
     # Current Assets
     (None, None, 'Current Assets'),
