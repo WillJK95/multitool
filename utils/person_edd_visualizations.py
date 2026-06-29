@@ -2,6 +2,7 @@
 
 import html
 import re
+from collections import Counter
 from datetime import datetime
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
@@ -20,12 +21,40 @@ from .edd_visualizations import (
     format_display_date,
     generate_grants_report_html,
 )
+from .helpers import narrative_to_html, prettify_role, prettify_status
 from .person_edd import (
     PersonEDDReport,
     PersonCompanyRecord,
     aggregate_charges,
     aggregate_co_directors,
 )
+
+
+# Map the cross-analysis risk flags onto the unified company taxonomy
+# (Critical / Elevated / Moderate / Info). Critical is reserved — no person
+# rule currently escalates that far. Each value is (css_class, badge_label).
+_SEVERITY_DISPLAY = {
+    "HIGH": ("elevated", "ELEVATED"),
+    "MEDIUM": ("moderate", "MODERATE"),
+    "LOW": ("info", "INFO"),
+    "INFO": ("info", "INFO"),
+    "NOT_ASSESSED": ("not-assessed", "NOT ASSESSED"),
+}
+
+# Severity ranking for the headline dashboard tally.
+_SEVERITY_ORDER = ["Critical", "Elevated", "Moderate", "Info"]
+_DISPLAY_TO_LABEL = {
+    "critical": "Critical",
+    "elevated": "Elevated",
+    "moderate": "Moderate",
+    "info": "Info",
+    "not-assessed": "Info",
+}
+
+
+def _severity_display(flag: Optional[str]) -> Tuple[str, str]:
+    """Return (css_class, badge_label) for a raw risk flag."""
+    return _SEVERITY_DISPLAY.get((flag or "NOT_ASSESSED").upper(), ("not-assessed", "NOT ASSESSED"))
 
 
 # Status colour palette — mirrors the conventions used in edd_visualizations.
@@ -79,6 +108,7 @@ def _render_directorship_timeline(report: PersonEDDReport) -> str:
     height = max(3, 0.4 * len(rows) + 1)
     fig, ax = plt.subplots(figsize=(12, height))
 
+    row_labels = []
     for i, (c, start, end) in enumerate(rows):
         colour = _status_colour(c.company_status)
         ax.barh(i, (end - start).days, left=mdates.date2num(start), height=0.55,
@@ -86,10 +116,11 @@ def _render_directorship_timeline(report: PersonEDDReport) -> str:
         label = c.company_name or c.company_number
         if c.subject_is_psc:
             label += "  ★"
-        ax.text(mdates.date2num(start), i, " " + label, va="center", ha="left",
-                fontsize=8, color="#222")
+        row_labels.append(label)
 
-    ax.set_yticks([])
+    # Company names live on the y-axis so they no longer overprint the bars.
+    ax.set_yticks(range(len(rows)))
+    ax.set_yticklabels(row_labels, fontsize=8)
     ax.set_ylim(-0.6, len(rows) - 0.4)
     ax.xaxis_date()
     ax.xaxis.set_major_locator(mdates.YearLocator())
@@ -97,7 +128,7 @@ def _render_directorship_timeline(report: PersonEDDReport) -> str:
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_visible(False)
-    ax.set_title("Directorship timeline", fontsize=11, loc="left", pad=10)
+    # Title omitted — the HTML <h2> already names this chart.
 
     legend_patches = [
         mpatches.Patch(color=_STATUS_COLOURS["active"], label="Active"),
@@ -158,8 +189,11 @@ def _render_codirector_graph(report: PersonEDDReport, top_n: int = 25) -> str:
     nx.draw_networkx_edges(G, pos, ax=ax, alpha=0.4, edge_color="#666")
     nx.draw_networkx_nodes(G, pos, ax=ax, node_size=node_sizes, node_color=node_colours,
                            edgecolors="#333", linewidths=0.6)
+    # Draw labels with a semi-transparent white bbox so the central hub label
+    # no longer collides illegibly with adjacent co-director labels.
     labels = {n: attrs["label"] for n, attrs in G.nodes(data=True)}
-    nx.draw_networkx_labels(G, pos, labels=labels, ax=ax, font_size=8)
+    label_bbox = dict(boxstyle="round,pad=0.15", facecolor="white", alpha=0.7, edgecolor="none")
+    nx.draw_networkx_labels(G, pos, labels=labels, ax=ax, font_size=8, bbox=label_bbox)
     ax.axis("off")
     fig.tight_layout()
     return _fig_to_svg(fig)
@@ -192,23 +226,25 @@ header.report-header .meta { margin: 5px 0; opacity: 0.9; font-size: 13px; }
 .findings { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; }
 .finding { margin: 12px 0; padding: 15px; border-left: 4px solid #ccc;
            background: #f9f9f9; border-radius: 4px; }
-.finding.high { border-left-color: #dc3545; background: #fff5f5; }
-.finding.medium { border-left-color: #fd7e14; background: #fff9f5; }
-.finding.low { border-left-color: #6c757d; background: #f9f9f9; }
+/* Unified severity taxonomy — matches the company DD report (master spec).
+   Critical is reserved; person findings currently render Elevated/Moderate/Info. */
+.finding.critical { border-left-color: #dc3545; background: #fff5f5; }
+.finding.elevated { border-left-color: #fd7e14; background: #fff9f5; }
+.finding.moderate { border-left-color: #ffc107; background: #fffef5; }
 .finding.info { border-left-color: #667eea; background: #f0f4ff; }
 .finding.not-assessed { border-left-color: #9e9e9e; background: #f9f9f9; }
 .finding .badge { display: inline-block; padding: 3px 10px; border-radius: 3px;
                   font-size: 12px; font-weight: bold; color: #fff; margin-bottom: 6px; }
-.finding.high .badge { background: #dc3545; }
-.finding.medium .badge { background: #fd7e14; }
-.finding.low .badge { background: #6c757d; }
+.finding.critical .badge { background: #dc3545; }
+.finding.elevated .badge { background: #fd7e14; }
+.finding.moderate .badge { background: #ffc107; color: #333; }
 .finding.info .badge { background: #667eea; }
 .finding.not-assessed .badge { background: #9e9e9e; }
 .finding h4 { margin: 8px 0 6px 0; font-size: 14px; color: #333; }
-.finding .narrative { white-space: pre-line; font-size: 13px; line-height: 1.5; color: #333; }
-.finding .recommendation { margin-top: 10px; padding: 10px; background: #fff;
-                           border-left: 3px solid #667eea; font-size: 12px;
-                           color: #555; font-style: italic; }
+.finding .narrative { font-size: 13px; line-height: 1.5; color: #333; }
+.finding .narrative p { margin: 6px 0; }
+.finding .narrative ul { margin: 6px 0; padding-left: 20px; }
+.finding .narrative li { margin-bottom: 4px; }
 table.report-table, table.companies, table.address-clusters,
 table.insolvent, table.phoenix { width: 100%; border-collapse: collapse; font-size: 13px;
                                  margin-top: 10px; }
@@ -219,7 +255,7 @@ table.insolvent th, table.insolvent td,
 table.phoenix th, table.phoenix td { padding: 10px 12px; text-align: left;
                                      border-bottom: 1px solid #eee; vertical-align: top; }
 table.report-table th, table.companies th, table.address-clusters th,
-table.insolvent th, table.phoenix th { background: #f0f4ff; color: #667eea;
+table.insolvent th, table.phoenix th { background: #667eea; color: #fff;
                                        font-weight: 600; }
 table.companies tr:hover td, table.insolvent tr:hover td,
 table.phoenix tr:hover td, table.report-table tr:hover td { background: #f9faff; }
@@ -241,11 +277,53 @@ details.collapsible-table > summary:hover { text-decoration: underline; }
                       letter-spacing: 0.5px; margin-bottom: 4px; }
 .grants-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .grants-table th, .grants-table td { padding: 10px 12px; border-bottom: 1px solid #eee; text-align: left; }
-.grants-table th { background: #f0f4ff; color: #667eea; font-weight: 600; }
+.grants-table th { background: #667eea; color: #fff; font-weight: 600; }
 .grants-table tr:hover td { background: #f9faff; }
 .grant-detail { background: #fafafa; padding: 10px 14px; margin: 8px 0; border-radius: 4px; }
 .grant-detail h4 { margin: 0 0 5px 0; color: #333; }
 .grant-meta { font-size: 12px; color: #666; margin: 0 0 10px 0; }
+/* Executive summary + headline dashboard (mirrors the company report) */
+.executive-summary { font-size: 15px; line-height: 1.6; padding: 20px; background: #f0f4ff;
+                     border-radius: 5px; border-left: 4px solid #667eea; }
+.dashboard-panel { background: #fff; border: 2px solid #667eea; border-radius: 8px;
+                   padding: 18px 20px; margin-bottom: 20px; }
+.dash-header { margin-bottom: 12px; }
+.dash-total { font-size: 15px; font-weight: 600; color: #333; }
+.dash-bars { display: flex; flex-direction: column; gap: 8px; }
+.dash-row { display: flex; align-items: center; gap: 12px; }
+.dash-label { width: 170px; font-size: 13px; color: #555; }
+.dash-bar { flex: 1; height: 20px; background: #eef0f5; border-radius: 3px;
+            overflow: hidden; display: flex; }
+.dash-seg { height: 100%; display: flex; align-items: center; justify-content: center;
+            font-size: 11px; color: #fff; font-weight: 600; min-width: 16px; }
+.dash-seg-critical { background: #dc3545; }
+.dash-seg-elevated { background: #fd7e14; }
+.dash-seg-moderate { background: #ffc107; color: #333; }
+.dash-seg-info { background: #667eea; }
+.dash-empty { font-size: 11px; color: #999; padding-left: 8px; align-self: center; }
+.dash-detail { width: 80px; font-size: 12px; color: #777; text-align: right; }
+.dash-legend { display: flex; gap: 16px; margin-top: 12px; font-size: 11px; color: #666; }
+.dash-legend-item { display: flex; align-items: center; gap: 5px; }
+.dash-legend-swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+.dash-meta { display: flex; gap: 18px; margin-top: 12px; font-size: 12px; color: #666; flex-wrap: wrap; }
+/* Consolidated recommendations */
+.recommendations ul { margin: 8px 0 0 0; padding-left: 20px; }
+.recommendations li { margin-bottom: 8px; font-size: 13px; line-height: 1.5; color: #333; }
+/* Save-as-PDF button */
+.print-btn { position: fixed; top: 16px; right: 16px; z-index: 1000; background: #667eea;
+             color: #fff; border: none; padding: 10px 16px; border-radius: 6px;
+             font-size: 13px; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.2); }
+.print-btn:hover { background: #556bd8; }
+@media print {
+  body { background: #fff; }
+  .print-btn { display: none !important; }
+  .section { box-shadow: none; border: 1px solid #ddd; }
+  .finding, .dashboard-panel, .chart-container, .grant-detail { break-inside: avoid; }
+  table { break-inside: auto; }
+  tr, thead { break-inside: avoid; }
+  h2, h3 { break-after: avoid; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
 """
 
 
@@ -328,19 +406,14 @@ def _ch_insolvency_link(company_number: Optional[str], text: str = "Yes") -> str
 
 
 def _finding_card(result) -> str:
-    flag = result.risk_flag or "NOT_ASSESSED"
-    cls = flag.lower().replace("_", "-")
-    narrative = html.escape(result.narrative or "")
-    rec_html = ""
-    if result.recommendation:
-        rec_html = f'<div class="recommendation">{html.escape(result.recommendation)}</div>'
+    cls, badge = _severity_display(result.risk_flag)
+    narrative = narrative_to_html(result.narrative or "")
     title = html.escape(result.title or result.rule_id)
     return f"""
     <div class="finding {cls}">
-      <span class="badge">{html.escape(flag)}</span>
+      <span class="badge">{badge}</span>
       <h4>{result.rule_id} — {title}</h4>
       <div class="narrative">{narrative}</div>
-      {rec_html}
     </div>
     """
 
@@ -417,15 +490,14 @@ def _companies_table(report: PersonEDDReport) -> str:
         appt = format_display_date(c.subject_appointed_on or "") if c.subject_appointed_on else "—"
         resd = format_display_date(c.subject_resigned_on or "") if c.subject_resigned_on else "—"
         psc = "Yes" if c.subject_is_psc else ""
-        status_html = html.escape(c.company_status or "")
         # Slightly fade rows where the subject is no longer a director so live
         # directorships stand out.
         row_class = ' class="resigned"' if c.subject_resigned_on else ""
         rows.append(
             f"<tr{row_class}><td>{html.escape(c.company_name or '')}</td>"
             f"<td>{_ch_company_link(c.company_number)}</td>"
-            f"<td>{status_html}</td>"
-            f"<td>{html.escape(c.subject_role or '—')}</td>"
+            f"<td>{html.escape(prettify_status(c.company_status))}</td>"
+            f"<td>{html.escape(prettify_role(c.subject_role) or '—')}</td>"
             f"<td>{appt}</td><td>{resd}</td>"
             f"<td>{psc}</td>"
             f"<td>{_overdue_cell(c.accounts_overdue, c.company_status)}</td>"
@@ -668,7 +740,139 @@ def _aggregate_grants(report: PersonEDDReport) -> List[Dict]:
 # Top-level
 # ---------------------------------------------------------------------------
 
-_RISK_RULE_IDS = {"P1", "P2"}
+# Findings whose mapped severity is one of these go in the Risk Findings
+# section; everything else (Info / clean results) goes in Informational.
+_RISK_LABELS = {"Critical", "Elevated", "Moderate"}
+
+# Domain grouping for the headline dashboard bars. P7 (offshore controllers)
+# is reserved for the parallel offshore rule; it groups here if present.
+_DOMAINS = [
+    ("Insolvency & continuity", {"P1", "P2"}),
+    ("Compliance", {"P8", "P9"}),
+    ("Network & structure", {"P3", "P4", "P5", "P7"}),
+    ("Funding", {"P6"}),
+]
+
+
+def _result_label(result) -> str:
+    """Mapped severity label (Critical/Elevated/Moderate/Info) for a finding."""
+    cls, _ = _severity_display(result.risk_flag)
+    return _DISPLAY_TO_LABEL.get(cls, "Info")
+
+
+def _executive_summary_body(report: PersonEDDReport, name: str,
+                            counts: Counter, total_concerning: int) -> str:
+    n_companies = len(report.companies)
+    if total_concerning == 0:
+        return (
+            f"Based on available data, <strong>{name}</strong> shows no elevated or moderate "
+            f"risk indicators across the {n_companies} companies reviewed. Informational "
+            "findings are listed below."
+        )
+    parts = [
+        f"Based on available data, <strong>{name}</strong> shows "
+        f"<strong>{total_concerning} concerning indicator(s)</strong> across the "
+        f"{n_companies} companies reviewed."
+    ]
+    if counts.get("Critical"):
+        parts.append(
+            f"<strong>Critical findings ({counts['Critical']}):</strong> severe red flags "
+            "requiring immediate attention."
+        )
+    if counts.get("Elevated"):
+        parts.append(
+            f"<strong>Elevated risk findings ({counts['Elevated']}):</strong> heightened risk "
+            "that should be investigated further before proceeding."
+        )
+    if counts.get("Moderate"):
+        parts.append(
+            f"<strong>Moderate concerns ({counts['Moderate']}):</strong> factors that should be "
+            "considered and may require additional information or monitoring."
+        )
+    return "<br><br>".join(parts)
+
+
+def _summary_and_dashboard(report: PersonEDDReport) -> str:
+    name = html.escape(report.subject.display_name)
+    counts = Counter(_result_label(r) for r in report.results)
+    total_concerning = sum(counts.get(lbl, 0) for lbl in _RISK_LABELS)
+
+    summary_body = _executive_summary_body(report, name, counts, total_concerning)
+    header = " &middot; ".join(f"{counts.get(lbl, 0)} {lbl}" for lbl in _SEVERITY_ORDER)
+
+    rows_html = ""
+    for domain_name, ids in _DOMAINS:
+        domain_results = [r for r in report.results if r.rule_id in ids]
+        if not domain_results:
+            continue
+        dcounts = Counter(_result_label(r) for r in domain_results)
+        total = len(domain_results)
+        segs = ""
+        for sev in _SEVERITY_ORDER:
+            c = dcounts.get(sev, 0)
+            if not c:
+                continue
+            width = c / total * 100
+            segs += (
+                f'<div class="dash-seg dash-seg-{sev.lower()}" '
+                f'style="width:{width:.1f}%">{c}</div>'
+            )
+        rows_html += (
+            f'<div class="dash-row"><span class="dash-label">{html.escape(domain_name)}</span>'
+            f'<div class="dash-bar">{segs}</div>'
+            f'<span class="dash-detail">{total} finding{"s" if total != 1 else ""}</span></div>'
+        )
+
+    legend = "".join(
+        f'<div class="dash-legend-item"><span class="dash-legend-swatch" '
+        f'style="background:{colour};"></span>{lbl}</div>'
+        for lbl, colour in (
+            ("Critical", "#dc3545"), ("Elevated", "#fd7e14"),
+            ("Moderate", "#ffc107"), ("Info", "#667eea"),
+        )
+    )
+
+    active = sum(1 for c in report.companies if (c.company_status or "").lower() == "active")
+    insolvent = len(report.insolvent_companies or [])
+    meta = "".join(f"<span>{m}</span>" for m in (
+        f"Companies in scope: {len(report.companies)}",
+        f"Active: {active}",
+        f"Dissolved / insolvent records: {insolvent}",
+    ))
+
+    return f"""
+  <section class="section">
+    <h2>Executive Summary</h2>
+    <div class="executive-summary">{summary_body}</div>
+  </section>
+
+  <div class="dashboard-panel">
+    <div class="dash-header"><span class="dash-total">{header}</span></div>
+    <div class="dash-bars">{rows_html}</div>
+    <div class="dash-legend">{legend}</div>
+    <div class="dash-meta">{meta}</div>
+  </div>
+"""
+
+
+def _recommendations_section(report: PersonEDDReport) -> str:
+    """Consolidated, de-duplicated recommendations across all findings."""
+    seen = set()
+    recs = []
+    for r in report.results:
+        rec = (r.recommendation or "").strip()
+        if rec and rec.lower() not in seen:
+            seen.add(rec.lower())
+            recs.append(rec)
+    if not recs:
+        return ""
+    items = "".join(f"<li>{html.escape(r)}</li>" for r in recs)
+    return f"""
+  <section class="section recommendations">
+    <h2>Recommended actions</h2>
+    <ul>{items}</ul>
+  </section>
+"""
 
 
 def generate_person_edd_html(report: PersonEDDReport) -> str:
@@ -677,9 +881,10 @@ def generate_person_edd_html(report: PersonEDDReport) -> str:
     timeline_svg = _render_directorship_timeline(report)
     codir_svg = _render_codirector_graph(report)
 
-    risk_results = [r for r in report.results if r.rule_id in _RISK_RULE_IDS]
-    info_results = [r for r in report.results if r.rule_id not in _RISK_RULE_IDS]
-    risk_findings_html = "".join(_finding_card(r) for r in risk_results)
+    risk_results = [r for r in report.results if _result_label(r) in _RISK_LABELS]
+    info_results = [r for r in report.results if _result_label(r) not in _RISK_LABELS]
+    risk_findings_html = "".join(_finding_card(r) for r in risk_results) or \
+        '<p class="note">No elevated or moderate risk findings.</p>'
     info_findings_html = "".join(_finding_card(r) for r in info_results)
 
     insolvent_html = _insolvent_companies_subsection(report)
@@ -702,6 +907,7 @@ def generate_person_edd_html(report: PersonEDDReport) -> str:
 <title>Director Diligence Report — {html.escape(s.display_name)}</title>
 <style>{_CSS}</style>
 </head><body>
+<button class="print-btn" onclick="window.print()">&#128424; Save as PDF</button>
 <div class="container">
   <header class="report-header">
     <h1>Director Diligence Report</h1>
@@ -712,6 +918,8 @@ def generate_person_edd_html(report: PersonEDDReport) -> str:
   {_subject_card(report)}
 
   {errors_html}
+
+  {_summary_and_dashboard(report)}
 
   <section class="section">
     <h2>Risk Findings</h2>
@@ -745,6 +953,8 @@ def generate_person_edd_html(report: PersonEDDReport) -> str:
   {_address_clusters_section(report)}
 
   {grants_html}
+
+  {_recommendations_section(report)}
 
   <footer class="note" style="text-align:center; padding:24px;">
     Data sources: Companies House &middot; 360Giving GrantNav &middot; Director Diligence Report

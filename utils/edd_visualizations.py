@@ -19,6 +19,24 @@ import matplotlib.patches as mpatches
 import networkx as nx
 from networkx.drawing.nx_agraph import graphviz_layout
 
+# Brand palette so charts match the report's indigo/purple identity instead of
+# matplotlib's default blue/green/orange. Applied once at import time.
+_BRAND_COLOR_CYCLE = ['#667eea', '#764ba2', '#5cb85c', '#fd7e14', '#dc3545', '#6c757d']
+
+
+def _apply_chart_style() -> None:
+    """Set global matplotlib rcParams so every chart shares a clean sans font
+    and the report's brand colour cycle. Safe to call repeatedly."""
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Segoe UI', 'Helvetica Neue', 'Helvetica', 'Arial', 'DejaVu Sans'],
+        'axes.prop_cycle': plt.cycler(color=_BRAND_COLOR_CYCLE),
+        'svg.fonttype': 'none',
+    })
+
+
+_apply_chart_style()
+
 from ..api.companies_house import ch_get_data
 from ..api.grantnav import grantnav_get_data
 from ..constants import FILING_TYPE_CATEGORIES, GRANT_DATA_FIELDS, GRANTNAV_API_BASE_URL
@@ -46,6 +64,12 @@ def _fig_to_svg(fig) -> str:
     buffer.seek(0)
     svg_str = buffer.getvalue().decode('utf-8')
     plt.close(fig)
+    # matplotlib prepends an XML declaration and a <!DOCTYPE svg ...> to its SVG
+    # output. Embedded mid-<body> that is invalid HTML and can break print/PDF
+    # pipelines, so slice from the first <svg tag onwards.
+    svg_start = svg_str.find('<svg')
+    if svg_start > 0:
+        svg_str = svg_str[svg_start:]
     return svg_str
 
 
@@ -359,8 +383,8 @@ def generate_company_timeline(
                     if label_text:
                         ax.annotate(
                             label_text, (mdates.date2num(evt['date']), row_idx),
-                            textcoords="offset points", xytext=(0, 8),
-                            fontsize=5, ha='center', color=c, rotation=45,
+                            textcoords="offset points", xytext=(6, 14),
+                            fontsize=5, ha='left', color=c, rotation=45,
                         )
         elif cat_name == 'Other Filings':
             for evt in events:
@@ -406,7 +430,7 @@ def generate_company_timeline(
                    alpha=0.05, color='#5CB85C')
 
     ax.set_xlabel('Date', fontsize=10)
-    ax.set_title('Company Timeline', fontsize=13, fontweight='bold', pad=10)
+    # Title omitted — the HTML <h2> already names this chart.
     ax.grid(True, axis='x', alpha=0.3, linestyle='-')
     ax.invert_yaxis()
 
@@ -883,8 +907,11 @@ def generate_static_ownership_graph(
     nx.draw_networkx_nodes(G, pos, ax=ax, node_color=node_colors,
                            node_size=node_sizes, edgecolors='#333333',
                            linewidths=1)
+    # Semi-transparent white bbox keeps labels legible where they would
+    # otherwise overlap the root node or each other.
+    label_bbox = dict(boxstyle="round,pad=0.15", facecolor="white", alpha=0.7, edgecolor="none")
     nx.draw_networkx_labels(G, label_pos, labels=labels, ax=ax, font_size=7,
-                            font_family='sans-serif')
+                            font_family='sans-serif', bbox=label_bbox)
     nx.draw_networkx_edges(G, pos, ax=ax, edge_color='#666666',
                            arrows=True, arrowsize=15, arrowstyle='-|>',
                            connectionstyle='arc3,rad=0.1')
@@ -895,7 +922,7 @@ def generate_static_ownership_graph(
         nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, ax=ax,
                                      font_size=6, font_color='#444444')
 
-    ax.set_title('Corporate Ownership Structure', fontsize=13, fontweight='bold', pad=10)
+    # Title omitted — the HTML <h2> already names this chart.
     ax.axis('off')
 
     # Add horizontal and vertical margins so node labels are not clipped

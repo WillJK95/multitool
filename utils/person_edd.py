@@ -94,6 +94,8 @@ class PersonCompanyRecord:
     # Filing compliance (from the company profile — no extra API call)
     accounts_overdue: bool = False
     confirmation_statement_overdue: bool = False
+    next_accounts_due: Optional[str] = None
+    next_cs_due: Optional[str] = None
     # Other people on the company
     co_officers: List[Dict] = field(default_factory=list)   # {name, dob, role, appointed_on, resigned_on, nationality, occupation, country_of_residence}
     co_pscs: List[Dict] = field(default_factory=list)       # {name, dob, natures, country, nationality}
@@ -685,6 +687,56 @@ def rule_p6_grant_footprint(companies: List[PersonCompanyRecord]) -> Tuple[Cross
     )
 
 
+def _fmt_due_date(iso: Optional[str]) -> str:
+    """Format an ISO due date as 'd Month YYYY', falling back to the raw value."""
+    d = _parse_iso_date(iso)
+    if d:
+        return f"{d.day} {d.strftime('%B %Y')}"
+    return iso or "unknown"
+
+
+def rule_p8_overdue_accounts(companies: List[PersonCompanyRecord]) -> CrossAnalysisResult:
+    """Companies where the subject is *currently* appointed and accounts are overdue.
+
+    Overdue accounts on a live appointment are a direct compliance/financial-distress
+    signal for the subject, so this is flagged HIGH (renders as Elevated).
+    """
+    affected = [
+        c for c in companies
+        if c.accounts_overdue and not c.subject_resigned_on
+    ]
+    if not affected:
+        return CrossAnalysisResult(
+            rule_id="P8",
+            title="Overdue accounts (current appointments)",
+            risk_flag="LOW",
+            confidence="AUTO",
+            narrative="No company where the subject is currently appointed has overdue accounts.",
+            recommendation="",
+        )
+    lines = [
+        f"{c.company_name or c.company_number} ({c.company_number}) — accounts due {_fmt_due_date(c.next_accounts_due)}"
+        for c in affected
+    ]
+    narrative = (
+        f"The subject is currently appointed at {len(affected)} compan"
+        f"{'y' if len(affected) == 1 else 'ies'} with overdue annual accounts.\n\n"
+        + "\n".join(f"• {line}" for line in lines)
+    )
+    return CrossAnalysisResult(
+        rule_id="P8",
+        title="Overdue accounts (current appointments)",
+        risk_flag="HIGH",
+        confidence="AUTO",
+        narrative=narrative,
+        recommendation=(
+            "Overdue accounts on a live appointment can indicate financial distress or "
+            "administrative failure. Confirm each company is trading and request up-to-date "
+            "management accounts."
+        ),
+    )
+
+
 def _is_offshore(*values) -> Optional[str]:
     """Return the matched offshore jurisdiction name if any value names one."""
     for v in values:
@@ -758,6 +810,44 @@ def rule_p7_offshore_pscs(companies: List[PersonCompanyRecord]) -> CrossAnalysis
             "Offshore ownership is not inherently problematic, but it can obscure "
             "ultimate beneficial ownership. Request supporting documentation on the "
             "controllers and corporate structure where relevant."
+        ),
+    )
+
+
+def rule_p9_overdue_confirmation(companies: List[PersonCompanyRecord]) -> CrossAnalysisResult:
+    """Companies where the subject is *currently* appointed and the confirmation
+    statement is overdue. Flagged MEDIUM (renders as Moderate)."""
+    affected = [
+        c for c in companies
+        if c.confirmation_statement_overdue and not c.subject_resigned_on
+    ]
+    if not affected:
+        return CrossAnalysisResult(
+            rule_id="P9",
+            title="Overdue confirmation statement (current appointments)",
+            risk_flag="LOW",
+            confidence="AUTO",
+            narrative="No company where the subject is currently appointed has an overdue confirmation statement.",
+            recommendation="",
+        )
+    lines = [
+        f"{c.company_name or c.company_number} ({c.company_number}) — confirmation statement due {_fmt_due_date(c.next_cs_due)}"
+        for c in affected
+    ]
+    narrative = (
+        f"The subject is currently appointed at {len(affected)} compan"
+        f"{'y' if len(affected) == 1 else 'ies'} with an overdue confirmation statement.\n\n"
+        + "\n".join(f"• {line}" for line in lines)
+    )
+    return CrossAnalysisResult(
+        rule_id="P9",
+        title="Overdue confirmation statement (current appointments)",
+        risk_flag="MEDIUM",
+        confidence="AUTO",
+        narrative=narrative,
+        recommendation=(
+            "An overdue confirmation statement points to administrative neglect. Verify each "
+            "company is actively managed and that its registered information is current."
         ),
     )
 
@@ -1051,6 +1141,8 @@ def run_person_edd(
     results.append(p6_result)
 
     results.append(rule_p7_offshore_pscs(companies))
+    results.append(rule_p8_overdue_accounts(companies))
+    results.append(rule_p9_overdue_confirmation(companies))
 
     fetch_errors = [(c.company_number, c.fetch_error) for c in companies if c.fetch_error]
     if fetch_errors:
@@ -1109,12 +1201,14 @@ def build_company_record(
     record.has_been_liquidated = bool(profile.get("has_been_liquidated", False))
     record.sic_codes = list(profile.get("sic_codes") or [])
 
-    # Filing compliance — the profile carries boolean "overdue" flags, so no
-    # extra API call is needed.
-    record.accounts_overdue = bool((profile.get("accounts") or {}).get("overdue"))
-    record.confirmation_statement_overdue = bool(
-        (profile.get("confirmation_statement") or {}).get("overdue")
-    )
+    # Filing compliance — the profile carries boolean "overdue" flags and the
+    # next-due dates, so no extra API call is needed.
+    accounts = profile.get("accounts") or {}
+    record.accounts_overdue = bool(accounts.get("overdue"))
+    record.next_accounts_due = accounts.get("next_due")
+    cs = profile.get("confirmation_statement") or {}
+    record.confirmation_statement_overdue = bool(cs.get("overdue"))
+    record.next_cs_due = cs.get("next_due")
 
     addr_raw = extract_address_string(profile.get("registered_office_address"))
     record.registered_address_raw = addr_raw
