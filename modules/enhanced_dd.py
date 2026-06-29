@@ -64,7 +64,11 @@ from ..constants import (
     CHARITY_EDD_THRESHOLDS,
 )
 from .base import InvestigationModuleBase
-from ..utils.helpers import log_message, clean_company_number, format_eta, match_officer_name_tokens
+from ..utils.helpers import (
+    log_message, clean_company_number, format_eta, match_officer_name_tokens,
+    prettify_status, prettify_company_type, prettify_jurisdiction,
+    narrative_to_html, account_age_qualifier,
+)
 from ..utils.settings import save_recent_reports, load_edd_thresholds, save_edd_thresholds
 from ..utils.edd_visualizations import (
     generate_company_timeline,
@@ -4062,6 +4066,14 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
             padding-bottom: 10px;
             margin-top: 0;
         }}
+        .findings {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+            gap: 14px;
+        }}
+        .findings .finding {{ margin: 0; }}
+        .recommendations ul {{ margin: 8px 0 0 0; padding-left: 20px; }}
+        .recommendations li {{ margin-bottom: 8px; font-size: 14px; line-height: 1.5; color: #333; }}
         .finding {{
             margin: 20px 0;
             padding: 15px;
@@ -4163,23 +4175,6 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
             border-bottom: 1px solid #eee;
         }}
         .grants-table tr:hover td {{ background: #f5f7ff; }}
-        .cross-analysis-summary {{
-            width: 100%;
-            border-collapse: collapse;
-            margin: 15px 0;
-        }}
-        .cross-analysis-summary th {{
-            background: #667eea;
-            color: white;
-            padding: 10px;
-            text-align: left;
-            font-size: 13px;
-        }}
-        .cross-analysis-summary td {{
-            padding: 8px 10px;
-            border-bottom: 1px solid #eee;
-            font-size: 13px;
-        }}
         .risk-elevated {{ background: #fd7e14; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
         .risk-moderate {{ background: #ffc107; color: #333; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
         .risk-low {{ color: #6c757d; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; background: #e9ecef; }}
@@ -4188,24 +4183,6 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         .confidence-enriched {{ background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
         .confidence-limited {{ background: #fd7e14; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
         .confidence-skipped {{ background: #6c757d; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
-        .composite-warning {{
-            background: #fff5f5;
-            border: 2px solid #dc3545;
-            border-radius: 8px;
-            padding: 15px;
-            margin: 15px 0;
-            font-weight: bold;
-            color: #dc3545;
-        }}
-        .pattern-warning {{
-            background: #fff9f5;
-            border: 2px solid #fd7e14;
-            border-radius: 8px;
-            padding: 15px;
-            margin: 15px 0;
-            font-weight: bold;
-            color: #856404;
-        }}
         .cross-rule-card {{
             margin: 20px 0;
             padding: 15px;
@@ -4303,10 +4280,25 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         }}
         .dash-seg {{
             height: 100%;
+            min-width: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: 600;
+            color: #fff;
         }}
         .dash-seg-critical {{ background: #dc3545; }}
         .dash-seg-elevated {{ background: #fd7e14; }}
-        .dash-seg-moderate {{ background: #ffc107; }}
+        .dash-seg-moderate {{ background: #ffc107; color: #333; }}
+        .dash-empty {{ font-size: 11px; color: #999; align-self: center; padding-left: 8px; }}
+        .dash-caption {{
+            flex: 1;
+            margin: 0 12px;
+            text-align: right;
+            font-size: 11px;
+            color: #888;
+        }}
         .dash-detail {{
             width: 200px;
             font-size: 12px;
@@ -4360,13 +4352,27 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
             display: inline-block;
             margin-left: 6px;
         }}
+        .print-btn {{
+            position: fixed; top: 16px; right: 16px; z-index: 1000;
+            background: #667eea; color: #fff; border: none; padding: 10px 16px;
+            border-radius: 6px; font-size: 13px; cursor: pointer;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        }}
+        .print-btn:hover {{ background: #556bd8; }}
         @media print {{
             body {{ background: white; }}
+            .print-btn {{ display: none !important; }}
             .section {{ box-shadow: none; border: 1px solid #ddd; }}
+            .finding, .dashboard-panel, .chart-container, .grant-detail {{ break-inside: avoid; }}
+            table {{ break-inside: auto; }}
+            tr, thead {{ break-inside: avoid; }}
+            h2, h3 {{ break-after: avoid; }}
+            * {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
         }}
     </style>
 </head>
 <body>
+    <button class="print-btn" onclick="window.print()">&#128424; Save as PDF</button>
     <div class="header">
         <h1>Enhanced Due Diligence Report</h1>
         <p><strong>{charity_name}</strong></p>
@@ -4400,6 +4406,8 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
     </div>
 
     {self._generate_charity_positive_indicators_html(positive)}
+
+    {self._generate_recommendations_html(findings)}
 
     <div class="section">
         <h2>Data Limitations &amp; Disclaimers</h2>
@@ -6030,6 +6038,22 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         governance_findings.sort(key=lambda f: severity_order.get(f['severity'], 99))
         financial_findings.sort(key=lambda f: severity_order.get(f['severity'], 99))
 
+        # Append a staleness qualifier to financial findings — they are derived
+        # from the latest filed accounts, which may be several years old.
+        latest_fin_year = None
+        if self.financial_analyzer and not self.financial_analyzer.data.empty:
+            try:
+                latest_fin_year = int(self.financial_analyzer.data['Year'].max())
+            except (ValueError, KeyError, TypeError):
+                latest_fin_year = None
+        if latest_fin_year and (datetime.now().year - latest_fin_year) > 0:
+            qualifier = account_age_qualifier(latest_fin_year)
+            qualifier_sentence = f" ({qualifier[:1].upper()}{qualifier[1:]}.)"
+            for f in financial_findings:
+                narrative = f.get('narrative') or ''
+                if qualifier not in narrative:
+                    f['narrative'] = narrative.rstrip() + qualifier_sentence
+
         # Generate charts if accounts loaded
         chart_html = ""
         if self.financial_analyzer and not self.financial_analyzer.data.empty:
@@ -6077,6 +6101,14 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
             padding-bottom: 10px;
             margin-top: 0;
         }}
+        .findings {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+            gap: 14px;
+        }}
+        .findings .finding {{ margin: 0; }}
+        .recommendations ul {{ margin: 8px 0 0 0; padding-left: 20px; }}
+        .recommendations li {{ margin-bottom: 8px; font-size: 14px; line-height: 1.5; color: #333; }}
         .finding {{
             margin: 20px 0;
             padding: 15px;
@@ -6198,23 +6230,6 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         .grants-table tr:hover td {{
             background: #f5f7ff;
         }}
-        .cross-analysis-summary {{
-            width: 100%;
-            border-collapse: collapse;
-            margin: 15px 0;
-        }}
-        .cross-analysis-summary th {{
-            background: #667eea;
-            color: white;
-            padding: 10px;
-            text-align: left;
-            font-size: 13px;
-        }}
-        .cross-analysis-summary td {{
-            padding: 8px 10px;
-            border-bottom: 1px solid #eee;
-            font-size: 13px;
-        }}
         .risk-elevated {{ background: #fd7e14; color: white; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
         .risk-moderate {{ background: #ffc107; color: #333; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; }}
         .risk-low {{ color: #6c757d; padding: 3px 10px; border-radius: 3px; font-size: 12px; font-weight: bold; display: inline-block; background: #e9ecef; }}
@@ -6223,24 +6238,6 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         .confidence-enriched {{ background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
         .confidence-limited {{ background: #fd7e14; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
         .confidence-skipped {{ background: #6c757d; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; display: inline-block; }}
-        .composite-warning {{
-            background: #fff5f5;
-            border: 2px solid #dc3545;
-            border-radius: 8px;
-            padding: 15px;
-            margin: 15px 0;
-            font-weight: bold;
-            color: #dc3545;
-        }}
-        .pattern-warning {{
-            background: #fff9f5;
-            border: 2px solid #fd7e14;
-            border-radius: 8px;
-            padding: 15px;
-            margin: 15px 0;
-            font-weight: bold;
-            color: #856404;
-        }}
         .trend-table {{
             width: auto;
             border-collapse: collapse;
@@ -6345,10 +6342,25 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         }}
         .dash-seg {{
             height: 100%;
+            min-width: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: 600;
+            color: #fff;
         }}
         .dash-seg-critical {{ background: #dc3545; }}
         .dash-seg-elevated {{ background: #fd7e14; }}
-        .dash-seg-moderate {{ background: #ffc107; }}
+        .dash-seg-moderate {{ background: #ffc107; color: #333; }}
+        .dash-empty {{ font-size: 11px; color: #999; align-self: center; padding-left: 8px; }}
+        .dash-caption {{
+            flex: 1;
+            margin: 0 12px;
+            text-align: right;
+            font-size: 11px;
+            color: #888;
+        }}
         .dash-detail {{
             width: 200px;
             font-size: 12px;
@@ -6402,13 +6414,27 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
             display: inline-block;
             margin-left: 6px;
         }}
+        .print-btn {{
+            position: fixed; top: 16px; right: 16px; z-index: 1000;
+            background: #667eea; color: #fff; border: none; padding: 10px 16px;
+            border-radius: 6px; font-size: 13px; cursor: pointer;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        }}
+        .print-btn:hover {{ background: #556bd8; }}
         @media print {{
             body {{ background: white; }}
+            .print-btn {{ display: none !important; }}
             .section {{ box-shadow: none; border: 1px solid #ddd; }}
+            .finding, .dashboard-panel, .chart-container, .grant-detail {{ break-inside: avoid; }}
+            table {{ break-inside: auto; }}
+            tr, thead {{ break-inside: avoid; }}
+            h2, h3 {{ break-after: avoid; }}
+            * {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
         }}
     </style>
 </head>
 <body>
+    <button class="print-btn" onclick="window.print()">&#128424; Save as PDF</button>
     <div class="header">
         <h1>Enhanced Due Diligence Report</h1>
         <p><strong>{company_name}</strong></p>
@@ -6447,11 +6473,13 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
 
     {self._generate_positive_indicators_html(positive)}
 
+    {self._generate_recommendations_html(findings)}
+
     <div class="section">
         <h2>Data Limitations &amp; Disclaimers</h2>
         {self._generate_limitations_html()}
     </div>
-    
+
     <div class="section" style="background: #f0f4ff; text-align: center;">
         <p style="margin: 0; color: #666;">
             Report generated by Data Investigation Multi-Tool<br>
@@ -6523,10 +6551,10 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         profile_items = [
             ('Company Name', html.escape(profile.get('company_name', 'N/A'))),
             ('Company Number', html.escape(profile.get('company_number', 'N/A'))),
-            ('Status', html.escape(profile.get('company_status', 'N/A'))),
-            ('Type', html.escape(profile.get('type', 'N/A'))),
+            ('Status', html.escape(prettify_status(profile.get('company_status')))),
+            ('Type', html.escape(prettify_company_type(profile.get('type')))),
             ('Incorporated', html.escape(format_display_date(profile.get('date_of_creation', '')))),
-            ('Jurisdiction', html.escape(profile.get('jurisdiction', 'N/A'))),
+            ('Jurisdiction', html.escape(prettify_jurisdiction(profile.get('jurisdiction')))),
             ('Registered Address', html.escape(address)),
             ('Active Officers', str(active_officers)),
             ('Active PSCs', str(active_pscs)),
@@ -6634,13 +6662,18 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         fin_count   = fin_crit + fin_elev + fin_mod
         grant_count = grant_elev + grant_mod
 
-        # Stacked bar builder: each severity segment width = count / domain_max * 100%
+        # Stacked bar builder: each severity segment width = count / domain_max * 100%.
+        # The count is printed inside the segment (with a CSS min-width) so a lone
+        # critical finding still reads clearly instead of as a thin grey sliver.
         def stacked_bar(crit, elev, mod, domain_max):
             segs = ''
             for count, css in ((crit, 'critical'), (elev, 'elevated'), (mod, 'moderate')):
                 if count > 0:
                     pct = min((count / domain_max) * 100, 100)
-                    segs += f'<div class="dash-seg dash-seg-{css}" style="width:{pct:.1f}%"></div>'
+                    segs += f'<div class="dash-seg dash-seg-{css}" style="width:{pct:.1f}%">{count}</div>'
+            if not segs:
+                # Make an intentionally-empty domain explicit rather than blank grey.
+                segs = '<span class="dash-empty">No findings</span>'
             return segs
 
         # --- Entity metadata ---
@@ -6671,7 +6704,15 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                 types = df['accounts_type'].dropna().unique()
                 if len(types):
                     acct_type = f" ({', '.join(str(t) for t in types)})"
-            accounts_info = f"{len(yrs)} years loaded{acct_type}"
+            age_suffix = ''
+            try:
+                latest_yr = int(max(yrs))
+                yrs_old = datetime.now().year - latest_yr
+                if yrs_old > 0:
+                    age_suffix = f"; latest FY{latest_yr}, {yrs_old} yr{'s' if yrs_old != 1 else ''} old"
+            except (ValueError, TypeError):
+                pass
+            accounts_info = f"{len(yrs)} years loaded{acct_type}{age_suffix}"
         elif self._entity_type == 'charity' and self.charity_data:
             fin_hist = self.charity_data.get('financial_history', [])
             accounts_info = f"{len(fin_hist)} years loaded" if fin_hist else "No financial data"
@@ -6708,8 +6749,10 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                 <span class="dash-detail">{grant_count} finding{"s" if grant_count != 1 else ""}</span>
             </div>
         </div>
-        <div style="text-align:right; font-size:10px; color:#bbb; margin-right:212px; margin-top:3px;">
-            Fixed scale &mdash; Governance /20 &middot; Financial /20 &middot; Grants /3
+        <div class="dash-row" style="margin-top:0;">
+            <span class="dash-label"></span>
+            <div class="dash-caption">Fixed scale &mdash; Governance /20 &middot; Financial /20 &middot; Grants /20</div>
+            <span class="dash-detail"></span>
         </div>
         <div class="dash-legend">
             <div class="dash-legend-item">
@@ -6737,12 +6780,28 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         if not results:
             return ''
 
+        # These cards are derived from filed accounts; append a staleness
+        # qualifier (matching the core financial findings) where the latest
+        # accounts are more than a year old.
+        age_note = ''
+        if self.financial_analyzer is not None and not self.financial_analyzer.data.empty:
+            try:
+                latest_fin_year = int(self.financial_analyzer.data['Year'].max())
+            except (ValueError, KeyError, TypeError):
+                latest_fin_year = None
+            if latest_fin_year and (datetime.now().year - latest_fin_year) > 0:
+                q = account_age_qualifier(latest_fin_year)
+                age_note = f" ({q[:1].upper()}{q[1:]}.)"
+
         html_out = ''
         for r in results:
             if r.unified_severity == 'Not Assessed' and r.confidence == 'SKIPPED':
                 continue
 
             sev_class = r.unified_severity.lower().replace(' ', '-')
+            narrative = (r.narrative or '')
+            if age_note and age_note not in narrative:
+                narrative = narrative.rstrip() + age_note
             html_out += f'''
         <div class="finding {sev_class}">
             <h3>
@@ -6750,7 +6809,7 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                 {html.escape(r.title)}
                 <span class="confidence-badge">{html.escape(r.unified_confidence_label)}</span>
             </h3>
-            <p>{html.escape(r.narrative)}</p>
+            {narrative_to_html(narrative)}
         '''
 
             # Trend data table if present
@@ -6775,10 +6834,7 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                     html_out += f"<tr><td>{td['year']}</td><td>{val_str}</td><td>{change_str}</td></tr>"
                 html_out += '</table>'
 
-            html_out += f'''
-            <div class="recommendation">
-                <strong>Recommendation:</strong> {html.escape(r.recommendation)}
-            </div>
+            html_out += '''
         </div>
         '''
 
@@ -6798,7 +6854,7 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         if not findings and not ca_cards_html:
             return ""
 
-        html_output = f'<div class="section"><h2>{html.escape(title)}</h2>'
+        html_output = f'<div class="section"><h2>{html.escape(title)}</h2><div class="findings">'
 
         # Render standard findings
         for finding in findings:
@@ -6811,17 +6867,14 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                 <span class="severity {sev_class}">{html.escape(finding['severity'].upper())}</span>
                 {html.escape(finding['title'])}
             </h3>
-            <p>{html.escape(finding['narrative'])}</p>
+            {narrative_to_html(finding['narrative'])}
             {finding.get('details_html', '')}
-            <div class="recommendation">
-                <strong>Recommendation:</strong> {html.escape(finding['recommendation'])}
-            </div>
         </div>
         '''
 
         # Append financial cross-analysis cards
         html_output += ca_cards_html
-        html_output += '</div>'
+        html_output += '</div></div>'
         return html_output
 
     def _generate_grants_cross_analysis_html(self):
@@ -6836,7 +6889,7 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         if not grant_results:
             return ''
 
-        return self._render_cross_analysis_cards(grant_results)
+        return f'<div class="findings">{self._render_cross_analysis_cards(grant_results)}</div>'
 
     def _generate_grants_data_html(self):
         """Generate grants data HTML without outer section wrapper."""
@@ -6935,19 +6988,21 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         html_output = '<div class="section"><h2>Positive Indicators</h2>'
 
         if positive_findings:
+            html_output += '<div class="findings">'
             for finding in positive_findings:
                 html_output += f'''
                 <div class="finding positive">
-                    <h3>{finding['title']}</h3>
-                    <p>{finding['narrative']}</p>
+                    <h3>{html.escape(finding['title'])}</h3>
+                    {narrative_to_html(finding['narrative'])}
                 </div>
                 '''
+            html_output += '</div>'
         else:
             html_output += '<p>No specific positive indicators were identified in the analysis performed. This does not indicate problems, but rather reflects the focus of due diligence on identifying risks.</p>'
 
         html_output += '</div>'
         return html_output
-    
+
     def _generate_chart_html(self):
         """Generate embedded charts from financial data.
 
@@ -7262,6 +7317,39 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         </div>
         '''
 
+    def _generate_recommendations_html(self, findings):
+        """Consolidated, de-duplicated recommendations across all findings and
+        cross-analysis results. Replaces the per-finding recommendation blocks."""
+        seen = set()
+        recs = []
+
+        def _add(rec):
+            rec = (rec or '').strip()
+            if rec and rec.lower() not in seen:
+                seen.add(rec.lower())
+                recs.append(rec)
+
+        for f in findings:
+            if f.get('severity') == 'Positive':
+                continue
+            _add(f.get('recommendation'))
+
+        report = getattr(self, '_cross_analysis_report', None)
+        if report:
+            for r in report.results:
+                if r.unified_severity == 'Not Assessed' and r.confidence == 'SKIPPED':
+                    continue
+                _add(r.recommendation)
+
+        if not recs:
+            return ''
+        items = ''.join(f'<li>{html.escape(r)}</li>' for r in recs)
+        return (
+            '<div class="section recommendations">'
+            '<h2>Recommended actions</h2>'
+            f'<ul>{items}</ul></div>'
+        )
+
     def _generate_limitations_html(self):
         """Generate data limitations section."""
         html_output = '<p>This report is based on the following data sources and is subject to these limitations:</p><ul>'
@@ -7292,27 +7380,6 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         if getattr(self, '_ownership_data', None) is not None:
             depth = max((r['level'] for r in self._ownership_data), default=0) if self._ownership_data else 0
             html_output += f'<li><strong>Ownership Structure:</strong> Traced up to {depth} level(s) of corporate ownership via PSC data. Ownership chains involving non-UK entities or unregistered entities may be incomplete.</li>'
-
-        # Cross-analysis provenance
-        report = getattr(self, '_cross_analysis_report', None)
-        if report:
-            assessed_rules = [r for r in report.results if r.confidence != 'SKIPPED']
-            skipped_rules = [r for r in report.results if r.confidence == 'SKIPPED']
-            auto_rules = [r for r in report.results if r.confidence == 'AUTO']
-            enriched_rules = [r for r in report.results if r.confidence == 'ENRICHED']
-            limited_rules = [r for r in report.results if r.confidence == 'LIMITED']
-
-            html_output += '<li><strong>Cross-Analysis:</strong> '
-            html_output += f'{len(assessed_rules)} of {len(report.results)} rules were assessed. '
-            if auto_rules:
-                html_output += f'{len(auto_rules)} based entirely on auto-parsed data. '
-            if enriched_rules:
-                html_output += f'{len(enriched_rules)} enhanced by user-provided data. '
-            if limited_rules:
-                html_output += f'{len(limited_rules)} ran with limited data. '
-            if skipped_rules:
-                html_output += f'{len(skipped_rules)} skipped due to insufficient data. '
-            html_output += '</li>'
 
         html_output += '<li><strong>Scope Limitations:</strong> This report does not include: site visits, management interviews, verification of trading activity, credit reference checks, industry benchmarking, assessment of directors\' personal financial positions, or review of legal proceedings beyond what appears in the public registry.</li>'
         

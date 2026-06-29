@@ -293,3 +293,151 @@ def match_officer_name_tokens(search_name: str, officer_title: str) -> bool:
     search_tokens = _clean(search_name)
     officer_tokens = _clean(officer_title)
     return search_tokens.issubset(officer_tokens) or officer_tokens.issubset(search_tokens)
+
+
+# ---------------------------------------------------------------------------
+# Presentation helpers (shared by the company and person DD reports)
+# ---------------------------------------------------------------------------
+
+# Known label mappings for raw Companies House API values. Anything not listed
+# falls back to a sensible title-case so we never show a raw token verbatim.
+_STATUS_LABELS = {
+    "active": "Active",
+    "dissolved": "Dissolved",
+    "liquidation": "In liquidation",
+    "receivership": "In receivership",
+    "administration": "In administration",
+    "voluntary-arrangement": "Voluntary arrangement",
+    "converted-closed": "Converted / closed",
+    "insolvency-proceedings": "Insolvency proceedings",
+    "registered": "Registered",
+    "removed": "Removed",
+    "closed": "Closed",
+    "open": "Open",
+}
+
+_TYPE_LABELS = {
+    "ltd": "Private limited company",
+    "private-limited-guarant-nsc": "Private limited by guarantee (no share capital)",
+    "private-limited-guarant-nsc-limited-exemption": "Private limited by guarantee (no share capital, exempt)",
+    "private-unlimited": "Private unlimited company",
+    "private-unlimited-nsc": "Private unlimited (no share capital)",
+    "plc": "Public limited company",
+    "llp": "Limited liability partnership",
+    "limited-partnership": "Limited partnership",
+    "old-public-company": "Old public company",
+    "private-limited-shares-section-30-exemption": "Private limited (section 30 exemption)",
+    "community-interest-company": "Community interest company",
+    "charitable-incorporated-organisation": "Charitable incorporated organisation",
+    "registered-society-non-jurisdictional": "Registered society",
+    "industrial-and-provident-society": "Industrial and provident society",
+    "royal-charter": "Royal charter",
+    "uk-establishment": "UK establishment",
+    "scottish-partnership": "Scottish partnership",
+}
+
+_JURISDICTION_LABELS = {
+    "england-wales": "England & Wales",
+    "england": "England",
+    "wales": "Wales",
+    "scotland": "Scotland",
+    "northern-ireland": "Northern Ireland",
+    "united-kingdom": "United Kingdom",
+    "great-britain": "Great Britain",
+    "european-union": "European Union",
+    "non-eu": "Non-EU",
+}
+
+
+def _fallback_titlecase(value: str) -> str:
+    """Turn a hyphen/underscore token into a readable title-cased label."""
+    return value.replace("-", " ").replace("_", " ").strip().capitalize()
+
+
+def prettify_status(value: Optional[str]) -> str:
+    """Map a raw company_status token (e.g. 'active') to a display label."""
+    if not value:
+        return "N/A"
+    key = value.strip().lower()
+    return _STATUS_LABELS.get(key, _fallback_titlecase(value))
+
+
+def prettify_company_type(value: Optional[str]) -> str:
+    """Map a raw company type token (e.g. 'ltd') to a display label."""
+    if not value:
+        return "N/A"
+    key = value.strip().lower()
+    return _TYPE_LABELS.get(key, _fallback_titlecase(value))
+
+
+def prettify_jurisdiction(value: Optional[str]) -> str:
+    """Map a raw jurisdiction token (e.g. 'england-wales') to a display label."""
+    if not value:
+        return "N/A"
+    key = value.strip().lower()
+    return _JURISDICTION_LABELS.get(key, _fallback_titlecase(value))
+
+
+def prettify_role(value: Optional[str]) -> str:
+    """Tidy a role label, upper-casing the LLP acronym.
+
+    The role combo is already roughly formatted (e.g. 'Llp Designated Member');
+    this just fixes the LLP acronym so it reads 'LLP Designated Member'.
+    """
+    if not value:
+        return value or ""
+    return re.sub(r"\bLlp\b", "LLP", value)
+
+
+def narrative_to_html(text: Optional[str]) -> str:
+    """Render a finding narrative as proper HTML.
+
+    Lines beginning with a bullet ('•' or '-') are collapsed into a single
+    <ul> so wrapped lines hang-indent against the text rather than the bullet.
+    Other blocks of text become <p> elements. Input is treated as untrusted and
+    HTML-escaped.
+    """
+    import html as _html
+
+    if not text:
+        return ""
+    out: List[str] = []
+    bullets: List[str] = []
+
+    def _flush_bullets():
+        if bullets:
+            items = "".join(f"<li>{_html.escape(b)}</li>" for b in bullets)
+            out.append(f"<ul>{items}</ul>")
+            bullets.clear()
+
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            _flush_bullets()
+            continue
+        if line[0] in "•-" and line[1:2] == " ":
+            bullets.append(line[1:].strip())
+        elif line.startswith("•"):
+            bullets.append(line[1:].strip())
+        else:
+            _flush_bullets()
+            out.append(f"<p>{_html.escape(line)}</p>")
+    _flush_bullets()
+    return "".join(out)
+
+
+def account_age_qualifier(account_year: Any, report_date: Optional[datetime] = None) -> str:
+    """Return a staleness qualifier for a financial year, e.g.
+    'as of FY2023 — now 3 years old'.
+
+    Returns an empty string if the year can't be parsed.
+    """
+    try:
+        yr = int(account_year)
+    except (TypeError, ValueError):
+        return ""
+    report_year = (report_date or datetime.now()).year
+    age = report_year - yr
+    if age <= 0:
+        return f"as of FY{yr}"
+    return f"as of FY{yr} — now {age} year{'s' if age != 1 else ''} old"
