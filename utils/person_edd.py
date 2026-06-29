@@ -27,6 +27,17 @@ from .insolvency_helpers import classify_insolvency, normalise_company_name
 PHOENIX_SIMILARITY_PCT = 80
 ADDRESS_SIMILARITY_PCT = 80
 
+# Common low-transparency / tax-haven jurisdictions. Mirrors the list used by
+# the Enhanced Due Diligence module (enhanced_dd._check_offshore_pscs) so the
+# two modules flag the same places.
+OFFSHORE_JURISDICTIONS = [
+    "jersey", "guernsey", "isle of man",
+    "british virgin islands", "bvi", "cayman islands",
+    "bermuda", "bahamas", "panama", "seychelles",
+    "gibraltar", "malta", "cyprus", "luxembourg",
+    "liechtenstein", "monaco", "andorra",
+]
+
 _UK_POSTCODE_RE = re.compile(
     r"\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b",
     re.IGNORECASE,
@@ -73,12 +84,16 @@ class PersonCompanyRecord:
     subject_role: Optional[str] = None
     subject_is_psc: bool = False
     subject_psc_natures: List[str] = field(default_factory=list)
+    # Filing compliance (from the company profile — no extra API call)
+    accounts_overdue: bool = False
+    confirmation_statement_overdue: bool = False
     # Other people on the company
-    co_officers: List[Dict] = field(default_factory=list)   # {name, dob, role, appointed_on, resigned_on}
-    co_pscs: List[Dict] = field(default_factory=list)       # {name, dob, natures}
+    co_officers: List[Dict] = field(default_factory=list)   # {name, dob, role, appointed_on, resigned_on, nationality, occupation, country_of_residence}
+    co_pscs: List[Dict] = field(default_factory=list)       # {name, dob, natures, country, nationality}
     # Other signals
     insolvency_cases: List[Dict] = field(default_factory=list)
     grants: List[Dict] = field(default_factory=list)
+    charges: List[Dict] = field(default_factory=list)       # {lenders: [str], status: str, created_on: str}
     fetch_error: Optional[str] = None
 
 
@@ -647,6 +662,201 @@ def rule_p6_grant_footprint(companies: List[PersonCompanyRecord]) -> Tuple[Cross
     )
 
 
+def _is_offshore(*values) -> Optional[str]:
+    """Return the matched offshore jurisdiction name if any value names one."""
+    for v in values:
+        text = (v or "").strip().lower()
+        if not text:
+            continue
+        for j in OFFSHORE_JURISDICTIONS:
+            if j in text:
+                return j
+    return None
+
+
+def rule_p7_offshore_pscs(companies: List[PersonCompanyRecord]) -> CrossAnalysisResult:
+    """Flag co-PSCs registered/resident in low-transparency jurisdictions.
+
+    Informational by default — offshore ownership is not inherently improper,
+    but it can complicate beneficial-ownership due diligence. Severity rises to
+    LOW when more than one offshore controller is present across the footprint.
+    """
+    # Dedupe by (name, jurisdiction) but collect the companies each appears on.
+    found: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for c in companies:
+        for psc in c.co_pscs:
+            jurisdiction = _is_offshore(psc.get("country"), psc.get("nationality"))
+            if not jurisdiction:
+                continue
+            name = psc.get("name") or "Unknown"
+            key = (name.lower(), jurisdiction)
+            entry = found.setdefault(key, {
+                "name": name,
+                "jurisdiction": (psc.get("country") or psc.get("nationality") or jurisdiction),
+                "companies": [],
+            })
+            label = c.company_name or c.company_number
+            if label not in entry["companies"]:
+                entry["companies"].append(label)
+
+    if not found:
+        return CrossAnalysisResult(
+            rule_id="P7",
+            title="Offshore controllers",
+            risk_flag="LOW",
+            confidence="AUTO",
+            narrative=(
+                "No persons with significant control in the subject's footprint are "
+                "registered or resident in a low-transparency jurisdiction."
+            ),
+            recommendation="",
+        )
+
+    entries = sorted(found.values(), key=lambda e: (-len(e["companies"]), e["name"].lower()))
+    lines = [
+        f"{e['name']} ({e['jurisdiction']}) — {len(e['companies'])} compan"
+        f"{'y' if len(e['companies']) == 1 else 'ies'}: {', '.join(e['companies'])}"
+        for e in entries[:5]
+    ]
+    extra = f"\n…and {len(entries) - 5} more." if len(entries) > 5 else ""
+    severity = "LOW" if len(entries) > 1 else "INFO"
+    return CrossAnalysisResult(
+        rule_id="P7",
+        title="Offshore controllers",
+        risk_flag=severity,
+        confidence="AUTO",
+        narrative=(
+            f"{len(entries)} person(s) with significant control across the subject's "
+            "companies are registered or resident in a low-transparency jurisdiction:\n\n"
+            + "\n".join(f"• {line}" for line in lines)
+            + extra
+        ),
+        recommendation=(
+            "Offshore ownership is not inherently problematic, but it can obscure "
+            "ultimate beneficial ownership. Request supporting documentation on the "
+            "controllers and corporate structure where relevant."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Aggregation helpers for the renderer
+# ---------------------------------------------------------------------------
+
+def aggregate_charges(companies: List[PersonCompanyRecord]) -> Dict[str, Any]:
+    """Aggregate charges across the footprint into a lender-centric view.
+
+    Returns a dict with::
+
+        {
+            "lenders": [ {lender, charge_count, outstanding_count,
+                          companies: [(name, number), ...]}, ... ],
+            "total_charges": int,
+            "outstanding": int,
+            "satisfied": int,
+            "companies_with_charges": int,
+        }
+
+    ``lenders`` is sorted by charge count descending, then lender name. A single
+    charge with multiple persons-entitled is attributed to each named lender.
+    """
+    _OUTSTANDING = {"outstanding", "part-satisfied"}
+    by_lender: Dict[str, Dict[str, Any]] = {}
+    total_charges = 0
+    outstanding = 0
+    satisfied = 0
+    companies_with_charges = 0
+
+    for c in companies:
+        if not c.charges:
+            continue
+        companies_with_charges += 1
+        co_label = (c.company_name or c.company_number, c.company_number)
+        for ch in c.charges:
+            total_charges += 1
+            is_outstanding = (ch.get("status") or "") in _OUTSTANDING
+            if is_outstanding:
+                outstanding += 1
+            else:
+                satisfied += 1
+            lenders = ch.get("lenders") or ["(unnamed)"]
+            for lender in lenders:
+                entry = by_lender.setdefault(lender, {
+                    "lender": lender,
+                    "charge_count": 0,
+                    "outstanding_count": 0,
+                    "companies": [],
+                })
+                entry["charge_count"] += 1
+                if is_outstanding:
+                    entry["outstanding_count"] += 1
+                if co_label not in entry["companies"]:
+                    entry["companies"].append(co_label)
+
+    lenders_sorted = sorted(
+        by_lender.values(),
+        key=lambda e: (-e["charge_count"], e["lender"].lower()),
+    )
+    return {
+        "lenders": lenders_sorted,
+        "total_charges": total_charges,
+        "outstanding": outstanding,
+        "satisfied": satisfied,
+        "companies_with_charges": companies_with_charges,
+    }
+
+
+def aggregate_co_directors(companies: List[PersonCompanyRecord]) -> List[Dict[str, Any]]:
+    """Aggregate co-officers across the footprint, one row per distinct person.
+
+    Returns a list of dicts ``{name, count, nationality, occupation, country,
+    companies: [(name, number), ...]}`` sorted alphabetically by name. ``count``
+    is the number of distinct companies the person shares with the subject;
+    attributes are taken as the most common non-empty value seen.
+    """
+    agg: Dict[str, Dict[str, Any]] = {}
+    attr_counters: Dict[str, Dict[str, Counter]] = {}
+
+    for c in companies:
+        co_label = (c.company_name or c.company_number, c.company_number)
+        for off in c.co_officers:
+            name = off.get("name")
+            if not name:
+                continue
+            key = get_canonical_name_key(name, off.get("dob")) or name
+            entry = agg.setdefault(key, {
+                "name": name,
+                "count": 0,
+                "companies": [],
+                "nationality": None,
+                "occupation": None,
+                "country": None,
+            })
+            if co_label not in entry["companies"]:
+                entry["companies"].append(co_label)
+                entry["count"] += 1
+            counters = attr_counters.setdefault(key, {
+                "nationality": Counter(),
+                "occupation": Counter(),
+                "country": Counter(),
+            })
+            if off.get("nationality"):
+                counters["nationality"][off["nationality"]] += 1
+            if off.get("occupation"):
+                counters["occupation"][off["occupation"]] += 1
+            if off.get("country_of_residence"):
+                counters["country"][off["country_of_residence"]] += 1
+
+    for key, entry in agg.items():
+        counters = attr_counters.get(key, {})
+        for attr in ("nationality", "occupation", "country"):
+            counter = counters.get(attr)
+            if counter:
+                entry[attr] = counter.most_common(1)[0][0]
+
+    return sorted(agg.values(), key=lambda e: e["name"].lower())
+
+
 # ---------------------------------------------------------------------------
 # Top-level runner
 # ---------------------------------------------------------------------------
@@ -744,6 +954,8 @@ def run_person_edd(
     p6_result, grants_value, grants_count = rule_p6_grant_footprint(companies)
     results.append(p6_result)
 
+    results.append(rule_p7_offshore_pscs(companies))
+
     fetch_errors = [(c.company_number, c.fetch_error) for c in companies if c.fetch_error]
     if fetch_errors:
         log_message(f"Person EDD: {len(fetch_errors)} companies had fetch errors.")
@@ -774,6 +986,7 @@ def build_company_record(
     pscs: Optional[Dict],
     insolvency: Optional[Dict],
     grants: Optional[List[Dict]],
+    charges: Optional[Dict] = None,
     profile_error: Optional[str] = None,
     appt_info: Optional[Dict[str, Any]] = None,
 ) -> PersonCompanyRecord:
@@ -799,6 +1012,13 @@ def build_company_record(
     record.dissolved_on = profile.get("date_of_cessation")
     record.has_been_liquidated = bool(profile.get("has_been_liquidated", False))
     record.sic_codes = list(profile.get("sic_codes") or [])
+
+    # Filing compliance — the profile carries boolean "overdue" flags, so no
+    # extra API call is needed.
+    record.accounts_overdue = bool((profile.get("accounts") or {}).get("overdue"))
+    record.confirmation_statement_overdue = bool(
+        (profile.get("confirmation_statement") or {}).get("overdue")
+    )
 
     addr_raw = extract_address_string(profile.get("registered_office_address"))
     record.registered_address_raw = addr_raw
@@ -832,6 +1052,9 @@ def build_company_record(
                     "role": off.get("officer_role"),
                     "appointed_on": off.get("appointed_on"),
                     "resigned_on": off.get("resigned_on"),
+                    "nationality": off.get("nationality"),
+                    "occupation": off.get("occupation"),
+                    "country_of_residence": off.get("country_of_residence"),
                 })
 
     # PSC freebie: did the subject also appear as a PSC on this company?
@@ -844,7 +1067,18 @@ def build_company_record(
                 record.subject_is_psc = True
                 record.subject_psc_natures = list(natures)
             else:
-                record.co_pscs.append({"name": name, "dob": dob, "natures": natures})
+                ident = psc.get("identification") or {}
+                country = (
+                    psc.get("country_of_residence")
+                    or ident.get("country_registered")
+                )
+                record.co_pscs.append({
+                    "name": name,
+                    "dob": dob,
+                    "natures": natures,
+                    "country": country,
+                    "nationality": psc.get("nationality"),
+                })
 
     # Insolvency cases
     if insolvency and insolvency.get("cases"):
@@ -853,5 +1087,19 @@ def build_company_record(
     # Grants
     if grants:
         record.grants = list(grants)
+
+    # Charges (secured lending) — informational, not a risk flag.
+    if charges and charges.get("items"):
+        for ch in charges["items"]:
+            lenders = []
+            for pe in (ch.get("persons_entitled") or []):
+                nm = (pe.get("name") or "").strip()
+                if nm:
+                    lenders.append(nm)
+            record.charges.append({
+                "lenders": lenders,
+                "status": (ch.get("status") or "").strip().lower(),
+                "created_on": ch.get("created_on"),
+            })
 
     return record

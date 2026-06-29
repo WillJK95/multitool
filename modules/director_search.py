@@ -20,7 +20,7 @@ from tkinter import ttk, messagebox, filedialog
 
 # --- From Our Package ---
 # API functions (were global functions in original file)
-from ..api.companies_house import ch_get_data, ch_get_insolvency
+from ..api.companies_house import ch_get_data, ch_get_insolvency, ch_get_charges
 
 # Constants (were at top of original file)
 from ..constants import API_BASE_URL, CONFIG_DIR
@@ -52,6 +52,9 @@ class DirectorSearch(InvestigationModuleBase):
         self._prefill_month = prefill_month
         # --- Add a new instance variable for grant results ---
         self.grants_results = []
+        # Map of treeview row id -> full result record (so selection handling
+        # and exports don't depend on positional value-tuple matching).
+        self._row_records = {}
         # --- Track explicit row selection for selective export ---
         self.explicit_selection_made = False
         # --- Sort/filter state ---
@@ -318,16 +321,13 @@ class DirectorSearch(InvestigationModuleBase):
             # User explicitly cleared selection - return empty to trigger warning
             return []
 
-        # Build list of selected results by matching treeview values
+        # Resolve selected rows via the iid -> record map (robust to column
+        # ordering and to duplicate display values).
         selected_results = []
         for item_id in selected_items:
-            values = self.tree.item(item_id, "values")
-            # Find matching record in results_data
-            for record in self.results_data:
-                record_values = tuple(str(v) for v in record.values())
-                if record_values == values:
-                    selected_results.append(record)
-                    break
+            record = self._row_records.get(item_id)
+            if record is not None:
+                selected_results.append(record)
 
         return selected_results
 
@@ -335,6 +335,9 @@ class DirectorSearch(InvestigationModuleBase):
         cols = (
             "officer_name",
             "date_of_birth",
+            "nationality",
+            "occupation",
+            "country_of_residence",
             "company_name",
             "company_number",
             "company_status",
@@ -360,8 +363,9 @@ class DirectorSearch(InvestigationModuleBase):
         return tree
 
     _TREE_COLS = (
-        "officer_name", "date_of_birth", "company_name",
-        "company_number", "company_status", "role", "address",
+        "officer_name", "date_of_birth", "nationality", "occupation",
+        "country_of_residence", "company_name", "company_number",
+        "company_status", "role", "address",
     )
 
     def _sort_treeview(self, col):
@@ -405,11 +409,14 @@ class DirectorSearch(InvestigationModuleBase):
         query = self.filter_var.get().lower()
         for item in self.tree.get_children():
             self.tree.delete(item)
+        self._row_records = {}
 
         for record in self.results_data:
-            values = list(record.values())
-            if query == "" or any(query in str(v).lower() for v in values):
-                self.tree.insert("", tk.END, values=values)
+            if query == "" or any(query in str(v).lower() for v in record.values()):
+                iid = self.tree.insert(
+                    "", tk.END, values=[record.get(c) or "" for c in self._TREE_COLS]
+                )
+                self._row_records[iid] = record
 
         self._reapply_sort()
         self._update_selection_label()
@@ -574,8 +581,12 @@ class DirectorSearch(InvestigationModuleBase):
     def _populate_results(self):
         unique_records = {tuple(d.values()): d for d in self.results_data}.values()
         self.results_data = list(unique_records)
+        self._row_records = {}
         for record in self.results_data:
-            self.tree.insert("", tk.END, values=list(record.values()))
+            iid = self.tree.insert(
+                "", tk.END, values=[record.get(c) or "" for c in self._TREE_COLS]
+            )
+            self._row_records[iid] = record
 
         # Update selection label after populating results
         self._update_selection_label()
@@ -1066,12 +1077,15 @@ class DirectorSearch(InvestigationModuleBase):
                 f"/company/{cnum}/persons-with-significant-control?items_per_page=100",
             )
             insolvency, _ = ch_get_insolvency(self.api_key, self.ch_token_bucket, cnum)
+            # Charges return (None, "Client Error: 404") when the company has no
+            # charges on the register — treated as "no charges" by leaving None.
+            charges, _ = ch_get_charges(self.api_key, self.ch_token_bucket, cnum)
             try:
                 grants = fetch_grants_for_company(cnum)
             except Exception as e:
                 log_message(f"Person EDD: grants fetch failed for {cnum}: {e}")
                 grants = []
-            return cnum, profile, officers, pscs, insolvency, grants, profile_err
+            return cnum, profile, officers, pscs, insolvency, grants, charges, profile_err
 
         with ThreadPoolExecutor(max_workers=self.app.ch_max_workers) as executor:
             future_to_cnum = {executor.submit(_fetch_one, c): c for c in company_numbers}
@@ -1080,7 +1094,7 @@ class DirectorSearch(InvestigationModuleBase):
                     break
                 cnum = future_to_cnum[future]
                 try:
-                    cnum, profile, officers, pscs, insolvency, grants, profile_err = future.result()
+                    cnum, profile, officers, pscs, insolvency, grants, charges, profile_err = future.result()
                 except Exception as e:
                     log_message(f"Person EDD: fetch failed for {cnum}: {e}")
                     records.append(build_company_record(
@@ -1092,6 +1106,7 @@ class DirectorSearch(InvestigationModuleBase):
 
                 records.append(build_company_record(
                     subject, cnum, profile, officers, pscs, insolvency, grants,
+                    charges=charges,
                     profile_error=profile_err,
                     appt_info=appt_info.get(cnum),
                 ))
@@ -1124,6 +1139,9 @@ class DirectorSearch(InvestigationModuleBase):
         headers = [
             "officer_name",
             "date_of_birth",
+            "nationality",
+            "occupation",
+            "country_of_residence",
             "company_name",
             "company_number",
             "company_status",
@@ -1235,6 +1253,9 @@ class DirectorSearch(InvestigationModuleBase):
                         {
                             "officer_name": officer_name,
                             "date_of_birth": dob_str,
+                            "nationality": app.get("nationality"),
+                            "occupation": app.get("occupation"),
+                            "country_of_residence": app.get("country_of_residence"),
                             "company_name": app.get("appointed_to", {}).get(
                                 "company_name"
                             ),

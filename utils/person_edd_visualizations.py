@@ -20,7 +20,12 @@ from .edd_visualizations import (
     format_display_date,
     generate_grants_report_html,
 )
-from .person_edd import PersonEDDReport, PersonCompanyRecord
+from .person_edd import (
+    PersonEDDReport,
+    PersonCompanyRecord,
+    aggregate_charges,
+    aggregate_co_directors,
+)
 
 
 # Status colour palette — mirrors the conventions used in edd_visualizations.
@@ -346,6 +351,20 @@ def _subject_card(report: PersonEDDReport) -> str:
     """
 
 
+def _overdue_cell(overdue: bool, status: Optional[str]) -> str:
+    """Render a filing-compliance cell.
+
+    "Overdue" (red) when the profile flags it; "OK" for live companies that are
+    not overdue; "—" for dissolved/closed companies where the obligation no
+    longer applies (and where the profile usually omits the flag).
+    """
+    if overdue:
+        return '<span style="color:#c62828;font-weight:600;">Overdue</span>'
+    if (status or "").lower() == "active":
+        return "OK"
+    return "—"
+
+
 def _companies_table(report: PersonEDDReport) -> str:
     rows = []
     for c in sorted(report.companies, key=lambda c: (c.company_status or "", c.company_name or "")):
@@ -359,15 +378,29 @@ def _companies_table(report: PersonEDDReport) -> str:
             f"<td>{status_html}</td>"
             f"<td>{html.escape(c.subject_role or '—')}</td>"
             f"<td>{appt}</td><td>{resd}</td>"
-            f"<td>{psc}</td></tr>"
+            f"<td>{psc}</td>"
+            f"<td>{_overdue_cell(c.accounts_overdue, c.company_status)}</td>"
+            f"<td>{_overdue_cell(c.confirmation_statement_overdue, c.company_status)}</td>"
+            "</tr>"
         )
+
+    total = len(report.companies)
+    acc_overdue = sum(1 for c in report.companies if c.accounts_overdue)
+    cs_overdue = sum(1 for c in report.companies if c.confirmation_statement_overdue)
+    summary = (
+        f"<p class=\"note\"><strong>{acc_overdue}</strong> of {total} companies have "
+        f"overdue accounts; <strong>{cs_overdue}</strong> have an overdue confirmation "
+        "statement.</p>"
+    )
     return f"""
     <section class="section">
       <h2>Companies in Scope ({len(report.companies)})</h2>
+      {summary}
       <table class="companies">
         <thead><tr>
           <th>Company</th><th>Number</th><th>Status</th><th>Role</th>
           <th>Appointed</th><th>Resigned</th><th>PSC?</th>
+          <th>Accounts</th><th>Confirmation Stmt</th>
         </tr></thead>
         <tbody>{''.join(rows)}</tbody>
       </table>
@@ -493,6 +526,84 @@ def _address_clusters_section(report: PersonEDDReport) -> str:
     """
 
 
+def _company_links_list(companies: List[Tuple[str, str]]) -> str:
+    """Render a list of (name, number) tuples as escaped names with CH links."""
+    parts = []
+    for name, number in companies:
+        link = _ch_company_link(number)
+        nm = html.escape(name or number or "")
+        parts.append(f"{nm} ({link})" if link else nm)
+    return ", ".join(parts)
+
+
+def _charges_section(report: PersonEDDReport) -> str:
+    """Lender-centric summary of charges across the subject's companies."""
+    agg = aggregate_charges(report.companies)
+    if not agg["total_charges"]:
+        return ""
+
+    stats = "".join([
+        f'<div class="grants-stat"><strong>Total charges</strong>{agg["total_charges"]}</div>',
+        f'<div class="grants-stat"><strong>Outstanding</strong>{agg["outstanding"]}</div>',
+        f'<div class="grants-stat"><strong>Satisfied</strong>{agg["satisfied"]}</div>',
+        f'<div class="grants-stat"><strong>Companies with charges</strong>{agg["companies_with_charges"]}</div>',
+    ])
+
+    rows = []
+    for lender in agg["lenders"]:
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(lender['lender'])}</td>"
+            f"<td>{lender['charge_count']}</td>"
+            f"<td>{lender['outstanding_count']}</td>"
+            f"<td>{_company_links_list(lender['companies'])}</td>"
+            "</tr>"
+        )
+    return f"""
+    <section class="section">
+      <h2>Charges (Secured Lending)</h2>
+      <div class="grants-summary">{stats}</div>
+      <table class="report-table">
+        <thead><tr>
+          <th>Lender</th><th># Charges</th><th>Outstanding</th><th>Companies</th>
+        </tr></thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table>
+      <p class="note">Registered charges (e.g. mortgages and debentures) aggregated across the subject's companies, grouped by secured party. Informational — it indicates secured lending relationships, not a risk in itself. Sorted by number of charges.</p>
+    </section>
+    """
+
+
+def _co_director_table(report: PersonEDDReport) -> str:
+    """Tabular view of co-directors with attributes, counts and companies."""
+    rows_data = aggregate_co_directors(report.companies)
+    if not rows_data:
+        return ""
+    rows = []
+    for d in rows_data:
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(d['name'] or '')}</td>"
+            f"<td>{html.escape(d['nationality'] or '—')}</td>"
+            f"<td>{html.escape(d['occupation'] or '—')}</td>"
+            f"<td>{html.escape(d['country'] or '—')}</td>"
+            f"<td>{d['count']}</td>"
+            f"<td>{_company_links_list(d['companies'])}</td>"
+            "</tr>"
+        )
+    return f"""
+      <h3>Co-director detail ({len(rows_data)})</h3>
+      <table class="report-table">
+        <thead><tr>
+          <th>Name</th><th>Nationality</th><th>Occupation</th>
+          <th>Country of Residence</th><th>Shared Companies</th><th>Related Companies</th>
+        </tr></thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table>
+      <p class="note">Every individual recorded as an officer alongside the subject. "Shared Companies" counts the companies they hold in common with the subject. Sorted alphabetically by name.</p>
+    """
+
+
 def _aggregate_grants(report: PersonEDDReport) -> List[Dict]:
     grants = []
     for c in report.companies:
@@ -574,10 +685,13 @@ def generate_person_edd_html(report: PersonEDDReport) -> str:
 
   {_companies_table(report)}
 
+  {_charges_section(report)}
+
   <section class="section">
     <h2>Co-director network</h2>
     {codir_svg}
     <p class="note">Showing up to 25 co-directors who appear on multiple companies with the subject. Node size scales with shared-company count.</p>
+    {_co_director_table(report)}
   </section>
 
   {_address_clusters_section(report)}
