@@ -125,6 +125,23 @@ class iXBRLParser:
                         financial_data[year][key] = value
                         break  # Found it, move to next metric
 
+        # Derive Total Fixed Assets when no explicit core:FixedAssets total was
+        # tagged. Many small-company filings omit the total and only tag the
+        # components (e.g. investment property + tangible PPE), so summing the
+        # available components keeps the balance sheet reconcilable. This is
+        # important for property-investment entities, whose largest asset is
+        # investment property — previously the total silently collapsed to the
+        # tangible PPE figure alone, hiding the property entirely.
+        for year, metrics in financial_data.items():
+            if 'FixedAssets' not in metrics:
+                components = [
+                    metrics[k]
+                    for k in ('IntangibleAssets', 'TangibleAssets', 'InvestmentProperty')
+                    if k in metrics
+                ]
+                if components:
+                    metrics['FixedAssets'] = sum(components)
+
         return financial_data
     
     def get_all_available_tags(self):

@@ -7044,6 +7044,30 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                 the net result after any dividends or director drawings, so actual trading profit may be higher; share
                 issues or prior-year adjustments can also distort it.</p>
                 '''
+                # Investment-property caveat: for property-investment entities the
+                # reserves/net-asset movement can be dominated by unrealised fair-value
+                # revaluations rather than trading. Flag it so the figure is read
+                # correctly; if the carrying value was held flat, say so affirmatively.
+                inv_series = unified.get_metric_series('InvestmentProperty')
+                if inv_series and any(v for v in inv_series.values()):
+                    inv_vals = [inv_series[y] for y in sorted(inv_series)]
+                    inv_delta = (inv_vals[-1] - inv_vals[0]) if len(inv_vals) >= 2 else 0.0
+                    if abs(inv_delta) >= 1.0:
+                        chart_html += f'''
+                <p><strong>Investment property caveat:</strong> This entity holds investment property
+                (latest carrying value £{inv_vals[-1]:,.0f}), and its carrying value moved by
+                £{inv_delta:,.0f} over the period shown. Under FRS 102, fair-value changes on investment
+                property are recognised in profit or loss, so this estimate may be driven substantially by an
+                <em>unrealised, non-cash</em> revaluation rather than trading. Read it as a change in net worth,
+                not operating performance.</p>
+                '''
+                    else:
+                        chart_html += f'''
+                <p><strong>Investment property note:</strong> This entity holds investment property
+                (carrying value £{inv_vals[-1]:,.0f}), held at a flat valuation across the period shown. The
+                derived figure is therefore <em>not</em> distorted by a revaluation and reflects genuine
+                movement in the company's other net assets.</p>
+                '''
                 if derived['multi_year_gaps']:
                     chart_html += '''
                 <p>Note: where consecutive filings are more than one year apart, the derived figure spans the whole
