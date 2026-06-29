@@ -679,12 +679,12 @@ class CompanyCharitySearch(InvestigationModuleBase):
         )
         send_menu = tk.Menu(self._send_menu_btn, tearoff=0)
         send_menu.add_command(label="Working Set", command=self._send_to_working_set)
-        send_menu.add_command(
-            label="Network Analytics Workbench", command=self._send_to_network_analytics
-        )
         send_menu.add_command(label="Enhanced Due Diligence", command=self._send_to_edd)
         send_menu.add_command(label="UBO Tracer", command=self._send_to_ubo_tracer)
         send_menu.add_command(label="Grants Search", command=self._send_to_grants_search)
+        send_menu.add_command(
+            label="Network Analytics Workbench", command=self._send_to_network_analytics
+        )
         self._send_menu_btn.configure(menu=send_menu)
         self._send_menu_btn.pack(side=tk.LEFT, padx=(0, 5))
         Tooltip(

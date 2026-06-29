@@ -282,10 +282,10 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         )
         self._send_menu = tk.Menu(self._send_menu_btn, tearoff=0)
         self._send_menu.add_command(label="Working Set", command=self._send_to_working_set)
-        self._send_menu.add_command(label="Network Analytics Workbench", command=self._send_to_network_analytics)
         self._send_menu.add_command(label="Enhanced Due Diligence", command=self._send_to_edd)
-        self._send_menu.add_command(label="Grants Search", command=self._send_to_grants_search)
         self._send_menu.add_command(label="Director Search", command=self._send_to_director_search)
+        self._send_menu.add_command(label="Grants Search", command=self._send_to_grants_search)
+        self._send_menu.add_command(label="Network Analytics Workbench", command=self._send_to_network_analytics)
         self._send_menu_btn.configure(menu=self._send_menu)
         self._send_menu_btn.pack(side=tk.LEFT, padx=(0, 5))
         Tooltip(
@@ -449,11 +449,11 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
             if count == 1:
                 director_state = "normal"
 
-        menu.entryconfigure(0, state=ws_state)       # Working Set
-        menu.entryconfigure(1, state=na_state)        # Network Analytics
-        menu.entryconfigure(2, state=edd_state)       # EDD
+        menu.entryconfigure(0, state=ws_state)        # Working Set
+        menu.entryconfigure(1, state=edd_state)       # EDD
+        menu.entryconfigure(2, state=director_state)  # Director Search
         menu.entryconfigure(3, state=grants_state)    # Grants Search
-        menu.entryconfigure(4, state=director_state)  # Director Search
+        menu.entryconfigure(4, state=na_state)        # Network Analytics
 
     # ------------------------------------------------------------------
     # Shared Ownership analysis

@@ -216,8 +216,8 @@ class GrantsSearch(InvestigationModuleBase):
         self._send_menu = tk.Menu(self._send_menu_btn, tearoff=0)
         self._send_menu.add_command(label="Working Set", command=self._send_to_working_set)
         self._send_menu.add_command(label="Enhanced Due Diligence", command=self._send_to_edd)
-        self._send_menu.add_command(label="UBO Tracer (companies only)", command=self._send_to_ubo_tracer)
         self._send_menu.add_command(label="Bulk Entity Search", command=self._send_to_bulk_entity_search)
+        self._send_menu.add_command(label="UBO Tracer (companies only)", command=self._send_to_ubo_tracer)
         self._send_menu_btn.configure(menu=self._send_menu)
         self._send_menu_btn.pack(side=tk.LEFT, padx=(0, 5))
 
@@ -492,11 +492,11 @@ class GrantsSearch(InvestigationModuleBase):
                 has_charity = True
         self._send_menu.entryconfigure(0, state="normal" if has_selection else "disabled")
         self._send_menu.entryconfigure(1, state="normal" if has_selection else "disabled")
+        self._send_menu.entryconfigure(2, state="normal" if has_selection else "disabled")
         self._send_menu.entryconfigure(
-            2,
+            3,
             state="normal" if has_selection and has_company else "disabled",
         )
-        self._send_menu.entryconfigure(3, state="normal" if has_selection else "disabled")
         self._send_menu_btn.configure(text="Send to… ▼")
 
     def _resolve_entities_for_state(self):

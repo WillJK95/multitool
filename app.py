@@ -326,28 +326,28 @@ class App(tk.Tk):
         self._ws_send_menu_obj = tk.Menu(self._working_set_send_menu, tearoff=0)
         # Index 0
         self._ws_send_menu_obj.add_command(
-            label="Network Analytics Workbench",
-            command=lambda: self._send_working_set_to_network(self._working_set_tree))
-        # Index 1
-        self._ws_send_menu_obj.add_command(
             label="Enhanced Due Diligence",
             command=lambda: self._send_ws_selection_to_edd())
-        # Index 2
-        self._ws_send_menu_obj.add_command(
-            label="UBO Tracer",
-            command=lambda: self._send_ws_to_ubo(self._working_set_tree))
-        # Index 3
+        # Index 1
         self._ws_send_menu_obj.add_command(
             label="Bulk Entity Search",
             command=lambda: self._send_ws_to_bulk_search(self._working_set_tree))
+        # Index 2
+        self._ws_send_menu_obj.add_command(
+            label="Director Search",
+            command=lambda: self._send_ws_to_director(self._working_set_tree))
+        # Index 3
+        self._ws_send_menu_obj.add_command(
+            label="UBO Tracer",
+            command=lambda: self._send_ws_to_ubo(self._working_set_tree))
         # Index 4
         self._ws_send_menu_obj.add_command(
             label="Grants Search",
             command=lambda: self._send_ws_to_grants(self._working_set_tree))
         # Index 5
         self._ws_send_menu_obj.add_command(
-            label="Director Search",
-            command=lambda: self._send_ws_to_director(self._working_set_tree))
+            label="Network Analytics Workbench",
+            command=lambda: self._send_working_set_to_network(self._working_set_tree))
         self._working_set_send_menu.configure(menu=self._ws_send_menu_obj)
         self._working_set_send_menu.pack(side=tk.LEFT, padx=(0, 4))
 
@@ -1495,28 +1495,28 @@ class App(tk.Tk):
         self._home_ws_send_menu_obj = tk.Menu(self._home_ws_send_menu, tearoff=0)
         # Index 0
         self._home_ws_send_menu_obj.add_command(
-            label="Network Analytics Workbench",
-            command=lambda: self._send_working_set_to_network(self._home_ws_tree))
-        # Index 1
-        self._home_ws_send_menu_obj.add_command(
             label="Enhanced Due Diligence",
             command=lambda: self._send_home_ws_selection_to_edd())
-        # Index 2
-        self._home_ws_send_menu_obj.add_command(
-            label="UBO Tracer",
-            command=lambda: self._send_ws_to_ubo(self._home_ws_tree))
-        # Index 3
+        # Index 1
         self._home_ws_send_menu_obj.add_command(
             label="Bulk Entity Search",
             command=lambda: self._send_ws_to_bulk_search(self._home_ws_tree))
+        # Index 2
+        self._home_ws_send_menu_obj.add_command(
+            label="Director Search",
+            command=lambda: self._send_ws_to_director(self._home_ws_tree))
+        # Index 3
+        self._home_ws_send_menu_obj.add_command(
+            label="UBO Tracer",
+            command=lambda: self._send_ws_to_ubo(self._home_ws_tree))
         # Index 4
         self._home_ws_send_menu_obj.add_command(
             label="Grants Search",
             command=lambda: self._send_ws_to_grants(self._home_ws_tree))
         # Index 5
         self._home_ws_send_menu_obj.add_command(
-            label="Director Search",
-            command=lambda: self._send_ws_to_director(self._home_ws_tree))
+            label="Network Analytics Workbench",
+            command=lambda: self._send_working_set_to_network(self._home_ws_tree))
         self._home_ws_send_menu.configure(menu=self._home_ws_send_menu_obj)
         self._home_ws_send_menu.pack(side=tk.LEFT, padx=(0, 6))
 
@@ -1645,12 +1645,12 @@ class App(tk.Tk):
         """Enable/disable Send To menu items based on selection in a working set tree.
 
         Menu indices:
-          0 = Network Analytics Workbench  — always enabled if entities exist
-          1 = Enhanced Due Diligence       — companies/charities only (bulk supported)
-          2 = UBO Tracer                   — companies only (no charities/persons)
-          3 = Bulk Entity Search           — companies + charities (no persons)
+          0 = Enhanced Due Diligence       — companies/charities only (bulk supported)
+          1 = Bulk Entity Search           — companies + charities (no persons)
+          2 = Director Search              — single person only
+          3 = UBO Tracer                   — companies only (no charities/persons)
           4 = Grants Search                — companies + charities (no persons)
-          5 = Director Search              — single person only
+          5 = Network Analytics Workbench  — always enabled if entities exist
         """
         try:
             selected, has_co, has_ch, has_per, count = self._classify_ws_selection(tree)
@@ -1666,33 +1666,33 @@ class App(tk.Tk):
 
         has_any = count > 0
 
-        # 0: Network Analytics — always if entities exist
-        _set(0, "Network Analytics Workbench", has_any)
-
-        # 1: EDD — companies/charities only, no persons
+        # 0: EDD — companies/charities only, no persons
         edd_ok = has_any and (has_co or has_ch) and not has_per
-        _set(1, "Enhanced Due Diligence" if edd_ok else
+        _set(0, "Enhanced Due Diligence" if edd_ok else
              "Enhanced Due Diligence (companies/charities only)", edd_ok)
 
-        # 2: UBO Tracer — companies only, no charities or persons
-        ubo_ok = has_any and has_co and not has_per and not has_ch
-        _set(2, "UBO Tracer" if ubo_ok else
-             "UBO Tracer (companies only)", ubo_ok)
-
-        # 3: Bulk Entity Search — companies + charities, no persons
+        # 1: Bulk Entity Search — companies + charities, no persons
         bulk_ok = has_any and (has_co or has_ch) and not has_per
-        _set(3, "Bulk Entity Search" if bulk_ok else
+        _set(1, "Bulk Entity Search" if bulk_ok else
              "Bulk Entity Search (companies/charities only)", bulk_ok)
+
+        # 2: Director Search — single person only
+        dir_ok = (count == 1 and has_per and not has_co and not has_ch)
+        _set(2, "Director Search" if dir_ok else
+             "Director Search (select 1 person)", dir_ok)
+
+        # 3: UBO Tracer — companies only, no charities or persons
+        ubo_ok = has_any and has_co and not has_per and not has_ch
+        _set(3, "UBO Tracer" if ubo_ok else
+             "UBO Tracer (companies only)", ubo_ok)
 
         # 4: Grants Search — companies + charities, no persons
         grants_ok = has_any and (has_co or has_ch) and not has_per
         _set(4, "Grants Search" if grants_ok else
              "Grants Search (companies/charities only)", grants_ok)
 
-        # 5: Director Search — single person only
-        dir_ok = (count == 1 and has_per and not has_co and not has_ch)
-        _set(5, "Director Search" if dir_ok else
-             "Director Search (select 1 person)", dir_ok)
+        # 5: Network Analytics — always if entities exist
+        _set(5, "Network Analytics Workbench", has_any)
 
     def _sort_ws_tree(self, tree, col) -> None:
         """Sort working set treeview by column, toggling A-Z / Z-A."""
