@@ -226,6 +226,9 @@ table.phoenix tr:hover td, table.report-table tr:hover td { background: #f9faff;
 table.companies tr.resigned td { opacity: 0.6; }
 table a { color: #667eea; text-decoration: none; }
 table a:hover { text-decoration: underline; }
+details.collapsible-table > summary { cursor: pointer; color: #667eea; font-weight: 600;
+                                      font-size: 13px; margin: 6px 0 4px; }
+details.collapsible-table > summary:hover { text-decoration: underline; }
 .note { font-size: 12px; color: #666; margin-top: 8px; }
 .warnings { background: #fff3e0; border-left: 4px solid #fd7e14; padding: 10px 14px;
             margin: 14px 0; border-radius: 4px; font-size: 13px; }
@@ -386,6 +389,23 @@ def _overdue_cell(overdue: bool, status: Optional[str]) -> str:
     return "—"
 
 
+_COLLAPSE_THRESHOLD = 10
+
+
+def _maybe_collapsible(table_html: str, n_rows: int, noun: str) -> str:
+    """Wrap a table in a collapsed <details> when it has more than 10 rows.
+
+    Native HTML disclosure — no JavaScript — mirroring the grants section.
+    Tables at or below the threshold are returned unchanged (always visible).
+    """
+    if n_rows > _COLLAPSE_THRESHOLD:
+        return (
+            '<details class="collapsible-table">'
+            f"<summary>Show all {n_rows} {noun}</summary>{table_html}</details>"
+        )
+    return table_html
+
+
 def _companies_table(report: PersonEDDReport) -> str:
     rows = []
     # Current directorships first (subject not resigned), then A–Z by name.
@@ -421,18 +441,19 @@ def _companies_table(report: PersonEDDReport) -> str:
         f"overdue accounts; <strong>{cs_overdue}</strong> have an overdue confirmation "
         "statement.</p>"
     )
-    return f"""
-    <section class="section">
-      <h2>Companies in Scope ({len(report.companies)})</h2>
-      {summary}
-      <table class="companies">
+    table_html = f"""<table class="companies">
         <thead><tr>
           <th>Company</th><th>Number</th><th>Status</th><th>Role</th>
           <th>Appointed</th><th>Resigned</th><th>PSC?</th>
           <th>Accounts</th><th>Confirmation Stmt</th>
         </tr></thead>
         <tbody>{''.join(rows)}</tbody>
-      </table>
+      </table>"""
+    return f"""
+    <section class="section">
+      <h2>Companies in Scope ({len(report.companies)})</h2>
+      {summary}
+      {_maybe_collapsible(table_html, total, "companies")}
     </section>
     """
 
@@ -463,10 +484,7 @@ def _phoenix_subsection(report: PersonEDDReport) -> str:
             "</tr>"
         )
 
-    return f"""
-    <div class="subsection">
-      <h3>Phoenix Companies ({len(matches)})</h3>
-      <table class="phoenix">
+    table_html = f"""<table class="phoenix">
         <thead><tr>
           <th>Liquidated Company</th><th>Number</th>
           <th>Phoenix Match</th><th>Number</th>
@@ -477,7 +495,11 @@ def _phoenix_subsection(report: PersonEDDReport) -> str:
           <th>Type of Liquidation</th>
         </tr></thead>
         <tbody>{''.join(rows)}</tbody>
-      </table>
+      </table>"""
+    return f"""
+    <div class="subsection">
+      <h3>Phoenix Companies ({len(matches)})</h3>
+      {_maybe_collapsible(table_html, len(matches), "phoenix matches")}
       <p class="note">Distinctive-name match (≥80%) between a dissolved/liquidated company and a live company in the subject's footprint that was incorporated within the phoenix window — from one year before to five years after the older company's dissolution/liquidation. A negative "Time Since Liquidation" means the live company was incorporated before that date. Re-use of a failed company's name is restricted by <em>Section 216 Insolvency Act 1986</em>.</p>
     </div>
     """
@@ -507,17 +529,18 @@ def _insolvent_companies_subsection(report: PersonEDDReport) -> str:
             f"<td>{genuine_cell}</td>"
             "</tr>"
         )
-    return f"""
-    <div class="subsection">
-      <h3>Dissolved &amp; Insolvent Companies ({len(items)})</h3>
-      <table class="insolvent">
+    table_html = f"""<table class="insolvent">
         <thead><tr>
           <th>Company</th><th>Number</th><th>Status</th>
           <th>Date of Liquidation</th><th>Type of Liquidation</th>
           <th>Genuine Insolvency?</th>
         </tr></thead>
         <tbody>{''.join(rows)}</tbody>
-      </table>
+      </table>"""
+    return f"""
+    <div class="subsection">
+      <h3>Dissolved &amp; Insolvent Companies ({len(items)})</h3>
+      {_maybe_collapsible(table_html, len(items), "companies")}
       <p class="note">All companies in the subject's footprint with a liquidation, dissolution or administration status — {genuine_count} of {len(items)} are genuine (non-benign) insolvencies, matching the Insolvency footprint count above. The remainder are benign, solvent wind-downs (e.g. Members' Voluntary Liquidation or voluntary strike-off). "Yes" links to the company's Companies House insolvency record.</p>
     </div>
     """
@@ -533,13 +556,14 @@ def _address_clusters_section(report: PersonEDDReport) -> str:
             f"<td>{len(cnums)}</td>"
             f"<td>{html.escape(', '.join(cnums))}</td></tr>"
         )
+    table_html = f"""<table class="address-clusters">
+        <thead><tr><th>Address</th><th>Count</th><th>Companies</th></tr></thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table>"""
     return f"""
     <section class="section">
       <h2>Shared registered addresses</h2>
-      <table class="address-clusters">
-        <thead><tr><th>Address</th><th>Count</th><th>Companies</th></tr></thead>
-        <tbody>{''.join(rows)}</tbody>
-      </table>
+      {_maybe_collapsible(table_html, len(rows), "addresses")}
     </section>
     """
 
@@ -581,16 +605,17 @@ def _charges_section(report: PersonEDDReport) -> str:
             f"<td>{_company_links_list(lender['companies'], link_fn=_ch_charges_link)}</td>"
             "</tr>"
         )
-    return f"""
-    <section class="section">
-      <h2>Charges (Secured Lending)</h2>
-      <div class="grants-summary">{stats}</div>
-      <table class="report-table">
+    table_html = f"""<table class="report-table">
         <thead><tr>
           <th>Lender</th><th># Charges</th><th>Outstanding</th><th>Companies</th>
         </tr></thead>
         <tbody>{''.join(rows)}</tbody>
-      </table>
+      </table>"""
+    return f"""
+    <section class="section">
+      <h2>Charges (Secured Lending)</h2>
+      <div class="grants-summary">{stats}</div>
+      {_maybe_collapsible(table_html, len(agg["lenders"]), "lenders")}
       <p class="note">Registered charges (e.g. mortgages and debentures) aggregated across the subject's companies, grouped by secured party. Informational — it indicates secured lending relationships, not a risk in itself. Sorted by number of charges.</p>
     </section>
     """
@@ -613,16 +638,17 @@ def _co_director_table(report: PersonEDDReport) -> str:
             f"<td>{_company_links_list(d['companies'])}</td>"
             "</tr>"
         )
-    return f"""
-      <h3>Co-director detail ({len(rows_data)})</h3>
-      <table class="report-table">
+    table_html = f"""<table class="report-table">
         <thead><tr>
           <th>Name</th><th>Nationality</th><th>Occupation</th>
           <th>Country of Residence</th><th>Shared Companies</th><th>Related Companies</th>
         </tr></thead>
         <tbody>{''.join(rows)}</tbody>
-      </table>
-      <p class="note">Every individual recorded as an officer alongside the subject. "Shared Companies" counts the companies they hold in common with the subject. Sorted alphabetically by name.</p>
+      </table>"""
+    return f"""
+      <h3>Co-director detail ({len(rows_data)})</h3>
+      {_maybe_collapsible(table_html, len(rows_data), "co-directors")}
+      <p class="note">Every individual recorded as an officer alongside the subject. "Shared Companies" counts the companies they hold in common with the subject. Sorted by shared-company count, then name.</p>
     """
 
 
