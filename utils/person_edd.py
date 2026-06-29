@@ -244,7 +244,7 @@ def rule_p1_insolvency_pattern(
 
     Benign/solvent wind-downs (e.g. Members' Voluntary Liquidation) are
     excluded from the headline count here — they are still shown, with their
-    type, in the Insolvent Companies table below. ``classify_cache`` is the
+    type, in the Dissolved & Insolvent Companies table below. ``classify_cache`` is the
     ``{company_number: (is_benign, insolvency_type, liq_date)}`` map produced
     by :func:`_collect_insolvent_companies`; when it is absent every insolvent
     company is treated as non-benign (we cannot prove otherwise without it).
@@ -271,7 +271,7 @@ def rule_p1_insolvency_pattern(
             narrative=(
                 "No companies in the subject's footprint show a genuine (non-benign) "
                 "insolvency or liquidation. Any solvent wind-downs are listed in the "
-                "Insolvent Companies table below."
+                "Dissolved & Insolvent Companies table below."
             ),
             recommendation="",
         )
@@ -291,7 +291,7 @@ def rule_p1_insolvency_pattern(
         f"{'y' if len(affected) == 1 else 'ies'} with a genuine (non-benign) "
         "insolvency or liquidation. Benign, solvent wind-downs (e.g. Members' "
         "Voluntary Liquidation) are excluded from this count and listed separately "
-        "in the Insolvent Companies table below.\n\n"
+        "in the Dissolved & Insolvent Companies table below.\n\n"
         + "\n".join(f"• {line}" for line in evidence_lines)
     )
     return CrossAnalysisResult(

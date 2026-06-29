@@ -311,6 +311,19 @@ def _ch_charges_link(company_number: Optional[str]) -> str:
     )
 
 
+def _ch_insolvency_link(company_number: Optional[str], text: str = "Yes") -> str:
+    """Link to a company's Companies House insolvency tab, with custom text."""
+    cnum = (company_number or "").strip()
+    if not cnum:
+        return html.escape(text)
+    padded = cnum.zfill(8)
+    return (
+        f'<a href="https://find-and-update.company-information.service.gov.uk/'
+        f'company/{html.escape(padded)}/insolvency" target="_blank" rel="noopener">'
+        f'{html.escape(text)}</a>'
+    )
+
+
 def _finding_card(result) -> str:
     flag = result.risk_flag or "NOT_ASSESSED"
     cls = flag.lower().replace("_", "-")
@@ -475,8 +488,15 @@ def _insolvent_companies_subsection(report: PersonEDDReport) -> str:
     if not items:
         return ""
     rows = []
+    genuine_count = 0
     for it in items:
         liq_date = format_display_date(it.get("liquidation_date") or "") or "—"
+        is_genuine = not it.get("is_benign")
+        if is_genuine:
+            genuine_count += 1
+            genuine_cell = _ch_insolvency_link(it.get("company_number"), "Yes")
+        else:
+            genuine_cell = "No"
         rows.append(
             "<tr>"
             f"<td>{html.escape(it.get('company_name') or '')}</td>"
@@ -484,19 +504,21 @@ def _insolvent_companies_subsection(report: PersonEDDReport) -> str:
             f"<td>{html.escape(it.get('company_status') or '')}</td>"
             f"<td>{liq_date}</td>"
             f"<td>{html.escape(it.get('insolvency_type') or '—')}</td>"
+            f"<td>{genuine_cell}</td>"
             "</tr>"
         )
     return f"""
     <div class="subsection">
-      <h3>Insolvent Companies ({len(items)})</h3>
+      <h3>Dissolved &amp; Insolvent Companies ({len(items)})</h3>
       <table class="insolvent">
         <thead><tr>
           <th>Company</th><th>Number</th><th>Status</th>
           <th>Date of Liquidation</th><th>Type of Liquidation</th>
+          <th>Genuine Insolvency?</th>
         </tr></thead>
         <tbody>{''.join(rows)}</tbody>
       </table>
-      <p class="note">All companies in the subject's footprint with a liquidation, dissolution or administration status. Type indicates the nature of the wind-down (e.g. Members' Voluntary Liquidation is a solvent close-down).</p>
+      <p class="note">All companies in the subject's footprint with a liquidation, dissolution or administration status — {genuine_count} of {len(items)} are genuine (non-benign) insolvencies, matching the Insolvency footprint count above. The remainder are benign, solvent wind-downs (e.g. Members' Voluntary Liquidation or voluntary strike-off). "Yes" links to the company's Companies House insolvency record.</p>
     </div>
     """
 
