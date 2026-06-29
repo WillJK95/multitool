@@ -27,6 +27,24 @@ from .insolvency_helpers import classify_insolvency, normalise_company_name
 PHOENIX_SIMILARITY_PCT = 80
 ADDRESS_SIMILARITY_PCT = 80
 
+# Phoenix incorporation window: a live company is only treated as a phoenix
+# candidate if it was incorporated between PHOENIX_WINDOW_YEARS_BEFORE years
+# before and PHOENIX_WINDOW_YEARS_AFTER years after the older company's
+# dissolution/liquidation.
+PHOENIX_WINDOW_YEARS_BEFORE = 1
+PHOENIX_WINDOW_YEARS_AFTER = 5
+
+# Common low-transparency / tax-haven jurisdictions. Mirrors the list used by
+# the Enhanced Due Diligence module (enhanced_dd._check_offshore_pscs) so the
+# two modules flag the same places.
+OFFSHORE_JURISDICTIONS = [
+    "jersey", "guernsey", "isle of man",
+    "british virgin islands", "bvi", "cayman islands",
+    "bermuda", "bahamas", "panama", "seychelles",
+    "gibraltar", "malta", "cyprus", "luxembourg",
+    "liechtenstein", "monaco", "andorra",
+]
+
 _UK_POSTCODE_RE = re.compile(
     r"\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b",
     re.IGNORECASE,
@@ -73,17 +91,18 @@ class PersonCompanyRecord:
     subject_role: Optional[str] = None
     subject_is_psc: bool = False
     subject_psc_natures: List[str] = field(default_factory=list)
-    # Filing compliance (from the Companies House company profile)
+    # Filing compliance (from the company profile — no extra API call)
     accounts_overdue: bool = False
-    confirmation_overdue: bool = False
+    confirmation_statement_overdue: bool = False
     next_accounts_due: Optional[str] = None
     next_cs_due: Optional[str] = None
     # Other people on the company
-    co_officers: List[Dict] = field(default_factory=list)   # {name, dob, role, appointed_on, resigned_on}
-    co_pscs: List[Dict] = field(default_factory=list)       # {name, dob, natures}
+    co_officers: List[Dict] = field(default_factory=list)   # {name, dob, role, appointed_on, resigned_on, nationality, occupation, country_of_residence}
+    co_pscs: List[Dict] = field(default_factory=list)       # {name, dob, natures, country, nationality}
     # Other signals
     insolvency_cases: List[Dict] = field(default_factory=list)
     grants: List[Dict] = field(default_factory=list)
+    charges: List[Dict] = field(default_factory=list)       # {lenders: [str], status: str, created_on: str}
     fetch_error: Optional[str] = None
 
 
@@ -219,27 +238,31 @@ def _subject_matches(subject: PersonSubject, name: str, dob: Optional[Dict]) -> 
 # Rules — each returns a CrossAnalysisResult
 # ---------------------------------------------------------------------------
 
-def rule_p1_insolvency_pattern(companies: List[PersonCompanyRecord]) -> CrossAnalysisResult:
-    liquidated = [c for c in companies if c.has_been_liquidated]
-    with_cases = [c for c in companies if c.insolvency_cases]
-    affected = {c.company_number for c in liquidated} | {c.company_number for c in with_cases}
+def rule_p1_insolvency_pattern(
+    companies: List[PersonCompanyRecord],
+    classify_cache: Optional[Dict[str, Tuple[bool, str, Optional[str]]]] = None,
+) -> CrossAnalysisResult:
+    """Flag genuine (non-benign) insolvency in the subject's footprint.
 
-    # Cluster: ≥2 insolvency events within 24 months
-    event_dates = []
-    for c in companies:
-        for case in c.insolvency_cases:
-            for d in case.get("dates", []):
-                t = _parse_iso_date(d.get("date"))
-                if t:
-                    event_dates.append((c.company_number, t))
-    event_dates.sort(key=lambda x: x[1])
-    cluster_pairs = []
-    for i in range(len(event_dates) - 1):
-        for j in range(i + 1, len(event_dates)):
-            if _months_between(event_dates[i][1], event_dates[j][1]) <= 24:
-                cluster_pairs.append((event_dates[i], event_dates[j]))
-            else:
-                break
+    Benign/solvent wind-downs (e.g. Members' Voluntary Liquidation) are
+    excluded from the headline count here — they are still shown, with their
+    type, in the Dissolved & Insolvent Companies table below. ``classify_cache`` is the
+    ``{company_number: (is_benign, insolvency_type, liq_date)}`` map produced
+    by :func:`_collect_insolvent_companies`; when it is absent every insolvent
+    company is treated as non-benign (we cannot prove otherwise without it).
+    """
+    classify_cache = classify_cache or {}
+
+    def _is_nonbenign(cnum: str) -> bool:
+        cached = classify_cache.get(cnum)
+        # No cache entry → treat as non-benign (cannot prove benignness).
+        return not (cached[0] if cached else False)
+
+    candidates = [
+        c for c in companies
+        if (c.has_been_liquidated or c.insolvency_cases) and c.company_number
+    ]
+    affected = [c for c in candidates if _is_nonbenign(c.company_number)]
 
     if not affected:
         return CrossAnalysisResult(
@@ -247,21 +270,30 @@ def rule_p1_insolvency_pattern(companies: List[PersonCompanyRecord]) -> CrossAna
             title="Insolvency footprint",
             risk_flag="LOW",
             confidence="AUTO",
-            narrative="No companies in the subject's footprint show insolvency or liquidation history.",
+            narrative=(
+                "No companies in the subject's footprint show a genuine (non-benign) "
+                "insolvency or liquidation. Any solvent wind-downs are listed in the "
+                "Dissolved & Insolvent Companies table below."
+            ),
             recommendation="",
         )
 
     severity = "MEDIUM" if len(affected) == 1 else "HIGH"
-    cluster_note = ""
-    if cluster_pairs:
-        cluster_note = f" {len(cluster_pairs)} pair(s) of insolvency events occurred within a 24-month window."
-    evidence_lines = [
-        f"{c.company_name or c.company_number} ({c.company_number}) — status: {c.company_status or 'unknown'}"
-        for c in companies if c.company_number in affected
-    ]
+    evidence_lines = []
+    for c in affected:
+        cached = classify_cache.get(c.company_number)
+        ins_type = cached[1] if cached and cached[1] else None
+        suffix = f" — {ins_type}" if ins_type and ins_type.lower() != "unknown" else ""
+        evidence_lines.append(
+            f"{c.company_name or c.company_number} ({c.company_number}) — "
+            f"status: {c.company_status or 'unknown'}{suffix}"
+        )
     narrative = (
-        f"The subject is or was connected to {len(affected)} compan{'y' if len(affected) == 1 else 'ies'} "
-        f"with liquidation or insolvency events.{cluster_note}\n\n"
+        f"The subject is or was connected to {len(affected)} compan"
+        f"{'y' if len(affected) == 1 else 'ies'} with a genuine (non-benign) "
+        "insolvency or liquidation. Benign, solvent wind-downs (e.g. Members' "
+        "Voluntary Liquidation) are excluded from this count and listed separately "
+        "in the Dissolved & Insolvent Companies table below.\n\n"
         + "\n".join(f"• {line}" for line in evidence_lines)
     )
     return CrossAnalysisResult(
@@ -272,7 +304,7 @@ def rule_p1_insolvency_pattern(companies: List[PersonCompanyRecord]) -> CrossAna
         narrative=narrative,
         recommendation=(
             "Review each insolvent company's filings and the subject's role at the time. "
-            "Multiple insolvencies, particularly clustered in time, warrant deeper scrutiny."
+            "Multiple genuine insolvencies warrant deeper scrutiny."
         ),
     )
 
@@ -345,8 +377,11 @@ def rule_p2_phoenix_signal(
                 "new_status": new.company_status,
                 "new_incorporated_on": new.incorporated_on,
                 "similarity": round(similarity),
+                "old_dissolved_on": old.dissolved_on,
                 "liquidation_date": None,
                 "insolvency_type": None,
+                "anchor_date": None,
+                "gap_years": None,
             })
 
     if not matches:
@@ -702,12 +737,89 @@ def rule_p8_overdue_accounts(companies: List[PersonCompanyRecord]) -> CrossAnaly
     )
 
 
+def _is_offshore(*values) -> Optional[str]:
+    """Return the matched offshore jurisdiction name if any value names one."""
+    for v in values:
+        text = (v or "").strip().lower()
+        if not text:
+            continue
+        for j in OFFSHORE_JURISDICTIONS:
+            if j in text:
+                return j
+    return None
+
+
+def rule_p7_offshore_pscs(companies: List[PersonCompanyRecord]) -> CrossAnalysisResult:
+    """Flag co-PSCs registered/resident in low-transparency jurisdictions.
+
+    Informational by default — offshore ownership is not inherently improper,
+    but it can complicate beneficial-ownership due diligence. Severity rises to
+    LOW when more than one offshore controller is present across the footprint.
+    """
+    # Dedupe by (name, jurisdiction) but collect the companies each appears on.
+    found: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for c in companies:
+        for psc in c.co_pscs:
+            jurisdiction = _is_offshore(psc.get("country"), psc.get("nationality"))
+            if not jurisdiction:
+                continue
+            name = psc.get("name") or "Unknown"
+            key = (name.lower(), jurisdiction)
+            entry = found.setdefault(key, {
+                "name": name,
+                "jurisdiction": (psc.get("country") or psc.get("nationality") or jurisdiction),
+                "companies": [],
+            })
+            label = c.company_name or c.company_number
+            if label not in entry["companies"]:
+                entry["companies"].append(label)
+
+    if not found:
+        return CrossAnalysisResult(
+            rule_id="P7",
+            title="Offshore controllers",
+            risk_flag="LOW",
+            confidence="AUTO",
+            narrative=(
+                "No persons with significant control in the subject's footprint are "
+                "registered or resident in a low-transparency jurisdiction."
+            ),
+            recommendation="",
+        )
+
+    entries = sorted(found.values(), key=lambda e: (-len(e["companies"]), e["name"].lower()))
+    lines = [
+        f"{e['name']} ({e['jurisdiction']}) — {len(e['companies'])} compan"
+        f"{'y' if len(e['companies']) == 1 else 'ies'}: {', '.join(e['companies'])}"
+        for e in entries[:5]
+    ]
+    extra = f"\n…and {len(entries) - 5} more." if len(entries) > 5 else ""
+    severity = "LOW" if len(entries) > 1 else "INFO"
+    return CrossAnalysisResult(
+        rule_id="P7",
+        title="Offshore controllers",
+        risk_flag=severity,
+        confidence="AUTO",
+        narrative=(
+            f"{len(entries)} person(s) with significant control across the subject's "
+            "companies are registered or resident in a low-transparency jurisdiction:\n\n"
+            + "\n".join(f"• {line}" for line in lines)
+            + extra
+        ),
+        recommendation=(
+            "Offshore ownership is not inherently problematic, but it can obscure "
+            "ultimate beneficial ownership. Request supporting documentation on the "
+            "controllers and corporate structure where relevant."
+        ),
+    )
+
+
 def rule_p9_overdue_confirmation(companies: List[PersonCompanyRecord]) -> CrossAnalysisResult:
     """Companies where the subject is *currently* appointed and the confirmation
     statement is overdue. Flagged MEDIUM (renders as Moderate)."""
     affected = [
         c for c in companies
-        if c.confirmation_overdue and not c.subject_resigned_on
+        if c.confirmation_statement_overdue and not c.subject_resigned_on
     ]
     if not affected:
         return CrossAnalysisResult(
@@ -738,6 +850,125 @@ def rule_p9_overdue_confirmation(companies: List[PersonCompanyRecord]) -> CrossA
             "company is actively managed and that its registered information is current."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Aggregation helpers for the renderer
+# ---------------------------------------------------------------------------
+
+def aggregate_charges(companies: List[PersonCompanyRecord]) -> Dict[str, Any]:
+    """Aggregate charges across the footprint into a lender-centric view.
+
+    Returns a dict with::
+
+        {
+            "lenders": [ {lender, charge_count, outstanding_count,
+                          companies: [(name, number), ...]}, ... ],
+            "total_charges": int,
+            "outstanding": int,
+            "satisfied": int,
+            "companies_with_charges": int,
+        }
+
+    ``lenders`` is sorted by charge count descending, then lender name. A single
+    charge with multiple persons-entitled is attributed to each named lender.
+    """
+    _OUTSTANDING = {"outstanding", "part-satisfied"}
+    by_lender: Dict[str, Dict[str, Any]] = {}
+    total_charges = 0
+    outstanding = 0
+    satisfied = 0
+    companies_with_charges = 0
+
+    for c in companies:
+        if not c.charges:
+            continue
+        companies_with_charges += 1
+        co_label = (c.company_name or c.company_number, c.company_number)
+        for ch in c.charges:
+            total_charges += 1
+            is_outstanding = (ch.get("status") or "") in _OUTSTANDING
+            if is_outstanding:
+                outstanding += 1
+            else:
+                satisfied += 1
+            lenders = ch.get("lenders") or ["(unnamed)"]
+            for lender in lenders:
+                entry = by_lender.setdefault(lender, {
+                    "lender": lender,
+                    "charge_count": 0,
+                    "outstanding_count": 0,
+                    "companies": [],
+                })
+                entry["charge_count"] += 1
+                if is_outstanding:
+                    entry["outstanding_count"] += 1
+                if co_label not in entry["companies"]:
+                    entry["companies"].append(co_label)
+
+    lenders_sorted = sorted(
+        by_lender.values(),
+        key=lambda e: (-e["charge_count"], e["lender"].lower()),
+    )
+    return {
+        "lenders": lenders_sorted,
+        "total_charges": total_charges,
+        "outstanding": outstanding,
+        "satisfied": satisfied,
+        "companies_with_charges": companies_with_charges,
+    }
+
+
+def aggregate_co_directors(companies: List[PersonCompanyRecord]) -> List[Dict[str, Any]]:
+    """Aggregate co-officers across the footprint, one row per distinct person.
+
+    Returns a list of dicts ``{name, count, nationality, occupation, country,
+    companies: [(name, number), ...]}`` sorted by shared-company count
+    (descending) then name. ``count`` is the number of distinct companies the
+    person shares with the subject; attributes are taken as the most common
+    non-empty value seen.
+    """
+    agg: Dict[str, Dict[str, Any]] = {}
+    attr_counters: Dict[str, Dict[str, Counter]] = {}
+
+    for c in companies:
+        co_label = (c.company_name or c.company_number, c.company_number)
+        for off in c.co_officers:
+            name = off.get("name")
+            if not name:
+                continue
+            key = get_canonical_name_key(name, off.get("dob")) or name
+            entry = agg.setdefault(key, {
+                "name": name,
+                "count": 0,
+                "companies": [],
+                "nationality": None,
+                "occupation": None,
+                "country": None,
+            })
+            if co_label not in entry["companies"]:
+                entry["companies"].append(co_label)
+                entry["count"] += 1
+            counters = attr_counters.setdefault(key, {
+                "nationality": Counter(),
+                "occupation": Counter(),
+                "country": Counter(),
+            })
+            if off.get("nationality"):
+                counters["nationality"][off["nationality"]] += 1
+            if off.get("occupation"):
+                counters["occupation"][off["occupation"]] += 1
+            if off.get("country_of_residence"):
+                counters["country"][off["country_of_residence"]] += 1
+
+    for key, entry in agg.items():
+        counters = attr_counters.get(key, {})
+        for attr in ("nationality", "occupation", "country"):
+            counter = counters.get(attr)
+            if counter:
+                entry[attr] = counter.most_common(1)[0][0]
+
+    return sorted(agg.values(), key=lambda e: (-e["count"], e["name"].lower()))
 
 
 # ---------------------------------------------------------------------------
@@ -800,6 +1031,73 @@ def _enrich_phoenix_matches(
             m["liquidation_date"] = liq_date
 
 
+def _filter_phoenix_window(matches: List[Dict[str, Any]]) -> None:
+    """Keep only matches whose live company was incorporated within the phoenix
+    window of the older company's dissolution/liquidation, in place.
+
+    The window runs from ``PHOENIX_WINDOW_YEARS_BEFORE`` years before to
+    ``PHOENIX_WINDOW_YEARS_AFTER`` years after the anchor date (the enriched
+    liquidation date, falling back to the profile dissolution date). Matches
+    without a datable anchor or incorporation date are dropped — they cannot be
+    confirmed as phoenixes. Each kept match is annotated with ``anchor_date``
+    and ``gap_years`` so the renderer stays consistent with this filter.
+    """
+    kept = []
+    for m in matches:
+        anchor = m.get("liquidation_date") or m.get("old_dissolved_on")
+        inc = _parse_iso_date(m.get("new_incorporated_on"))
+        anchor_dt = _parse_iso_date(anchor)
+        if not inc or not anchor_dt:
+            continue
+        gap = (inc - anchor_dt).days / 365.25
+        if -PHOENIX_WINDOW_YEARS_BEFORE <= gap <= PHOENIX_WINDOW_YEARS_AFTER:
+            m["anchor_date"] = anchor
+            m["gap_years"] = gap
+            kept.append(m)
+    matches[:] = kept
+
+
+def _build_phoenix_result(matches: List[Dict[str, Any]]) -> CrossAnalysisResult:
+    """Build the P2 finding from the window-filtered phoenix matches."""
+    if not matches:
+        return CrossAnalysisResult(
+            rule_id="P2",
+            title="Phoenix pattern",
+            risk_flag="LOW",
+            confidence="AUTO",
+            narrative=(
+                "No live company in scope was incorporated within the phoenix window "
+                f"({PHOENIX_WINDOW_YEARS_BEFORE} year before to {PHOENIX_WINDOW_YEARS_AFTER} "
+                "years after) of a dissolved/liquidated company with a closely matching name."
+            ),
+            recommendation="",
+        )
+    lines = [
+        f"{m['old_company']} → {m['new_company']} ({m['similarity']}% name match)"
+        for m in matches[:5]
+    ]
+    extra = f"\n…and {len(matches) - 5} more." if len(matches) > 5 else ""
+    return CrossAnalysisResult(
+        rule_id="P2",
+        title="Phoenix pattern",
+        risk_flag="HIGH",
+        confidence="LIMITED",
+        narrative=(
+            f"Detected {len(matches)} potential phoenix link(s) — a live company "
+            "incorporated within the phoenix window "
+            f"({PHOENIX_WINDOW_YEARS_BEFORE} year before to {PHOENIX_WINDOW_YEARS_AFTER} "
+            "years after) of a dissolved/liquidated company in the subject's footprint, "
+            "with a closely matching distinctive name:\n\n"
+            + "\n".join(f"• {line}" for line in lines)
+            + extra
+        ),
+        recommendation=(
+            "Phoenix patterns can indicate avoidance of creditor obligations. "
+            "Cross-check trading names, premises and customer continuity before progressing."
+        ),
+    )
+
+
 def run_person_edd(
     subject: PersonSubject,
     companies: List[PersonCompanyRecord],
@@ -823,9 +1121,14 @@ def run_person_edd(
     phoenix_matches: List[Dict[str, Any]] = []
 
     results: List[CrossAnalysisResult] = []
-    results.append(rule_p1_insolvency_pattern(companies))
-    results.append(rule_p2_phoenix_signal(companies, phoenix_matches=phoenix_matches))
+    results.append(rule_p1_insolvency_pattern(companies, classify_cache))
+    # Phoenix: collect name-similar candidates, enrich with liquidation dates,
+    # then keep only those inside the incorporation window before building the
+    # finding from the filtered set.
+    rule_p2_phoenix_signal(companies, phoenix_matches=phoenix_matches)
     _enrich_phoenix_matches(phoenix_matches, classify_cache)
+    _filter_phoenix_window(phoenix_matches)
+    results.append(_build_phoenix_result(phoenix_matches))
     results.append(rule_p3_mass_resignation(companies))
 
     p4_result, by_addr = rule_p4_address_clustering(companies)
@@ -837,6 +1140,7 @@ def run_person_edd(
     p6_result, grants_value, grants_count = rule_p6_grant_footprint(companies)
     results.append(p6_result)
 
+    results.append(rule_p7_offshore_pscs(companies))
     results.append(rule_p8_overdue_accounts(companies))
     results.append(rule_p9_overdue_confirmation(companies))
 
@@ -870,6 +1174,7 @@ def build_company_record(
     pscs: Optional[Dict],
     insolvency: Optional[Dict],
     grants: Optional[List[Dict]],
+    charges: Optional[Dict] = None,
     profile_error: Optional[str] = None,
     appt_info: Optional[Dict[str, Any]] = None,
 ) -> PersonCompanyRecord:
@@ -896,12 +1201,13 @@ def build_company_record(
     record.has_been_liquidated = bool(profile.get("has_been_liquidated", False))
     record.sic_codes = list(profile.get("sic_codes") or [])
 
-    # Filing compliance — mirror the fields the company DD report reads.
+    # Filing compliance — the profile carries boolean "overdue" flags and the
+    # next-due dates, so no extra API call is needed.
     accounts = profile.get("accounts") or {}
     record.accounts_overdue = bool(accounts.get("overdue"))
     record.next_accounts_due = accounts.get("next_due")
     cs = profile.get("confirmation_statement") or {}
-    record.confirmation_overdue = bool(cs.get("overdue"))
+    record.confirmation_statement_overdue = bool(cs.get("overdue"))
     record.next_cs_due = cs.get("next_due")
 
     addr_raw = extract_address_string(profile.get("registered_office_address"))
@@ -936,6 +1242,9 @@ def build_company_record(
                     "role": off.get("officer_role"),
                     "appointed_on": off.get("appointed_on"),
                     "resigned_on": off.get("resigned_on"),
+                    "nationality": off.get("nationality"),
+                    "occupation": off.get("occupation"),
+                    "country_of_residence": off.get("country_of_residence"),
                 })
 
     # PSC freebie: did the subject also appear as a PSC on this company?
@@ -948,7 +1257,18 @@ def build_company_record(
                 record.subject_is_psc = True
                 record.subject_psc_natures = list(natures)
             else:
-                record.co_pscs.append({"name": name, "dob": dob, "natures": natures})
+                ident = psc.get("identification") or {}
+                country = (
+                    psc.get("country_of_residence")
+                    or ident.get("country_registered")
+                )
+                record.co_pscs.append({
+                    "name": name,
+                    "dob": dob,
+                    "natures": natures,
+                    "country": country,
+                    "nationality": psc.get("nationality"),
+                })
 
     # Insolvency cases
     if insolvency and insolvency.get("cases"):
@@ -957,5 +1277,19 @@ def build_company_record(
     # Grants
     if grants:
         record.grants = list(grants)
+
+    # Charges (secured lending) — informational, not a risk flag.
+    if charges and charges.get("items"):
+        for ch in charges["items"]:
+            lenders = []
+            for pe in (ch.get("persons_entitled") or []):
+                nm = (pe.get("name") or "").strip()
+                if nm:
+                    lenders.append(nm)
+            record.charges.append({
+                "lenders": lenders,
+                "status": (ch.get("status") or "").strip().lower(),
+                "created_on": ch.get("created_on"),
+            })
 
     return record

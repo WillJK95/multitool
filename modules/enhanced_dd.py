@@ -812,13 +812,13 @@ class EnhancedDueDiligence(InvestigationModuleBase):
             label="Working Set", command=self._send_results_to_working_set
         )
         send_menu.add_command(
-            label="Network Analytics Workbench", command=self._send_results_to_network_analytics
+            label="UBO Tracer", command=self._send_results_to_ubo_tracer
         )
         send_menu.add_command(
             label="Grants Search", command=self._send_results_to_grants_search
         )
         send_menu.add_command(
-            label="UBO Tracer", command=self._send_results_to_ubo_tracer
+            label="Network Analytics Workbench", command=self._send_results_to_network_analytics
         )
         send_menu_btn.configure(menu=send_menu)
         send_menu_btn.pack(side=tk.LEFT, padx=(0, 5))
