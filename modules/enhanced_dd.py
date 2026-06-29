@@ -5056,7 +5056,7 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                     'severity': 'Critical',
                     'title': 'Negative Net Assets',
                     'narrative': f"The company reported net assets of £{net_assets:,.0f} in {int(latest['Year'])}. This negative position indicates the company is technically insolvent, with liabilities exceeding assets.",
-                    'recommendation': 'This is a critical red flag. Request an explanation from management and updated financial projections. Consider requiring personal guarantees or security.'
+                    'recommendation': 'Request an explanation from management and updated financial projections. Consider requiring personal guarantees or security against the exposure.'
                 })
             elif len(df) >= 2:
                 previous = df.iloc[-2]
@@ -5825,7 +5825,7 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
                 'severity': 'Critical',
                 'title': 'Potential Phoenix Company Pattern',
                 'narrative': narrative,
-                'recommendation': 'This is a serious red flag. Conduct thorough investigations into the circumstances of the previous company failures and the transfer of any assets or business. Seek legal advice before proceeding.',
+                'recommendation': 'Conduct thorough investigations into the circumstances of the previous company failures and the transfer of any assets or business. Seek legal advice before proceeding.',
                 'details_html': details_html,
             })
 
@@ -7318,35 +7318,60 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         '''
 
     def _generate_recommendations_html(self, findings):
-        """Consolidated, de-duplicated recommendations across all findings and
-        cross-analysis results. Replaces the per-finding recommendation blocks."""
-        seen = set()
-        recs = []
+        """Consolidated recommendations across all findings and cross-analysis
+        results, each anchored to the finding(s) that raised it and ordered by
+        severity.
 
-        def _add(rec):
+        A flat list of recommendations ("Request an explanation from
+        management…") leaves the reader guessing which risk an action addresses.
+        Prefixing each one with its finding title — and listing the most serious
+        first — keeps the advice self-explanatory. Recommendations shared by more
+        than one finding are merged under their combined titles."""
+        _rank = {'Critical': 0, 'Elevated': 1, 'Moderate': 2}
+        grouped = {}
+        order = [0]
+
+        def _add(rec, title, severity):
             rec = (rec or '').strip()
-            if rec and rec.lower() not in seen:
-                seen.add(rec.lower())
-                recs.append(rec)
+            if not rec:
+                return
+            title = (title or '').strip()
+            key = rec.lower()
+            entry = grouped.get(key)
+            if entry is None:
+                entry = {'text': rec, 'titles': [], 'rank': _rank.get(severity, 3),
+                         'order': order[0]}
+                order[0] += 1
+                grouped[key] = entry
+            if title and title not in entry['titles']:
+                entry['titles'].append(title)
+            entry['rank'] = min(entry['rank'], _rank.get(severity, 3))
 
         for f in findings:
             if f.get('severity') == 'Positive':
                 continue
-            _add(f.get('recommendation'))
+            _add(f.get('recommendation'), f.get('title'), f.get('severity'))
 
         report = getattr(self, '_cross_analysis_report', None)
         if report:
             for r in report.results:
                 if r.unified_severity == 'Not Assessed' and r.confidence == 'SKIPPED':
                     continue
-                _add(r.recommendation)
+                _add(r.recommendation, getattr(r, 'title', ''), r.unified_severity)
 
-        if not recs:
+        if not grouped:
             return ''
-        items = ''.join(f'<li>{html.escape(r)}</li>' for r in recs)
+        ordered = sorted(grouped.values(), key=lambda e: (e['rank'], e['order']))
+        items = ''.join(
+            f'<li><strong>{html.escape(" / ".join(e["titles"]))}:</strong> '
+            f'{html.escape(e["text"])}</li>'
+            for e in ordered
+        )
         return (
             '<div class="section recommendations">'
             '<h2>Recommended actions</h2>'
+            '<p style="font-size:13px;color:#666;margin:4px 0 10px;">Each action is tied '
+            'to the finding that raised it; the most serious appear first.</p>'
             f'<ul>{items}</ul></div>'
         )
 

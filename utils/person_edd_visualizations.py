@@ -301,6 +301,7 @@ details.collapsible-table > summary:hover { text-decoration: underline; }
 .dash-seg-moderate { background: #ffc107; color: #333; }
 .dash-seg-info { background: #667eea; }
 .dash-empty { font-size: 11px; color: #999; padding-left: 8px; align-self: center; }
+.dash-caption { margin-top: 10px; text-align: right; font-size: 11px; color: #888; font-style: italic; }
 .dash-detail { width: 80px; font-size: 12px; color: #777; text-align: right; }
 .dash-legend { display: flex; gap: 16px; margin-top: 12px; font-size: 11px; color: #666; }
 .dash-legend-item { display: flex; align-items: center; gap: 5px; }
@@ -412,7 +413,7 @@ def _finding_card(result) -> str:
     return f"""
     <div class="finding {cls}">
       <span class="badge">{badge}</span>
-      <h4>{result.rule_id} — {title}</h4>
+      <h4>{title}</h4>
       <div class="narrative">{narrative}</div>
     </div>
     """
@@ -746,11 +747,15 @@ _RISK_LABELS = {"Critical", "Elevated", "Moderate"}
 
 # Domain grouping for the headline dashboard bars. P7 (offshore controllers)
 # is reserved for the parallel offshore rule; it groups here if present.
+# Each tuple is (label, rule_ids, max_risks). Every rule fires at most once, so
+# the maximum number of risk findings a domain can ever produce equals the
+# number of rules in it — that fixed maximum is the bar's full-scale value, so
+# bars stay comparable between reports instead of always filling to 100%.
 _DOMAINS = [
-    ("Insolvency & continuity", {"P1", "P2"}),
-    ("Compliance", {"P8", "P9"}),
-    ("Network & structure", {"P3", "P4", "P5", "P7"}),
-    ("Funding", {"P6"}),
+    ("Insolvency & continuity", {"P1", "P2"}, 2),
+    ("Compliance", {"P8", "P9"}, 2),
+    ("Network & structure", {"P3", "P4", "P5", "P7"}, 4),
+    ("Funding", {"P6"}, 1),
 ]
 
 
@@ -801,26 +806,33 @@ def _summary_and_dashboard(report: PersonEDDReport) -> str:
     header = " &middot; ".join(f"{counts.get(lbl, 0)} {lbl}" for lbl in _SEVERITY_ORDER)
 
     rows_html = ""
-    for domain_name, ids in _DOMAINS:
+    for domain_name, ids, domain_max in _DOMAINS:
         domain_results = [r for r in report.results if r.rule_id in ids]
         if not domain_results:
             continue
         dcounts = Counter(_result_label(r) for r in domain_results)
-        total = len(domain_results)
+        # Only Critical/Elevated/Moderate count as risks; Info findings are
+        # informational and are not plotted on the bar (mirrors the EDD report).
+        risk_total = sum(dcounts.get(sev, 0) for sev in _RISK_LABELS)
         segs = ""
-        for sev in _SEVERITY_ORDER:
+        for sev in ("Critical", "Elevated", "Moderate"):
             c = dcounts.get(sev, 0)
             if not c:
                 continue
-            width = c / total * 100
+            # Scale to the fixed per-domain maximum (capped at 100%) so the fill
+            # reflects how many risks were found relative to the most possible,
+            # rather than always spanning the whole bar.
+            width = min(c / domain_max * 100, 100)
             segs += (
                 f'<div class="dash-seg dash-seg-{sev.lower()}" '
                 f'style="width:{width:.1f}%">{c}</div>'
             )
+        if not segs:
+            segs = '<span class="dash-empty">No risks</span>'
         rows_html += (
             f'<div class="dash-row"><span class="dash-label">{html.escape(domain_name)}</span>'
             f'<div class="dash-bar">{segs}</div>'
-            f'<span class="dash-detail">{total} finding{"s" if total != 1 else ""}</span></div>'
+            f'<span class="dash-detail">{risk_total} of {domain_max}</span></div>'
         )
 
     legend = "".join(
@@ -840,6 +852,10 @@ def _summary_and_dashboard(report: PersonEDDReport) -> str:
         f"Dissolved / insolvent records: {insolvent}",
     ))
 
+    scale_caption = " &middot; ".join(
+        f"{html.escape(name)} /{domain_max}" for name, _ids, domain_max in _DOMAINS
+    )
+
     return f"""
   <section class="section">
     <h2>Executive Summary</h2>
@@ -849,27 +865,57 @@ def _summary_and_dashboard(report: PersonEDDReport) -> str:
   <div class="dashboard-panel">
     <div class="dash-header"><span class="dash-total">{header}</span></div>
     <div class="dash-bars">{rows_html}</div>
+    <div class="dash-caption">Fixed scale &mdash; {scale_caption}</div>
     <div class="dash-legend">{legend}</div>
     <div class="dash-meta">{meta}</div>
   </div>
 """
 
 
+# Severity rank for ordering recommendations (most serious first); anything
+# unmapped (e.g. Info) sorts last.
+_REC_RANK = {"Critical": 0, "Elevated": 1, "Moderate": 2, "Info": 3}
+
+
 def _recommendations_section(report: PersonEDDReport) -> str:
-    """Consolidated, de-duplicated recommendations across all findings."""
-    seen = set()
-    recs = []
+    """Consolidated recommendations, each anchored to the finding(s) that raised
+    it and ordered by severity.
+
+    A bare list of recommendations ("Request an explanation from management…")
+    gives the reader no idea which risk an action addresses. Prefixing each one
+    with the finding title — and surfacing the most serious first — keeps the
+    advice readable and self-explanatory. Identical recommendations triggered by
+    more than one finding are merged under their combined titles.
+    """
+    grouped: Dict[str, Dict] = {}
     for r in report.results:
         rec = (r.recommendation or "").strip()
-        if rec and rec.lower() not in seen:
-            seen.add(rec.lower())
-            recs.append(rec)
-    if not recs:
+        if not rec:
+            continue
+        title = (r.title or r.rule_id or "").strip()
+        label = _result_label(r)
+        key = rec.lower()
+        entry = grouped.get(key)
+        if entry is None:
+            entry = {"text": rec, "titles": [], "rank": _REC_RANK.get(label, 3)}
+            grouped[key] = entry
+        if title and title not in entry["titles"]:
+            entry["titles"].append(title)
+        entry["rank"] = min(entry["rank"], _REC_RANK.get(label, 3))
+
+    if not grouped:
         return ""
-    items = "".join(f"<li>{html.escape(r)}</li>" for r in recs)
+
+    ordered = sorted(grouped.values(), key=lambda e: (e["rank"], e["titles"]))
+    items = "".join(
+        f'<li><strong>{html.escape(" / ".join(e["titles"]))}:</strong> '
+        f'{html.escape(e["text"])}</li>'
+        for e in ordered
+    )
     return f"""
   <section class="section recommendations">
     <h2>Recommended actions</h2>
+    <p class="note">Each action is tied to the finding that raised it; the most serious appear first.</p>
     <ul>{items}</ul>
   </section>
 """
