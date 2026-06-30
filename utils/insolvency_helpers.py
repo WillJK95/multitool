@@ -23,6 +23,32 @@ def format_insolvency_type(raw_type: Optional[str]) -> str:
     return display
 
 
+# Classification labels (from :func:`classify_insolvency`) that represent a
+# strike-off or bare dissolution rather than a formal insolvency proceeding.
+# These companies have no Companies House insolvency record/page to link to and
+# are NOT counted as genuine insolvencies (a strike-off is not insolvency).
+_STRIKE_OFF_TYPES = frozenset({
+    "voluntary strike-off",
+    "compulsory strike-off",
+    "dissolved",
+})
+
+
+def is_genuine_insolvency(is_benign: bool, insolvency_type: Optional[str]) -> bool:
+    """Whether a classified company is a genuine (non-benign) insolvency.
+
+    ``True`` only for formal insolvency proceedings (e.g. Creditors' Voluntary
+    Liquidation, administration) that have a Companies House insolvency record.
+    Benign wind-downs (MVL, voluntary strike-off) and non-insolvency
+    dissolutions/strike-offs (compulsory strike-off, bare dissolution) return
+    ``False`` — they have no insolvency page to link to and must not inflate the
+    insolvency footprint count.
+    """
+    if is_benign:
+        return False
+    return (insolvency_type or "").strip().lower() not in _STRIKE_OFF_TYPES
+
+
 def normalise_company_name(name: Optional[str]) -> str:
     """Strip legal suffixes, generic terms, and apply basic stemming for comparison."""
     if not name:

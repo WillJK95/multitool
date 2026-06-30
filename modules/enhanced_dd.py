@@ -6430,6 +6430,22 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
             tr, thead {{ break-inside: avoid; }}
             h2, h3 {{ break-after: avoid; }}
             * {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+            /* The wide company timeline is clipped on a portrait page, so print
+               it (and only it) on its own landscape page. */
+            @page {{ size: A4 portrait; }}
+            @page timeline {{ size: A4 landscape; }}
+            .timeline-landscape {{
+                page: timeline;
+                break-before: page;
+                break-after: page;
+            }}
+            .timeline-landscape .chart-container {{ overflow: visible !important; }}
+            .timeline-landscape .chart-container svg,
+            .timeline-landscape .chart-container img {{
+                width: 100% !important;
+                max-width: 100% !important;
+                height: auto !important;
+            }}
         }}
     </style>
 </head>
@@ -7278,11 +7294,12 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         if not getattr(self, '_timeline_b64', None):
             return ''
         return f'''
-        <div class="section">
+        <div class="section timeline-landscape">
             <h2>3. Company Timeline</h2>
             <p>This chart shows key events and periods in the company's history, including director and PSC
             tenure periods, filing events, notices, and (if enabled) grants received.
-            The chart is rendered as a vector graphic &mdash; zoom in via your browser (Ctrl/Cmd +) for detail.</p>
+            The chart is rendered as a vector graphic &mdash; zoom in via your browser (Ctrl/Cmd +) for detail.
+            When saved as a PDF, this timeline prints on its own landscape page so it is not clipped.</p>
             <div class="chart-container" style="overflow:auto; max-width:100%;">
                 {self._timeline_b64}
             </div>

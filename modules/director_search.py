@@ -188,6 +188,23 @@ class DirectorSearch(InvestigationModuleBase):
         button_export_frame = ttk.Frame(status_export_frame)
         button_export_frame.pack(side=tk.RIGHT)
 
+        # --- Director Diligence Report button ---
+        # This is the flagship output of the module, so it leads the button row
+        # (rightmost = primary action) and uses the green "power tool" accent that
+        # matches the Network Analytics Workbench. Default button size.
+        self.person_edd_btn = ttk.Button(
+            button_export_frame,
+            text="Director Diligence Report",
+            state="disabled",
+            command=self._send_to_person_edd,
+            bootstyle="success",
+        )
+        self.person_edd_btn.pack(side=tk.RIGHT, padx=5)
+        Tooltip(
+            self.person_edd_btn,
+            "Generate a person-centric due diligence report covering the selected directorship rows.",
+        )
+
         self.export_btn = ttk.Button(
             button_export_frame,
             text="Export Directorships",
@@ -198,20 +215,6 @@ class DirectorSearch(InvestigationModuleBase):
         Tooltip(
             self.export_btn,
             "Export selected directorship rows to CSV. If no rows are selected, all rows are exported.",
-        )
-
-        # --- Director Diligence Report button ---
-        self.person_edd_btn = ttk.Button(
-            button_export_frame,
-            text="Director Diligence Report",
-            state="disabled",
-            command=self._send_to_person_edd,
-            bootstyle="primary",
-        )
-        self.person_edd_btn.pack(side=tk.RIGHT, padx=5)
-        Tooltip(
-            self.person_edd_btn,
-            "Generate a person-centric due diligence report covering the selected directorship rows.",
         )
 
         # --- Send to… dropdown menu ---
