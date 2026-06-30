@@ -22,6 +22,7 @@ from .edd_visualizations import (
     generate_grants_report_html,
 )
 from .helpers import narrative_to_html, prettify_role, prettify_status
+from .insolvency_helpers import is_genuine_insolvency
 from .person_edd import (
     PersonEDDReport,
     PersonCompanyRecord,
@@ -114,8 +115,6 @@ def _render_directorship_timeline(report: PersonEDDReport) -> str:
         ax.barh(i, (end - start).days, left=mdates.date2num(start), height=0.55,
                 color=colour, edgecolor="#333", linewidth=0.4, alpha=0.85)
         label = c.company_name or c.company_number
-        if c.subject_is_psc:
-            label += "  ★"
         row_labels.append(label)
 
     # Company names live on the y-axis so they no longer overprint the bars.
@@ -423,7 +422,6 @@ def _subject_card(report: PersonEDDReport) -> str:
     s = report.subject
     active = sum(1 for c in report.companies if (c.company_status or "").lower() == "active")
     dissolved = sum(1 for c in report.companies if (c.company_status or "").lower() in {"dissolved", "liquidation"})
-    psc_count = sum(1 for c in report.companies if c.subject_is_psc)
     dob_text = "—"
     if s.dob_year:
         if s.dob_month:
@@ -439,7 +437,6 @@ def _subject_card(report: PersonEDDReport) -> str:
         <div class="field"><div class="label">Total companies</div><div class="value">{len(report.companies)}</div></div>
         <div class="field"><div class="label">Active</div><div class="value">{active}</div></div>
         <div class="field"><div class="label">Dissolved / liquidated</div><div class="value">{dissolved}</div></div>
-        <div class="field"><div class="label">Also recorded as PSC</div><div class="value">{psc_count}</div></div>
         <div class="field"><div class="label">Appointments reviewed</div><div class="value">{s.source_appointments}</div></div>
       </div>
       <div class="note" style="margin-top:10px;">
@@ -490,7 +487,6 @@ def _companies_table(report: PersonEDDReport) -> str:
     for c in ordered:
         appt = format_display_date(c.subject_appointed_on or "") if c.subject_appointed_on else "—"
         resd = format_display_date(c.subject_resigned_on or "") if c.subject_resigned_on else "—"
-        psc = "Yes" if c.subject_is_psc else ""
         # Slightly fade rows where the subject is no longer a director so live
         # directorships stand out.
         row_class = ' class="resigned"' if c.subject_resigned_on else ""
@@ -500,7 +496,6 @@ def _companies_table(report: PersonEDDReport) -> str:
             f"<td>{html.escape(prettify_status(c.company_status))}</td>"
             f"<td>{html.escape(prettify_role(c.subject_role) or '—')}</td>"
             f"<td>{appt}</td><td>{resd}</td>"
-            f"<td>{psc}</td>"
             f"<td>{_overdue_cell(c.accounts_overdue, c.company_status)}</td>"
             f"<td>{_overdue_cell(c.confirmation_statement_overdue, c.company_status)}</td>"
             "</tr>"
@@ -517,7 +512,7 @@ def _companies_table(report: PersonEDDReport) -> str:
     table_html = f"""<table class="companies">
         <thead><tr>
           <th>Company</th><th>Number</th><th>Status</th><th>Role</th>
-          <th>Appointed</th><th>Resigned</th><th>PSC?</th>
+          <th>Appointed</th><th>Resigned</th>
           <th>Accounts</th><th>Confirmation Stmt</th>
         </tr></thead>
         <tbody>{''.join(rows)}</tbody>
@@ -586,7 +581,10 @@ def _insolvent_companies_subsection(report: PersonEDDReport) -> str:
     genuine_count = 0
     for it in items:
         liq_date = format_display_date(it.get("liquidation_date") or "") or "—"
-        is_genuine = not it.get("is_benign")
+        # Only formal insolvency proceedings (CVL, administration, etc.) count as
+        # "genuine" and link to the CH insolvency page. Strike-offs and bare
+        # dissolutions have no insolvency record, so they render as "No".
+        is_genuine = is_genuine_insolvency(it.get("is_benign"), it.get("insolvency_type"))
         if is_genuine:
             genuine_count += 1
             genuine_cell = _ch_insolvency_link(it.get("company_number"), "Yes")
@@ -614,7 +612,7 @@ def _insolvent_companies_subsection(report: PersonEDDReport) -> str:
     <div class="subsection">
       <h3>Dissolved &amp; Insolvent Companies ({len(items)})</h3>
       {_maybe_collapsible(table_html, len(items), "companies")}
-      <p class="note">All companies in the subject's footprint with a liquidation, dissolution or administration status — {genuine_count} of {len(items)} are genuine (non-benign) insolvencies, matching the Insolvency footprint count above. The remainder are benign, solvent wind-downs (e.g. Members' Voluntary Liquidation or voluntary strike-off). "Yes" links to the company's Companies House insolvency record.</p>
+      <p class="note">All companies in the subject's footprint with a liquidation, dissolution or administration status — {genuine_count} of {len(items)} are genuine (non-benign) insolvencies, matching the Insolvency footprint count above. The remainder are either benign, solvent wind-downs (e.g. Members' Voluntary Liquidation) or strike-offs/dissolutions, which are not insolvency proceedings and have no Companies House insolvency record. "Yes" links to the company's Companies House insolvency record.</p>
     </div>
     """
 
@@ -982,7 +980,6 @@ def generate_person_edd_html(report: PersonEDDReport) -> str:
   <section class="section">
     <h2>Directorship timeline</h2>
     {timeline_svg}
-    <p class="note">★ indicates the subject is also recorded as a PSC on that company.</p>
   </section>
 
   {_companies_table(report)}

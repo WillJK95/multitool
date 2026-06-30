@@ -21,7 +21,11 @@ from .helpers import (
     get_canonical_name_key,
     log_message,
 )
-from .insolvency_helpers import classify_insolvency, normalise_company_name
+from .insolvency_helpers import (
+    classify_insolvency,
+    is_genuine_insolvency,
+    normalise_company_name,
+)
 
 
 PHOENIX_SIMILARITY_PCT = 80
@@ -253,16 +257,18 @@ def rule_p1_insolvency_pattern(
     """
     classify_cache = classify_cache or {}
 
-    def _is_nonbenign(cnum: str) -> bool:
+    def _is_genuine(cnum: str) -> bool:
         cached = classify_cache.get(cnum)
-        # No cache entry → treat as non-benign (cannot prove benignness).
-        return not (cached[0] if cached else False)
+        # No cache entry → treat as genuine (cannot prove otherwise).
+        if not cached:
+            return True
+        return is_genuine_insolvency(cached[0], cached[1])
 
     candidates = [
         c for c in companies
         if (c.has_been_liquidated or c.insolvency_cases) and c.company_number
     ]
-    affected = [c for c in candidates if _is_nonbenign(c.company_number)]
+    affected = [c for c in candidates if _is_genuine(c.company_number)]
 
     if not affected:
         return CrossAnalysisResult(
