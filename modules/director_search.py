@@ -188,6 +188,36 @@ class DirectorSearch(InvestigationModuleBase):
         button_export_frame = ttk.Frame(status_export_frame)
         button_export_frame.pack(side=tk.RIGHT)
 
+        # --- Director Diligence Report button ---
+        # This is the flagship output of the module, so it leads the button row
+        # (rightmost = primary action) and uses a larger, bold green style that
+        # matches the Network Analytics Workbench "power tool" accent.
+        self.person_edd_btn = ttk.Button(
+            button_export_frame,
+            text="\U0001F4CB  Director Diligence Report",
+            state="disabled",
+            command=self._send_to_person_edd,
+            bootstyle="success",
+        )
+        # Build an enlarged, bold variant of the green style and apply it (mirrors
+        # the sidebar's Centered.success.TButton pattern so the success base is
+        # registered before the derived style is referenced). Other green buttons
+        # are unaffected.
+        try:
+            self.app.style.configure(
+                "DDReport.success.TButton",
+                font=("", 11, "bold"),
+                padding=(16, 10),
+            )
+            self.person_edd_btn.configure(style="DDReport.success.TButton")
+        except Exception:
+            pass
+        self.person_edd_btn.pack(side=tk.RIGHT, padx=5)
+        Tooltip(
+            self.person_edd_btn,
+            "Generate a person-centric due diligence report covering the selected directorship rows.",
+        )
+
         self.export_btn = ttk.Button(
             button_export_frame,
             text="Export Directorships",
@@ -198,20 +228,6 @@ class DirectorSearch(InvestigationModuleBase):
         Tooltip(
             self.export_btn,
             "Export selected directorship rows to CSV. If no rows are selected, all rows are exported.",
-        )
-
-        # --- Director Diligence Report button ---
-        self.person_edd_btn = ttk.Button(
-            button_export_frame,
-            text="Director Diligence Report",
-            state="disabled",
-            command=self._send_to_person_edd,
-            bootstyle="primary",
-        )
-        self.person_edd_btn.pack(side=tk.RIGHT, padx=5)
-        Tooltip(
-            self.person_edd_btn,
-            "Generate a person-centric due diligence report covering the selected directorship rows.",
         )
 
         # --- Send to… dropdown menu ---
