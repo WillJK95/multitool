@@ -80,6 +80,30 @@ def clean_address_string(address: Optional[str]) -> Optional[str]:
     return cleaned if cleaned else None
 
 
+UK_POSTCODE_RE = re.compile(
+    r"\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b",
+    re.IGNORECASE,
+)
+
+
+def extract_postcode(address: Optional[str]) -> Optional[str]:
+    """Return the UK postcode found in the address (uppercased, normalised
+    spacing), or None if no postcode is present."""
+    if not address:
+        return None
+    m = UK_POSTCODE_RE.search(address)
+    if not m:
+        return None
+    return f"{m.group(1).upper()} {m.group(2).upper()}"
+
+
+def strip_postcode(address: Optional[str]) -> str:
+    """Return the address with any postcode stripped, lowercased and trimmed."""
+    if not address:
+        return ""
+    return UK_POSTCODE_RE.sub("", address).strip(" ,").lower()
+
+
 def get_canonical_name_key(name: str, dob_obj: dict = None) -> str:
     if not name:
         return ""

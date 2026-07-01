@@ -4,7 +4,7 @@ A desktop application for conducting corporate due diligence investigations usin
 
 ## Features
 
-### Director Search
+### Director Research
 Search for company directors by name and explore their network of appointments. Generate interactive network graphs showing connections between individuals and companies. Includes integration with 360Giving to find associated grant funding.
 
 ### Bulk Entity Search

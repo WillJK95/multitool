@@ -283,7 +283,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         self._send_menu = tk.Menu(self._send_menu_btn, tearoff=0)
         self._send_menu.add_command(label="Working Set", command=self._send_to_working_set)
         self._send_menu.add_command(label="Enhanced Due Diligence", command=self._send_to_edd)
-        self._send_menu.add_command(label="Director Search", command=self._send_to_director_search)
+        self._send_menu.add_command(label="Director Research", command=self._send_to_director_search)
         self._send_menu.add_command(label="Grants Search", command=self._send_to_grants_search)
         self._send_menu.add_command(label="Network Analytics Workbench", command=self._send_to_network_analytics)
         self._send_menu_btn.configure(menu=self._send_menu)
@@ -451,7 +451,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
 
         menu.entryconfigure(0, state=ws_state)        # Working Set
         menu.entryconfigure(1, state=edd_state)       # EDD
-        menu.entryconfigure(2, state=director_state)  # Director Search
+        menu.entryconfigure(2, state=director_state)  # Director Research
         menu.entryconfigure(3, state=grants_state)    # Grants Search
         menu.entryconfigure(4, state=na_state)        # Network Analytics
 
@@ -799,7 +799,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         self.app.show_grants_investigation(prefill_entities=ws_entities)
 
     def _send_to_director_search(self):
-        """Send single selected person to Director Search."""
+        """Send single selected person to Director Research."""
         from ..utils.fuzzy_match import normalize_person_name
         entities = self._get_selected_entities()
         if not entities:
@@ -807,7 +807,7 @@ class UltimateBeneficialOwnershipTracer(InvestigationModuleBase):
         row = entities[0]
         name = row.get("psc_name", "")
         if not name:
-            messagebox.showwarning("Director Search", "No person name found.")
+            messagebox.showwarning("Director Research", "No person name found.")
             return
         # Strip title for cleaner prefill
         clean_name = normalize_person_name(name)

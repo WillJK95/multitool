@@ -5,8 +5,6 @@ and their footprint across multiple companies. Each rule returns a
 ``CrossAnalysisResult`` so the renderer can reuse existing card styling.
 """
 
-import re
-
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -18,8 +16,10 @@ from .edd_cross_analysis import CrossAnalysisResult
 from .helpers import (
     clean_address_string,
     extract_address_string,
+    extract_postcode as _extract_postcode,
     get_canonical_name_key,
     log_message,
+    strip_postcode as _strip_postcode,
 )
 from .insolvency_helpers import (
     classify_insolvency,
@@ -48,29 +48,6 @@ OFFSHORE_JURISDICTIONS = [
     "gibraltar", "malta", "cyprus", "luxembourg",
     "liechtenstein", "monaco", "andorra",
 ]
-
-_UK_POSTCODE_RE = re.compile(
-    r"\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b",
-    re.IGNORECASE,
-)
-
-
-def _extract_postcode(address: Optional[str]) -> Optional[str]:
-    """Return the UK postcode found in the address (uppercased, normalised
-    spacing), or None if no postcode is present."""
-    if not address:
-        return None
-    m = _UK_POSTCODE_RE.search(address)
-    if not m:
-        return None
-    return f"{m.group(1).upper()} {m.group(2).upper()}"
-
-
-def _strip_postcode(address: Optional[str]) -> str:
-    """Return the address with any postcode stripped, lowercased and trimmed."""
-    if not address:
-        return ""
-    return _UK_POSTCODE_RE.sub("", address).strip(" ,").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +317,7 @@ def rule_p2_phoenix_signal(
 
     Mirrors the Enhanced Due Diligence module's phoenix-name match. Pairing
     is restricted to ``dissolved → live`` because the user has already
-    curated the cohort via Director Search; alias expansion is therefore
+    curated the cohort via Director Research; alias expansion is therefore
     implicit. Match details are written to ``phoenix_matches`` so the
     renderer can present them in a dedicated subsection.
     """
@@ -1221,7 +1198,7 @@ def build_company_record(
     record.registered_address_clean = clean_address_string(addr_raw)
 
     # Subject's role on this company.  ``appt_info`` (when supplied by the
-    # Director Search caller) is the source of truth — those values came
+    # Director Research caller) is the source of truth — those values came
     # directly from the subject's /officers/{id}/appointments payload.  The
     # /officers list lookup below remains as a fallback for callers that
     # don't pass appt_info; it also still drives co-officer collection.

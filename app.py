@@ -199,7 +199,7 @@ class App(tk.Tk):
         self._add_sidebar_button(sb, "Bulk Entity Search",
                                  "bulk_entity_search", "primary-outline",
                                  self.show_unified_search)
-        self._add_sidebar_button(sb, "Director Search",
+        self._add_sidebar_button(sb, "Director Research",
                                  "director_search", "primary-outline",
                                  self.show_director_investigation)
         self._add_sidebar_button(sb, "UBO Tracer",
@@ -334,7 +334,7 @@ class App(tk.Tk):
             command=lambda: self._send_ws_to_bulk_search(self._working_set_tree))
         # Index 2
         self._ws_send_menu_obj.add_command(
-            label="Director Search",
+            label="Director Research",
             command=lambda: self._send_ws_to_director(self._working_set_tree))
         # Index 3
         self._ws_send_menu_obj.add_command(
@@ -1503,7 +1503,7 @@ class App(tk.Tk):
             command=lambda: self._send_ws_to_bulk_search(self._home_ws_tree))
         # Index 2
         self._home_ws_send_menu_obj.add_command(
-            label="Director Search",
+            label="Director Research",
             command=lambda: self._send_ws_to_director(self._home_ws_tree))
         # Index 3
         self._home_ws_send_menu_obj.add_command(
@@ -1647,7 +1647,7 @@ class App(tk.Tk):
         Menu indices:
           0 = Enhanced Due Diligence       — companies/charities only (bulk supported)
           1 = Bulk Entity Search           — companies + charities (no persons)
-          2 = Director Search              — single person only
+          2 = Director Research            — single person only
           3 = UBO Tracer                   — companies only (no charities/persons)
           4 = Grants Search                — companies + charities (no persons)
           5 = Network Analytics Workbench  — always enabled if entities exist
@@ -1676,10 +1676,10 @@ class App(tk.Tk):
         _set(1, "Bulk Entity Search" if bulk_ok else
              "Bulk Entity Search (companies/charities only)", bulk_ok)
 
-        # 2: Director Search — single person only
+        # 2: Director Research — single person only
         dir_ok = (count == 1 and has_per and not has_co and not has_ch)
-        _set(2, "Director Search" if dir_ok else
-             "Director Search (select 1 person)", dir_ok)
+        _set(2, "Director Research" if dir_ok else
+             "Director Research (select 1 person)", dir_ok)
 
         # 3: UBO Tracer — companies only, no charities or persons
         ubo_ok = has_any and has_co and not has_per and not has_ch
@@ -1846,7 +1846,7 @@ class App(tk.Tk):
         self.show_grants_investigation(prefill_entities=valid, prefill_source="Working Set")
 
     def _send_ws_to_director(self, tree) -> None:
-        """Send selected person from working set to Director Search."""
+        """Send selected person from working set to Director Research."""
         if not self._ensure_ws_selection(tree):
             return
         selected = self._get_ws_selected_entities(tree)
@@ -1855,8 +1855,8 @@ class App(tk.Tk):
 
         persons = [e for e in selected if e.get("entity_type") == "person"]
         if not persons or len(persons) != 1:
-            messagebox.showinfo("Director Search",
-                                "Please select exactly 1 person for Director Search.")
+            messagebox.showinfo("Director Research",
+                                "Please select exactly 1 person for Director Research.")
             return
 
         ent = persons[0]
@@ -2455,11 +2455,11 @@ class App(tk.Tk):
     
     def show_director_investigation(self, prefill_name=None,
                                     prefill_year=None, prefill_month=None) -> None:
-        """Show the Director Search module."""
+        """Show the Director Research module."""
         self.clear_container()
         # Import here to avoid circular imports and speed up startup
-        from .modules.director_search import DirectorSearch
-        DirectorSearch(self, self.api_key, self.show_main_menu, self.ch_token_bucket,
+        from .modules.director_search import DirectorResearch
+        DirectorResearch(self, self.api_key, self.show_main_menu, self.ch_token_bucket,
                        prefill_name=prefill_name, prefill_year=prefill_year,
                        prefill_month=prefill_month)
         self._update_sidebar_active("director_search")
