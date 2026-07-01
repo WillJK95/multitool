@@ -16,6 +16,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.patches as mpatches
+import matplotlib.ticker as mticker
 import networkx as nx
 from networkx.drawing.nx_agraph import graphviz_layout
 
@@ -90,6 +91,22 @@ def _parse_date(date_str: str) -> Optional[datetime]:
         except (ValueError, TypeError):
             pass
     return None
+
+
+_NICE_YEAR_STEPS = [1, 2, 5, 10, 20, 25, 50, 100]
+_MAX_TIMELINE_TICKS = 14
+
+
+def _choose_year_step(span_start: datetime, span_end: datetime,
+                       max_ticks: int = _MAX_TIMELINE_TICKS) -> int:
+    """Pick a 'nice' year interval so the timeline's major x-axis ticks stay
+    readable regardless of how long the company has existed — a bare
+    year-per-tick locator overlaps once the span reaches a few decades."""
+    span_years = max(1, (span_end - span_start).days / 365.25)
+    for step in _NICE_YEAR_STEPS:
+        if span_years / step <= max_ticks:
+            return step
+    return _NICE_YEAR_STEPS[-1]
 
 
 def _strftime_day(d: datetime) -> str:
@@ -416,9 +433,22 @@ def generate_company_timeline(
     # Format axes
     ax.set_yticks(y_positions)
     ax.set_yticklabels(row_labels, fontsize=8)
+
+    # Choose a year-tick interval wide enough to stay readable for
+    # long-established companies (e.g. 80+ years old), where a tick every
+    # single year would otherwise overwrite itself.
+    plotted_dates = [now, cessation_date] if cessation_date else [now]
+    plotted_dates.extend(d['end'] for d in director_bars)
+    plotted_dates.extend(d['end'] for d in psc_bars)
+    plotted_dates.extend(evt['date'] for events in filing_events.values() for evt in events)
+    plotted_dates.extend(g['date'] for g in grant_events)
+    max_date_seen = max(plotted_dates)
+    year_step = _choose_year_step(timeline_start, max_date_seen)
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
-    ax.xaxis.set_major_locator(mdates.YearLocator())
-    ax.xaxis.set_minor_locator(mdates.MonthLocator(bymonth=[1, 7]))
+    ax.xaxis.set_major_locator(mdates.YearLocator(base=year_step))
+    ax.xaxis.set_minor_locator(
+        mdates.MonthLocator(bymonth=[1, 7]) if year_step <= 1 else mticker.NullLocator()
+    )
 
     # Add section labels
     director_count = len(director_bars)
@@ -854,6 +884,16 @@ def generate_static_ownership_graph(
     except Exception:
         # Fallback to manual hierarchical layout
         pos = _hierarchical_layout(G, root_id)
+
+    # Normalise orientation: the investigated company (root) should render at
+    # the bottom with owners above it — flowing ownership upward reads
+    # correctly ("X is owned by Y"), whereas owners below the target implies
+    # the reverse. This is layout-agnostic so it holds regardless of whether
+    # graphviz's 'dot' or the BFS fallback produced `pos`.
+    if pos and root_id in pos:
+        y_values = [p[1] for p in pos.values()]
+        if pos[root_id][1] != min(y_values):
+            pos = {n: (x, -y) for n, (x, y) in pos.items()}
 
     # For shallow graphs, compress the vertical spacing after layout
     if is_shallow and pos:

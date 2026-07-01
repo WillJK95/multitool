@@ -6430,8 +6430,8 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
             tr, thead {{ break-inside: avoid; }}
             h2, h3 {{ break-after: avoid; }}
             * {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
-            /* The wide company timeline is clipped on a portrait page, so print
-               it (and only it) on its own landscape page. */
+            /* The wide company timeline and ownership graph are clipped on a
+               portrait page, so print each on its own landscape page. */
             @page {{ size: A4 portrait; }}
             @page timeline {{ size: A4 landscape; }}
             .timeline-landscape {{
@@ -6442,6 +6442,19 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
             .timeline-landscape .chart-container {{ overflow: visible !important; }}
             .timeline-landscape .chart-container svg,
             .timeline-landscape .chart-container img {{
+                width: 100% !important;
+                max-width: 100% !important;
+                height: auto !important;
+            }}
+            @page ownership {{ size: A4 landscape; }}
+            .ownership-landscape {{
+                page: ownership;
+                break-before: page;
+                break-after: page;
+            }}
+            .ownership-landscape .chart-container {{ overflow: visible !important; }}
+            .ownership-landscape .chart-container svg,
+            .ownership-landscape .chart-container img {{
                 width: 100% !important;
                 max-width: 100% !important;
                 height: auto !important;
@@ -7323,11 +7336,12 @@ if(location.hash){{var e=document.getElementById(location.hash.slice(1));if(e)e.
         if not getattr(self, '_ownership_b64', None):
             return ''
         return f'''
-        <div class="section">
+        <div class="section ownership-landscape">
             <h2>Corporate Ownership Structure</h2>
             <p>This diagram shows the corporate ownership chain traced through Persons with Significant
             Control (PSC) data. Arrows indicate control relationships. The investigated company is shown
-            at the base of the tree.</p>
+            at the base of the tree. When saved as a PDF, this diagram prints on its own landscape page
+            so it is not clipped.</p>
             <div class="chart-container" style="overflow:auto; max-width:100%;">
                 {self._ownership_b64}
             </div>
