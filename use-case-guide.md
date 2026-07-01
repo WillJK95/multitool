@@ -35,7 +35,7 @@ Then continue in the Network Analytics Workbench:
 **The workflow:**
 
 1. **Bulk Entity Search** → upload the gifts register CSV (company names column), enrich donors with officers, PSCs, and addresses. **Export Graph Data (CSV)**.
-2. **Director Search** → when a name catches your eye in the PSC data (e.g., "Margaret Hennessy" is PSC of a frequent gift-giver, and there's a Cllr Hennessy on the Planning Committee), deep-dive on that individual to map their full corporate footprint. Export graph data.
+2. **Director Research** → when a name catches your eye in the PSC data (e.g., "Margaret Hennessy" is PSC of a frequent gift-giver, and there's a Cllr Hennessy on the Planning Committee), deep-dive on that individual to map their full corporate footprint. Export graph data.
 3. **Network Analytics Workbench** → load both graph files plus a staff/councillor graph from **Data Converter**. **Scan for Duplicates**, then **Scan for Inferred Links**. Run a **Between two entity lists** analysis (staff vs gift-giving companies).
 
 **What this finds:** *Margaret Hennessy (PSC, 75% shareholder of Thornfield Construction plc) shares a postcode with Cllr James Hennessy (Planning Committee)*. A likely family connection between a major gift-giver and a planning decision-maker — a relationship that should have been declared and wasn't.

@@ -8,6 +8,7 @@ import textwrap
 import threading
 import time
 import webbrowser
+from collections import Counter, OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
@@ -26,7 +27,7 @@ from ..api.companies_house import ch_get_data, ch_get_insolvency, ch_get_charges
 from ..constants import API_BASE_URL, CONFIG_DIR
 
 # Utility functions (were global functions or duplicated in classes)
-from ..utils.helpers import log_message, clean_address_string, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary, format_eta, match_officer_name_tokens
+from ..utils.helpers import log_message, clean_address_string, extract_postcode, get_canonical_name_key, extract_address_string, format_address_label, format_error_summary, format_eta, match_officer_name_tokens
 from ..utils.edd_visualizations import fetch_grants_for_company
 from ..utils.person_edd import (
     build_company_record,
@@ -42,7 +43,129 @@ from ..ui.tooltip import Tooltip
 from .base import InvestigationModuleBase
 
 
-class DirectorSearch(InvestigationModuleBase):
+def _appointment_dob_obj(dob_str):
+    """Parse director_search's ``date_of_birth`` string ("MM-YYYY", or "N/A")
+    into ``{"year": Y, "month": M}``, or None if absent/unparseable."""
+    if not dob_str or dob_str == "N/A":
+        return None
+    try:
+        month_s, year_s = dob_str.split("-", 1)
+        return {"year": int(year_s), "month": int(month_s)}
+    except (ValueError, AttributeError):
+        return None
+
+
+class _UnionFind:
+    """Minimal disjoint-set structure used to merge appointment rows into
+    person-clusters based on pairwise match rules (see cluster_appointment_rows)."""
+
+    def __init__(self, n):
+        self.parent = list(range(n))
+
+    def find(self, x):
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
+
+    def union(self, x, y):
+        rx, ry = self.find(x), self.find(y)
+        if rx != ry:
+            self.parent[rx] = ry
+
+
+def cluster_appointment_rows(rows):
+    """Group appointment rows into person-clusters.
+
+    Two rows with the same (canonicalised) name are merged when:
+      - both have a DOB and it matches, or
+      - at least one side has no DOB and they share a company (this is what
+        lets a director appointment (has DOB) cluster with a secretary
+        appointment for the same person at the same company, since
+        Companies House doesn't collect DOB for secretaries), or
+      - neither side has a DOB and their addresses share a postcode.
+    Two rows are never merged if both have a DOB and it differs, even if
+    they share a company (that's a same-name coincidence, not a match).
+
+    Returns a list of dicts, each:
+        {
+            "cluster_key": str,
+            "display_name": str,        # most common officer_name variant
+            "name_variants": [str, ...],# all distinct officer_name strings seen
+            "dob_display": str,         # "MM-YYYY" of the most common DOB, or "Not stated"
+            "members": [dict, ...],     # the original appointment row dicts
+        }
+    Clusters are emitted in order of first appearance (stable/deterministic).
+    """
+    n = len(rows)
+    uf = _UnionFind(n)
+    name_keys = [get_canonical_name_key(r.get("officer_name") or "", None) for r in rows]
+    dob_objs = [_appointment_dob_obj(r.get("date_of_birth")) for r in rows]
+    postcodes = [extract_postcode(r.get("address")) for r in rows]
+    companies = [r.get("company_number") or r.get("company_name") or None for r in rows]
+
+    by_name = OrderedDict()
+    for i, key in enumerate(name_keys):
+        if key:
+            by_name.setdefault(key, []).append(i)
+
+    for idxs in by_name.values():
+        for a in range(len(idxs)):
+            for b in range(a + 1, len(idxs)):
+                i, j = idxs[a], idxs[b]
+                di, dj = dob_objs[i], dob_objs[j]
+                if di and dj:
+                    if (di["year"], di["month"]) == (dj["year"], dj["month"]):
+                        uf.union(i, j)
+                    # Both have a DOB and it differs -> never merge, even if
+                    # they share a company (same-name coincidence).
+                    continue
+                if companies[i] and companies[j] and companies[i] == companies[j]:
+                    uf.union(i, j)
+                elif di is None and dj is None and postcodes[i] and postcodes[i] == postcodes[j]:
+                    uf.union(i, j)
+
+    groups = OrderedDict()
+    for i, row in enumerate(rows):
+        root = uf.find(i)
+        g = groups.setdefault(root, {
+            "rows": [], "name_counter": Counter(), "dob_counter": Counter(),
+        })
+        g["rows"].append(row)
+        name = row.get("officer_name") or ""
+        if name:
+            g["name_counter"][name] += 1
+        if dob_objs[i]:
+            g["dob_counter"][(dob_objs[i]["year"], dob_objs[i]["month"])] += 1
+
+    clusters = []
+    for root, g in groups.items():
+        display_name = g["name_counter"].most_common(1)[0][0] if g["name_counter"] else "Unknown"
+        name_variants = list(g["name_counter"].keys())
+        if g["dob_counter"]:
+            (y, m), _ = g["dob_counter"].most_common(1)[0]
+            dob_display = f"{m:02d}-{y}"
+        else:
+            dob_display = "Not stated"
+        clusters.append({
+            "cluster_key": f"cluster-{root}",
+            "display_name": display_name,
+            "name_variants": name_variants,
+            "dob_display": dob_display,
+            "members": g["rows"],
+        })
+    return clusters
+
+
+def _unique_company_count(members):
+    """Count distinct companies among a cluster's member appointment rows."""
+    return len({
+        (m.get("company_number") or m.get("company_name") or "")
+        for m in members
+    })
+
+
+class DirectorResearch(InvestigationModuleBase):
     def __init__(self, parent_app, api_key, back_callback, ch_token_bucket,
                  prefill_name=None, prefill_year=None, prefill_month=None):
         super().__init__(parent_app, back_callback, api_key, help_key="director")
@@ -53,17 +176,23 @@ class DirectorSearch(InvestigationModuleBase):
         # --- Add a new instance variable for grant results ---
         self.grants_results = []
         # Map of treeview row id -> full result record (so selection handling
-        # and exports don't depend on positional value-tuple matching).
+        # and exports don't depend on positional value-tuple matching). Used
+        # for leaf/appointment rows in both flat and clustered view modes.
         self._row_records = {}
+        # Map of cluster-parent treeview row id -> cluster dict (only
+        # populated in "clustered" view mode).
+        self._cluster_records = {}
         # --- Track explicit row selection for selective export ---
         self.explicit_selection_made = False
         # --- Sort/filter state ---
         self._sort_col = None
         self._sort_reverse = False
         self.filter_var = tk.StringVar()
+        # --- Clustered vs flat results view ---
+        self._view_mode = "clustered"
 
         input_frame = ttk.LabelFrame(
-            self.content_frame, text="Director Search", padding=10
+            self.content_frame, text="Director Research", padding=10
         )
         input_frame.pack(fill=tk.X, pady=5, padx=10)
         input_frame.grid_columnconfigure(1, weight=1)
@@ -77,11 +206,11 @@ class DirectorSearch(InvestigationModuleBase):
         ttk.Label(input_frame, text="Full Name:").grid(
             row=0, column=0, sticky="w", padx=5, pady=5
         )
-        self.name_entry = ttk.Entry(input_frame, textvariable=self.full_name_var)
-        self.name_entry.grid(row=0, column=1, columnspan=3, sticky="ew", padx=5)
+        self.name_entry = ttk.Entry(input_frame, textvariable=self.full_name_var, width=30)
+        self.name_entry.grid(row=0, column=1, sticky="ew", padx=5)
 
         ttk.Label(input_frame, text="Year of Birth (Optional):").grid(
-            row=1, column=0, sticky="w", padx=5, pady=5
+            row=0, column=2, sticky="w", padx=(10, 5), pady=5
         )
         vcmd = (self.register(self.validate_year), "%P")
         self.year_entry = ttk.Entry(
@@ -91,10 +220,10 @@ class DirectorSearch(InvestigationModuleBase):
             validatecommand=vcmd,
             width=10,
         )
-        self.year_entry.grid(row=1, column=1, sticky="w", padx=5)
+        self.year_entry.grid(row=0, column=3, sticky="w", padx=5)
 
         ttk.Label(input_frame, text="Month:").grid(
-            row=1, column=2, sticky="w", padx=(10, 5), pady=5
+            row=0, column=4, sticky="w", padx=(10, 5), pady=5
         )
         months = [
             "Any",
@@ -119,17 +248,17 @@ class DirectorSearch(InvestigationModuleBase):
             width=15,
         )
         self.month_combo.set("Any")
-        self.month_combo.grid(row=1, column=3, sticky="w", padx=5)
+        self.month_combo.grid(row=0, column=5, sticky="w", padx=5)
 
         self.search_buttons_frame = ttk.Frame(input_frame)
-        self.search_buttons_frame.grid(row=0, column=4, rowspan=2, sticky="ns", padx=5)
+        self.search_buttons_frame.grid(row=0, column=6, sticky="ns", padx=5)
 
         self.search_btn = ttk.Button(
             self.search_buttons_frame,
             text="Search",
             command=lambda: self.start_search(),
         )
-        self.search_btn.pack(ipady=10)
+        self.search_btn.pack(ipady=2)
         self.cancel_btn = ttk.Button(
             self.search_buttons_frame, text="Cancel", command=self.cancel_search
         )
@@ -152,9 +281,26 @@ class DirectorSearch(InvestigationModuleBase):
         Tooltip(filter_entry, "Type to filter results across all columns (case-insensitive)")
         filter_entry.bind("<KeyRelease>", self._apply_filter)
 
-        tree_container = ttk.Frame(results_frame)
-        tree_container.grid(row=1, column=0, sticky="nsew")
+        self._view_mode_btn = ttk.Button(
+            filter_row, text="Show Flat View", command=self._toggle_view_mode
+        )
+        self._view_mode_btn.pack(side=tk.LEFT, padx=(10, 0))
+        Tooltip(
+            self._view_mode_btn,
+            "Toggle between grouping appointments by person (clustered) and "
+            "showing one row per appointment (flat).",
+        )
+
+        paned = ttk.PanedWindow(results_frame, orient=tk.VERTICAL)
+        paned.grid(row=1, column=0, sticky="nsew")
+
+        tree_container = ttk.Frame(paned)
         self.tree = self._create_treeview(tree_container)
+        paned.add(tree_container, weight=3)
+
+        detail_container = ttk.LabelFrame(paned, text="Details", padding=8)
+        paned.add(detail_container, weight=1)
+        self._build_detail_panel(detail_container)
 
         # --- Selection controls frame ---
         selection_frame = ttk.Frame(self.content_frame)
@@ -188,13 +334,13 @@ class DirectorSearch(InvestigationModuleBase):
         button_export_frame = ttk.Frame(status_export_frame)
         button_export_frame.pack(side=tk.RIGHT)
 
-        # --- Director Diligence Report button ---
+        # --- Director Research Report button ---
         # This is the flagship output of the module, so it leads the button row
         # (rightmost = primary action) and uses the green "power tool" accent that
         # matches the Network Analytics Workbench. Default button size.
         self.person_edd_btn = ttk.Button(
             button_export_frame,
-            text="Director Diligence Report",
+            text="Director Research Report",
             state="disabled",
             command=self._send_to_person_edd,
             bootstyle="success",
@@ -202,12 +348,12 @@ class DirectorSearch(InvestigationModuleBase):
         self.person_edd_btn.pack(side=tk.RIGHT, padx=5)
         Tooltip(
             self.person_edd_btn,
-            "Generate a person-centric due diligence report covering the selected directorship rows.",
+            "Generate a Director Research Report — a person-centric report covering the selected directorship rows.",
         )
 
         self.export_btn = ttk.Button(
             button_export_frame,
-            text="Export Directorships",
+            text="Export Data",
             state="disabled",
             command=self.export_csv,
         )
@@ -282,6 +428,7 @@ class DirectorSearch(InvestigationModuleBase):
         """Called when the treeview selection changes."""
         self.explicit_selection_made = True
         self._update_selection_label()
+        self._update_detail_panel()
 
     def _select_all(self):
         """Select all rows in the treeview."""
@@ -298,10 +445,21 @@ class DirectorSearch(InvestigationModuleBase):
         self._update_selection_label()
 
     def _update_selection_label(self):
-        """Update the selection status label."""
-        total_rows = len(self.tree.get_children())
+        """Update the selection status label.
+
+        Counts leaf (appointment) rows rather than cluster headers, so the
+        tally stays meaningful in clustered view mode: selecting one cluster
+        is reported as "N appointments selected", not "1 row selected".
+        """
+        total_rows = len(self._row_records)
         selected_items = self.tree.selection()
-        selected_count = len(selected_items)
+        selected_leaf_iids = set()
+        for iid in selected_items:
+            if iid in self._cluster_records:
+                selected_leaf_iids.update(self.tree.get_children(iid))
+            else:
+                selected_leaf_iids.add(iid)
+        selected_count = len(selected_leaf_iids)
 
         if not self.explicit_selection_made or selected_count == total_rows:
             self.selection_label_var.set(f"Selected: All ({total_rows} rows)")
@@ -314,7 +472,10 @@ class DirectorSearch(InvestigationModuleBase):
         """
         Returns the results data based on current selection.
         If no explicit selection made, returns all results.
-        Otherwise returns only the selected rows.
+        Otherwise returns only the selected rows. Selecting a cluster-parent
+        row is treated as selecting every appointment in that cluster (the
+        whole person's footprint), matching how build_subject() already
+        merges canonical name+DOB keys into one report subject.
         """
         if not self.explicit_selection_made:
             return self.results_data
@@ -325,36 +486,65 @@ class DirectorSearch(InvestigationModuleBase):
             return []
 
         # Resolve selected rows via the iid -> record map (robust to column
-        # ordering and to duplicate display values).
+        # ordering and to duplicate display values), expanding any selected
+        # cluster-parent rows into their member appointments.
         selected_results = []
+        seen_leaf_iids = set()
         for item_id in selected_items:
-            record = self._row_records.get(item_id)
-            if record is not None:
-                selected_results.append(record)
+            if item_id in self._cluster_records:
+                for child_iid in self.tree.get_children(item_id):
+                    if child_iid in seen_leaf_iids:
+                        continue
+                    seen_leaf_iids.add(child_iid)
+                    record = self._row_records.get(child_iid)
+                    if record is not None:
+                        selected_results.append(record)
+            else:
+                if item_id in seen_leaf_iids:
+                    continue
+                seen_leaf_iids.add(item_id)
+                record = self._row_records.get(item_id)
+                if record is not None:
+                    selected_results.append(record)
 
         return selected_results
 
+    # Compact "core" tree columns for the master-detail layout. Everything
+    # else (DOB for appointment rows, nationality, occupation, country of
+    # residence, full address, company number) lives in the detail panel
+    # below the tree instead, so no column is ever truncated.
+    _TREE_COLS = ("dob", "company_name", "role", "company_status", "date_range")
+    _TREE_COL_LABELS = {
+        "dob": "DOB",
+        "company_name": "Company",
+        "role": "Role",
+        "company_status": "Status",
+        "date_range": "Appointed – Resigned",
+    }
+
+    # Per-column widths sized to their typical content so the DOB column
+    # (short, fixed-format) doesn't steal space that longer text (company
+    # names, the cluster summary, date ranges) needs to avoid truncating.
+    _TREE_COL_WIDTHS = {
+        "dob": 90,
+        "company_name": 230,
+        "role": 110,
+        "company_status": 90,
+        "date_range": 170,
+    }
+
     def _create_treeview(self, parent):
-        cols = (
-            "officer_name",
-            "date_of_birth",
-            "nationality",
-            "occupation",
-            "country_of_residence",
-            "company_name",
-            "company_number",
-            "company_status",
-            "role",
-            "address",
-        )
-        tree = ttk.Treeview(parent, columns=cols, show="headings", selectmode="extended")
+        cols = self._TREE_COLS
+        tree = ttk.Treeview(parent, columns=cols, show="tree headings", selectmode="extended")
+        tree.heading("#0", text="Name", command=lambda: self._sort_treeview("#0"))
+        tree.column("#0", width=200, stretch=True)
         for col in cols:
             tree.heading(
                 col,
-                text=col.replace("_", " ").title(),
+                text=self._TREE_COL_LABELS[col],
                 command=lambda c=col: self._sort_treeview(c),
             )
-            tree.column(col, width=150)
+            tree.column(col, width=self._TREE_COL_WIDTHS[col])
         yscroll = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=tree.yview)
         xscroll = ttk.Scrollbar(parent, orient=tk.HORIZONTAL, command=tree.xview)
         tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
@@ -365,11 +555,66 @@ class DirectorSearch(InvestigationModuleBase):
         xscroll.grid(row=1, column=0, sticky="ew")
         return tree
 
-    _TREE_COLS = (
-        "officer_name", "date_of_birth", "nationality", "occupation",
-        "country_of_residence", "company_name", "company_number",
-        "company_status", "role", "address",
-    )
+    def _toggle_view_mode(self):
+        """Switch between grouping appointments into person-clusters and
+        showing today's flat one-row-per-appointment layout."""
+        self._view_mode = "flat" if self._view_mode == "clustered" else "clustered"
+        self._view_mode_btn.config(
+            text="Show Clustered View" if self._view_mode == "flat" else "Show Flat View"
+        )
+        self._apply_filter()
+
+    def _insert_leaf_row(self, parent_iid, record):
+        """Insert one appointment row under ``parent_iid`` (or at the root in
+        flat mode / when parent_iid is "") and track it in _row_records."""
+        appointed = record.get("appointed_on") or "—"
+        resigned = record.get("resigned_on")
+        date_range = f"{appointed} → {resigned}" if resigned else f"{appointed} → Present"
+        dob = record.get("date_of_birth")
+        dob_display = dob if dob and dob != "N/A" else "Not stated"
+        iid = self.tree.insert(
+            parent_iid, tk.END,
+            text=record.get("officer_name") or "",
+            values=(
+                dob_display,
+                record.get("company_name") or "",
+                record.get("role") or "",
+                record.get("company_status") or "",
+                date_range,
+            ),
+        )
+        self._row_records[iid] = record
+        return iid
+
+    def _render_tree(self, rows_to_show):
+        """Single entry point for (re)populating the treeview, in either
+        flat or clustered view mode, from a (possibly filtered) row list."""
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self._row_records = {}
+        self._cluster_records = {}
+        self._clear_detail_panel()
+
+        if self._view_mode == "flat":
+            for record in rows_to_show:
+                self._insert_leaf_row("", record)
+        else:
+            for cluster in cluster_appointment_rows(rows_to_show):
+                n_companies = _unique_company_count(cluster["members"])
+                n_appts = len(cluster["members"])
+                summary = (
+                    f"{n_companies} compan{'y' if n_companies == 1 else 'ies'} · "
+                    f"{n_appts} appointment{'' if n_appts == 1 else 's'}"
+                )
+                parent_iid = self.tree.insert(
+                    "", tk.END,
+                    text=cluster["display_name"],
+                    values=(cluster["dob_display"], summary, "", "", ""),
+                    open=False,
+                )
+                self._cluster_records[parent_iid] = cluster
+                for record in cluster["members"]:
+                    self._insert_leaf_row(parent_iid, record)
 
     def _sort_treeview(self, col):
         """Sort treeview rows by the clicked column header, toggling direction."""
@@ -382,47 +627,124 @@ class DirectorSearch(InvestigationModuleBase):
         self._update_sort_headings()
         self._reapply_sort()
 
+    def _sort_label(self, base_label, col):
+        if col == self._sort_col:
+            return base_label + (" ↓" if self._sort_reverse else " ↑")
+        return base_label
+
     def _update_sort_headings(self):
         """Update column header text to show the current sort indicator."""
+        self.tree.heading("#0", text=self._sort_label("Name", "#0"))
         for c in self._TREE_COLS:
-            label = c.replace("_", " ").title()
-            if c == self._sort_col:
-                label += " ↓" if self._sort_reverse else " ↑"
-            self.tree.heading(c, text=label)
+            self.tree.heading(c, text=self._sort_label(self._TREE_COL_LABELS[c], c))
 
     def _reapply_sort(self):
-        """Sort the treeview in-place using the current sort state (no state change)."""
+        """Sort the treeview in-place using the current sort state (no state
+        change). Only top-level rows are reordered — in clustered mode these
+        are the cluster-parent rows (children stay attached to their parent
+        and keep their existing relative order); in flat mode every row is
+        top-level, so behaviour matches the pre-clustering implementation.
+        """
         if not self._sort_col:
             return
         col = self._sort_col
 
         def sort_key(item):
-            val = self.tree.set(item, col)
+            val = self.tree.item(item, "text") if col == "#0" else self.tree.set(item, col)
             try:
                 return (0, float(val))
             except (ValueError, TypeError):
-                return (1, val.lower())
+                return (1, str(val).lower())
 
-        sorted_items = sorted(self.tree.get_children(), key=sort_key, reverse=self._sort_reverse)
+        top_items = self.tree.get_children("")
+        sorted_items = sorted(top_items, key=sort_key, reverse=self._sort_reverse)
         for idx, item in enumerate(sorted_items):
             self.tree.move(item, "", idx)
 
     def _apply_filter(self, event=None):
-        """Re-populate the treeview showing only rows matching the filter text."""
+        """Re-populate the treeview showing only rows matching the filter
+        text. Filtering happens on the underlying appointment rows first, so
+        in clustered mode a cluster stays visible as long as at least one of
+        its members matches (clusters with zero matches simply don't appear)."""
         query = self.filter_var.get().lower()
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        self._row_records = {}
+        if query == "":
+            matched_rows = self.results_data
+        else:
+            matched_rows = [
+                r for r in self.results_data
+                if any(query in str(v).lower() for v in r.values())
+            ]
 
-        for record in self.results_data:
-            if query == "" or any(query in str(v).lower() for v in record.values()):
-                iid = self.tree.insert(
-                    "", tk.END, values=[record.get(c) or "" for c in self._TREE_COLS]
-                )
-                self._row_records[iid] = record
-
+        self._render_tree(matched_rows)
         self._reapply_sort()
         self._update_selection_label()
+
+    # --- Master-detail panel (reduces horizontal noise: the tree only shows
+    # compact columns; everything else appears here for whichever row is
+    # currently selected) ---
+
+    def _build_detail_panel(self, parent):
+        parent.grid_columnconfigure(1, weight=1)
+        self._detail_vars = {}
+        fields = [
+            ("dob", "Date of Birth:"),
+            ("nationality", "Nationality:"),
+            ("occupation", "Occupation:"),
+            ("country_of_residence", "Country of Residence:"),
+            ("company_number", "Company Number:"),
+            ("address", "Address:"),
+        ]
+        for row_idx, (key, label_text) in enumerate(fields):
+            ttk.Label(parent, text=label_text, font=("Segoe UI", 9, "bold")).grid(
+                row=row_idx, column=0, sticky="nw", padx=(0, 8), pady=2
+            )
+            var = tk.StringVar(value="")
+            ttk.Label(parent, textvariable=var, wraplength=600, justify="left").grid(
+                row=row_idx, column=1, sticky="ew", pady=2
+            )
+            self._detail_vars[key] = var
+
+    def _update_detail_panel(self):
+        selected = self.tree.selection()
+        if not selected:
+            self._clear_detail_panel()
+            return
+        last_iid = selected[-1]
+        if last_iid in self._cluster_records:
+            self._populate_detail_panel_for_cluster(self._cluster_records[last_iid])
+        else:
+            record = self._row_records.get(last_iid)
+            if record:
+                self._populate_detail_panel_for_row(record)
+            else:
+                self._clear_detail_panel()
+
+    def _populate_detail_panel_for_row(self, record):
+        self._detail_vars["dob"].set(record.get("date_of_birth") or "Not stated")
+        self._detail_vars["nationality"].set(record.get("nationality") or "Not stated")
+        self._detail_vars["occupation"].set(record.get("occupation") or "Not stated")
+        self._detail_vars["country_of_residence"].set(record.get("country_of_residence") or "Not stated")
+        self._detail_vars["company_number"].set(record.get("company_number") or "")
+        self._detail_vars["address"].set(record.get("address") or "Not stated")
+
+    def _populate_detail_panel_for_cluster(self, cluster):
+        # Aggregate view: DOB and all name variants stand in for the fields
+        # that only make sense per-appointment (occupation, address, etc.).
+        self._detail_vars["dob"].set(cluster["dob_display"])
+        placeholder = "(select an appointment row for details)"
+        self._detail_vars["nationality"].set(placeholder)
+        self._detail_vars["occupation"].set(placeholder)
+        self._detail_vars["country_of_residence"].set(placeholder)
+        n_companies = _unique_company_count(cluster["members"])
+        self._detail_vars["company_number"].set(
+            f"{len(cluster['members'])} appointment(s) across "
+            f"{n_companies} compan{'y' if n_companies == 1 else 'ies'}"
+        )
+        self._detail_vars["address"].set("Name variants: " + ", ".join(cluster["name_variants"]))
+
+    def _clear_detail_panel(self):
+        for var in self._detail_vars.values():
+            var.set("")
 
     def start_search(self, event=None):
         if not self.full_name_var.get():
@@ -436,8 +758,9 @@ class DirectorSearch(InvestigationModuleBase):
         self._sort_col = None
         self._sort_reverse = False
         self.filter_var.set("")
+        self.tree.heading("#0", text="Name")
         for c in self._TREE_COLS:
-            self.tree.heading(c, text=c.replace("_", " ").title())
+            self.tree.heading(c, text=self._TREE_COL_LABELS[c])
 
         self.search_btn.pack_forget()
         self.cancel_btn.pack(ipady=10)
@@ -445,6 +768,9 @@ class DirectorSearch(InvestigationModuleBase):
 
         for item in self.tree.get_children():
             self.tree.delete(item)
+        self._row_records = {}
+        self._cluster_records = {}
+        self._clear_detail_panel()
         self._update_selection_label()
         threading.Thread(target=self._run_search, daemon=True).start()
 
@@ -584,12 +910,7 @@ class DirectorSearch(InvestigationModuleBase):
     def _populate_results(self):
         unique_records = {tuple(d.values()): d for d in self.results_data}.values()
         self.results_data = list(unique_records)
-        self._row_records = {}
-        for record in self.results_data:
-            iid = self.tree.insert(
-                "", tk.END, values=[record.get(c) or "" for c in self._TREE_COLS]
-            )
-            self._row_records[iid] = record
+        self._render_tree(self.results_data)
 
         # Update selection label after populating results
         self._update_selection_label()
@@ -874,7 +1195,7 @@ class DirectorSearch(InvestigationModuleBase):
                         self._restore_button_states()
                         self.app._navigate_network_with_csv(
                             csv_path,
-                            source_label=f"Working set: {count} entities from Director Search",
+                            source_label=f"Working set: {count} entities from Director Research",
                         )
                     self.app.after(0, _navigate)
                 else:
@@ -948,7 +1269,7 @@ class DirectorSearch(InvestigationModuleBase):
         rows = self._get_selected_results()
         if not rows:
             messagebox.showinfo(
-                "Person EDD",
+                "Director Research Report",
                 "No rows selected. Select the appointments belonging to the subject "
                 "(or clear all selection to use every row).",
             )
@@ -956,7 +1277,7 @@ class DirectorSearch(InvestigationModuleBase):
 
         subject = build_subject(rows)
         if not subject:
-            messagebox.showerror("Person EDD", "Could not derive a subject from the selected rows.")
+            messagebox.showerror("Director Research Report", "Could not derive a subject from the selected rows.")
             return
 
         if len(subject.canonical_keys) > 1:
@@ -975,7 +1296,7 @@ class DirectorSearch(InvestigationModuleBase):
             row.get("company_number", "") for row in rows if row.get("company_number")
         })
         if not unique_company_numbers:
-            messagebox.showerror("Person EDD", "No company numbers found in the selected rows.")
+            messagebox.showerror("Director Research Report", "No company numbers found in the selected rows.")
             return
 
         # Build a per-company appointment-info lookup from the selected rows so
@@ -1005,7 +1326,7 @@ class DirectorSearch(InvestigationModuleBase):
         self._disable_all_buttons()
         self.cancel_flag.clear()
         self.app.after(0, lambda: self.status_var.set(
-            f"Person EDD: fetching data for {len(unique_company_numbers)} companies..."
+            f"Director Research Report: fetching data for {len(unique_company_numbers)} companies..."
         ))
 
         def _worker():
@@ -1035,7 +1356,7 @@ class DirectorSearch(InvestigationModuleBase):
                 # Record in recent reports
                 try:
                     self.app_state.recent_edd_reports.insert(0, {
-                        "name": f"Person EDD: {subject.display_name}",
+                        "name": f"Director Research Report: {subject.display_name}",
                         "path": os.path.realpath(filename),
                         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     })
@@ -1046,7 +1367,7 @@ class DirectorSearch(InvestigationModuleBase):
 
                 def _done():
                     self.status_var.set(
-                        f"Person EDD report generated for {subject.display_name} "
+                        f"Director Research Report generated for {subject.display_name} "
                         f"({len(records)} companies). Opening in browser..."
                     )
                     self._restore_button_states()
@@ -1054,8 +1375,8 @@ class DirectorSearch(InvestigationModuleBase):
 
                 self.app.after(0, _done)
             except Exception as e:
-                log_message(f"Person EDD failed: {e}")
-                self.app.after(0, lambda err=e: messagebox.showerror("Person EDD", f"Failed to generate report:\n{err}"))
+                log_message(f"Director Research Report failed: {e}")
+                self.app.after(0, lambda err=e: messagebox.showerror("Director Research Report", f"Failed to generate report:\n{err}"))
                 self.app.after(0, self._restore_button_states)
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -1117,7 +1438,7 @@ class DirectorSearch(InvestigationModuleBase):
                 elapsed = time.time() - start_time
                 eta = format_eta(elapsed, i + 1, total)
                 self.app.after(0, lambda c=cnum, idx=i, t=total, e=eta: self.status_var.set(
-                    f"Person EDD: fetched {c} ({idx + 1}/{t}). ETA: {e}"
+                    f"Director Research Report: fetched {c} ({idx + 1}/{t}). ETA: {e}"
                 ))
         return records
 
