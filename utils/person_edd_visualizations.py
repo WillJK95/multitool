@@ -955,13 +955,13 @@ def generate_person_edd_html(report: PersonEDDReport) -> str:
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
-<title>Director Diligence Report — {html.escape(s.display_name)}</title>
+<title>Director Research Report — {html.escape(s.display_name)}</title>
 <style>{_CSS}</style>
 </head><body>
 <button class="print-btn" onclick="window.print()">&#128424; Save as PDF</button>
 <div class="container">
   <header class="report-header">
-    <h1>Director Diligence Report</h1>
+    <h1>Director Research Report</h1>
     <p>{html.escape(s.display_name)}</p>
     <p class="meta">Generated {timestamp}</p>
   </header>
@@ -1007,7 +1007,7 @@ def generate_person_edd_html(report: PersonEDDReport) -> str:
   {_recommendations_section(report)}
 
   <footer class="note" style="text-align:center; padding:24px;">
-    Data sources: Companies House &middot; 360Giving GrantNav &middot; Director Diligence Report
+    Data sources: Companies House &middot; 360Giving GrantNav &middot; Director Research Report
   </footer>
 </div>
 </body></html>"""

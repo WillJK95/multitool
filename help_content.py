@@ -84,7 +84,7 @@ GrantNav: 2 requests per second (no key required)
 """,
 
     "director": """
---- Director Investigation ---
+--- Director Research ---
 
 This module finds company appointments for a given director or officer name using
 Companies House data.
@@ -546,7 +546,7 @@ Supernode Removal:
 
 Combining Sources:
     The power of Network Analytics comes from combining multiple data sources.
-    A connection visible when combining Director Search, UBO Tracer, and
+    A connection visible when combining Director Research, UBO Tracer, and
     Unified Search exports may not be apparent in any single source alone.
 """,
 }

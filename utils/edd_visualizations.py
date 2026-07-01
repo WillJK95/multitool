@@ -504,7 +504,7 @@ def generate_company_timeline(
 def fetch_grants_for_company(company_number: str) -> list:
     """Fetch all grants for a company from GrantNav API.
 
-    Uses the /org/{id}/grants_received endpoint (same as Director Search)
+    Uses the /org/{id}/grants_received endpoint (same as Director Research)
     which is the reliable endpoint for fetching grants by organisation.
     """
     cleaned = clean_company_number(company_number)

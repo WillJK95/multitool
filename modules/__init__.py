@@ -2,7 +2,7 @@
 """Investigation modules."""
 
 from .base import InvestigationModuleBase
-from .director_search import DirectorSearch
+from .director_search import DirectorResearch
 from .unified_search import CompanyCharitySearch
 from .ubo_tracer import UltimateBeneficialOwnershipTracer
 from .network_analytics import NetworkAnalytics, CollapsibleSection
@@ -12,7 +12,7 @@ from .enhanced_dd import EnhancedDueDiligence
 
 __all__ = [
     'InvestigationModuleBase',
-    'DirectorSearch',
+    'DirectorResearch',
     'CompanyCharitySearch',
     'UltimateBeneficialOwnershipTracer',
     'NetworkAnalytics',
