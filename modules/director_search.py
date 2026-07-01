@@ -55,25 +55,37 @@ def _appointment_dob_obj(dob_str):
         return None
 
 
-def _cluster_key_for_row(row):
-    """Cluster key for one appointment row: canonical first+last name plus
-    year/month of birth when available; falls back to name + postcode
-    (extracted from the address) when DOB is missing; falls back further to
-    name alone if neither DOB nor a postcode is available."""
-    name = row.get("officer_name") or ""
-    dob_obj = _appointment_dob_obj(row.get("date_of_birth"))
-    if dob_obj:
-        return get_canonical_name_key(name, dob_obj)
+class _UnionFind:
+    """Minimal disjoint-set structure used to merge appointment rows into
+    person-clusters based on pairwise match rules (see cluster_appointment_rows)."""
 
-    name_key = get_canonical_name_key(name, None)
-    postcode = extract_postcode(row.get("address"))
-    if postcode:
-        return f"{name_key}|{postcode}"
-    return name_key
+    def __init__(self, n):
+        self.parent = list(range(n))
+
+    def find(self, x):
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
+
+    def union(self, x, y):
+        rx, ry = self.find(x), self.find(y)
+        if rx != ry:
+            self.parent[rx] = ry
 
 
 def cluster_appointment_rows(rows):
     """Group appointment rows into person-clusters.
+
+    Two rows with the same (canonicalised) name are merged when:
+      - both have a DOB and it matches, or
+      - at least one side has no DOB and they share a company (this is what
+        lets a director appointment (has DOB) cluster with a secretary
+        appointment for the same person at the same company, since
+        Companies House doesn't collect DOB for secretaries), or
+      - neither side has a DOB and their addresses share a postcode.
+    Two rows are never merged if both have a DOB and it differs, even if
+    they share a company (that's a same-name coincidence, not a match).
 
     Returns a list of dicts, each:
         {
@@ -85,22 +97,49 @@ def cluster_appointment_rows(rows):
         }
     Clusters are emitted in order of first appearance (stable/deterministic).
     """
+    n = len(rows)
+    uf = _UnionFind(n)
+    name_keys = [get_canonical_name_key(r.get("officer_name") or "", None) for r in rows]
+    dob_objs = [_appointment_dob_obj(r.get("date_of_birth")) for r in rows]
+    postcodes = [extract_postcode(r.get("address")) for r in rows]
+    companies = [r.get("company_number") or r.get("company_name") or None for r in rows]
+
+    by_name = OrderedDict()
+    for i, key in enumerate(name_keys):
+        if key:
+            by_name.setdefault(key, []).append(i)
+
+    for idxs in by_name.values():
+        for a in range(len(idxs)):
+            for b in range(a + 1, len(idxs)):
+                i, j = idxs[a], idxs[b]
+                di, dj = dob_objs[i], dob_objs[j]
+                if di and dj:
+                    if (di["year"], di["month"]) == (dj["year"], dj["month"]):
+                        uf.union(i, j)
+                    # Both have a DOB and it differs -> never merge, even if
+                    # they share a company (same-name coincidence).
+                    continue
+                if companies[i] and companies[j] and companies[i] == companies[j]:
+                    uf.union(i, j)
+                elif di is None and dj is None and postcodes[i] and postcodes[i] == postcodes[j]:
+                    uf.union(i, j)
+
     groups = OrderedDict()
-    for row in rows:
-        key = _cluster_key_for_row(row)
-        g = groups.setdefault(key, {
+    for i, row in enumerate(rows):
+        root = uf.find(i)
+        g = groups.setdefault(root, {
             "rows": [], "name_counter": Counter(), "dob_counter": Counter(),
         })
         g["rows"].append(row)
         name = row.get("officer_name") or ""
         if name:
             g["name_counter"][name] += 1
-        dob_obj = _appointment_dob_obj(row.get("date_of_birth"))
-        if dob_obj:
-            g["dob_counter"][(dob_obj["year"], dob_obj["month"])] += 1
+        if dob_objs[i]:
+            g["dob_counter"][(dob_objs[i]["year"], dob_objs[i]["month"])] += 1
 
     clusters = []
-    for key, g in groups.items():
+    for root, g in groups.items():
         display_name = g["name_counter"].most_common(1)[0][0] if g["name_counter"] else "Unknown"
         name_variants = list(g["name_counter"].keys())
         if g["dob_counter"]:
@@ -109,7 +148,7 @@ def cluster_appointment_rows(rows):
         else:
             dob_display = "Not stated"
         clusters.append({
-            "cluster_key": key,
+            "cluster_key": f"cluster-{root}",
             "display_name": display_name,
             "name_variants": name_variants,
             "dob_display": dob_display,
@@ -167,11 +206,11 @@ class DirectorResearch(InvestigationModuleBase):
         ttk.Label(input_frame, text="Full Name:").grid(
             row=0, column=0, sticky="w", padx=5, pady=5
         )
-        self.name_entry = ttk.Entry(input_frame, textvariable=self.full_name_var)
-        self.name_entry.grid(row=0, column=1, columnspan=3, sticky="ew", padx=5)
+        self.name_entry = ttk.Entry(input_frame, textvariable=self.full_name_var, width=30)
+        self.name_entry.grid(row=0, column=1, sticky="ew", padx=5)
 
         ttk.Label(input_frame, text="Year of Birth (Optional):").grid(
-            row=1, column=0, sticky="w", padx=5, pady=5
+            row=0, column=2, sticky="w", padx=(10, 5), pady=5
         )
         vcmd = (self.register(self.validate_year), "%P")
         self.year_entry = ttk.Entry(
@@ -181,10 +220,10 @@ class DirectorResearch(InvestigationModuleBase):
             validatecommand=vcmd,
             width=10,
         )
-        self.year_entry.grid(row=1, column=1, sticky="w", padx=5)
+        self.year_entry.grid(row=0, column=3, sticky="w", padx=5)
 
         ttk.Label(input_frame, text="Month:").grid(
-            row=1, column=2, sticky="w", padx=(10, 5), pady=5
+            row=0, column=4, sticky="w", padx=(10, 5), pady=5
         )
         months = [
             "Any",
@@ -209,17 +248,17 @@ class DirectorResearch(InvestigationModuleBase):
             width=15,
         )
         self.month_combo.set("Any")
-        self.month_combo.grid(row=1, column=3, sticky="w", padx=5)
+        self.month_combo.grid(row=0, column=5, sticky="w", padx=5)
 
         self.search_buttons_frame = ttk.Frame(input_frame)
-        self.search_buttons_frame.grid(row=0, column=4, rowspan=2, sticky="ns", padx=5)
+        self.search_buttons_frame.grid(row=0, column=6, sticky="ns", padx=5)
 
         self.search_btn = ttk.Button(
             self.search_buttons_frame,
             text="Search",
             command=lambda: self.start_search(),
         )
-        self.search_btn.pack(ipady=10)
+        self.search_btn.pack(ipady=2)
         self.cancel_btn = ttk.Button(
             self.search_buttons_frame, text="Cancel", command=self.cancel_search
         )
@@ -314,7 +353,7 @@ class DirectorResearch(InvestigationModuleBase):
 
         self.export_btn = ttk.Button(
             button_export_frame,
-            text="Export Directorships",
+            text="Export Data",
             state="disabled",
             command=self.export_csv,
         )
@@ -474,26 +513,38 @@ class DirectorResearch(InvestigationModuleBase):
     # else (DOB for appointment rows, nationality, occupation, country of
     # residence, full address, company number) lives in the detail panel
     # below the tree instead, so no column is ever truncated.
-    _TREE_COLS = ("company_name", "role", "company_status", "date_range")
+    _TREE_COLS = ("dob", "company_name", "role", "company_status", "date_range")
     _TREE_COL_LABELS = {
+        "dob": "DOB",
         "company_name": "Company",
         "role": "Role",
         "company_status": "Status",
         "date_range": "Appointed – Resigned",
     }
 
+    # Per-column widths sized to their typical content so the DOB column
+    # (short, fixed-format) doesn't steal space that longer text (company
+    # names, the cluster summary, date ranges) needs to avoid truncating.
+    _TREE_COL_WIDTHS = {
+        "dob": 90,
+        "company_name": 230,
+        "role": 110,
+        "company_status": 90,
+        "date_range": 170,
+    }
+
     def _create_treeview(self, parent):
         cols = self._TREE_COLS
         tree = ttk.Treeview(parent, columns=cols, show="tree headings", selectmode="extended")
         tree.heading("#0", text="Name", command=lambda: self._sort_treeview("#0"))
-        tree.column("#0", width=220, stretch=True)
+        tree.column("#0", width=200, stretch=True)
         for col in cols:
             tree.heading(
                 col,
                 text=self._TREE_COL_LABELS[col],
                 command=lambda c=col: self._sort_treeview(c),
             )
-            tree.column(col, width=150)
+            tree.column(col, width=self._TREE_COL_WIDTHS[col])
         yscroll = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=tree.yview)
         xscroll = ttk.Scrollbar(parent, orient=tk.HORIZONTAL, command=tree.xview)
         tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
@@ -519,10 +570,13 @@ class DirectorResearch(InvestigationModuleBase):
         appointed = record.get("appointed_on") or "—"
         resigned = record.get("resigned_on")
         date_range = f"{appointed} → {resigned}" if resigned else f"{appointed} → Present"
+        dob = record.get("date_of_birth")
+        dob_display = dob if dob and dob != "N/A" else "Not stated"
         iid = self.tree.insert(
             parent_iid, tk.END,
             text=record.get("officer_name") or "",
             values=(
+                dob_display,
                 record.get("company_name") or "",
                 record.get("role") or "",
                 record.get("company_status") or "",
@@ -555,7 +609,7 @@ class DirectorResearch(InvestigationModuleBase):
                 parent_iid = self.tree.insert(
                     "", tk.END,
                     text=cluster["display_name"],
-                    values=(summary, "", "", cluster["dob_display"]),
+                    values=(cluster["dob_display"], summary, "", "", ""),
                     open=False,
                 )
                 self._cluster_records[parent_iid] = cluster
