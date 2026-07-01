@@ -16,6 +16,7 @@ import networkx as nx
 from networkx.drawing.nx_agraph import graphviz_layout
 
 from .edd_visualizations import (
+    _choose_year_step,
     _fig_to_svg,
     _parse_date,
     format_display_date,
@@ -122,7 +123,13 @@ def _render_directorship_timeline(report: PersonEDDReport) -> str:
     ax.set_yticklabels(row_labels, fontsize=8)
     ax.set_ylim(-0.6, len(rows) - 0.4)
     ax.xaxis_date()
-    ax.xaxis.set_major_locator(mdates.YearLocator())
+    # Choose a year-tick interval wide enough to stay readable for people
+    # with a long directorship history, where a tick every single year
+    # would otherwise overwrite itself.
+    span_start = min(start for _, start, _ in rows)
+    span_end = max(end for _, _, end in rows)
+    year_step = _choose_year_step(span_start, span_end)
+    ax.xaxis.set_major_locator(mdates.YearLocator(base=year_step))
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
